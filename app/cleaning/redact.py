@@ -70,7 +70,9 @@ def redact_text(text: str, partial: bool = False) -> tuple[str, dict[str, int]]:
         digits = re.sub(r"\D", "", g)
         if not 8 <= len(digits) <= 15 or _DATEISH.match(g.strip()):
             return False
-        return g.lstrip().startswith("+") or bool(re.search(r"[\s().\-]", g)) or len(digits) >= 9
+        if g.lstrip().startswith("+") or re.search(r"[\s().\-]", g):
+            return True
+        return len(digits) == 10 and digits.startswith("0")  # a bare 0412345678; other bare digit runs are IDs
 
     text = sub(_PHONE, "phone", text, ok=phone_ok)
     text = sub(_LONG_ID, "id", text)

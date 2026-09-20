@@ -142,7 +142,8 @@ def map_uniques(
     if mapping:
         mask = s.isin(list(mapping))
         new_s = s.copy()
-        new_s[mask] = s[mask].map(mapping)
+        part = s[mask]
+        new_s[mask] = pd.Series([mapping[v] for v in part], index=part.index, dtype=object)  # object keeps ints as ints
         ctx.df[col] = new_s
     out = Outcome(rows=cells, cells=cells)
     if not ctx.sensitive(col):
