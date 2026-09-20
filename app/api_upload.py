@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .auth import authenticate
 from .db import get_db
 from .models import Column, Dataset, Project, User
 from .profiling import KINDS, LoadError, profile_file
@@ -45,21 +46,14 @@ def max_upload_bytes() -> int:
         return 50 * 1024 * 1024
 
 
-# ---------------------------------------------------------------- auth stub
-def current_user(db: Session = Depends(get_db)) -> User:
-    """Fail closed until Clerk (stream 3) is wired in.
+# ---------------------------------------------------------------- auth
+def current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    """The signed-in user, from a verified Clerk session token (see app/auth.py).
 
-    The shared development user is only available when ALLOW_DEV_USER=true, which must never be set
-    on a public deployment. Otherwise every data endpoint answers 401.
+    The shared dev user exists only when ENV=dev and ALLOW_DEV_USER=true. In production every data
+    endpoint answers 401 without a valid token.
     """
-    if os.environ.get("ALLOW_DEV_USER", "").lower() != "true":
-        raise HTTPException(401, "Sign-in is required. Uploads are disabled until accounts are live.")
-    user = db.scalar(select(User).where(User.clerk_id == "dev-user"))
-    if user is None:
-        user = User(clerk_id="dev-user")
-        db.add(user)
-        db.commit()
-    return user
+    return authenticate(request, db)[0]
 
 
 def _project(db: Session, user: User) -> Project:

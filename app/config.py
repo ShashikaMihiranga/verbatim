@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./dev.db"
     clerk_jwks_url: str | None = None
     clerk_issuer: str | None = None
+    clerk_authorized_parties: str | None = None  # comma separated origins allowed in the token `azp` claim
+    clerk_frontend_api: str | None = None  # host only, e.g. xxx.clerk.accounts.dev (used for the CSP)
+    signin_variant_weights: str | None = None  # e.g. "a=1,b=1,c=1,d=1"
 
     @property
     def sqlalchemy_url(self) -> str:

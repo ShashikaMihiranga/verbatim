@@ -10,3 +10,4 @@ dist/
 *.db
 .pytest_cache/
 .claude/worktrees/
+venv/

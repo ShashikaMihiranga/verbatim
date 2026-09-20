@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import router as api_router
+from .api_auth import router as auth_router
 from .api_charts import router as charts_router
 from .api_cleaning import router as cleaning_router
 from .api_upload import router as upload_router
@@ -23,6 +24,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(api_router)
 app.include_router(charts_router)
 app.include_router(upload_router)
+app.include_router(auth_router)
 app.include_router(cleaning_router)
 
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
