@@ -1,3 +1,5 @@
+import { authFetch } from './authFetch'
+
 export interface MergeEntry {
   from: string
   to: string
@@ -81,7 +83,7 @@ export interface StepEdit {
 }
 
 async function call<T>(url: string, method: string, body?: unknown): Promise<T> {
-  const r = await fetch(url, {
+  const r = await authFetch(url, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),

@@ -1,3 +1,5 @@
+import { authFetch, authHeaders, handleUnauthorized } from './authFetch'
+
 export type Kind =
   | 'open_text'
   | 'short_text'
@@ -66,15 +68,18 @@ async function asError(r: Response): Promise<Error> {
   return new Error(msg)
 }
 
-export function uploadFile(file: File, onProgress: (pct: number) => void): Promise<DatasetView> {
+export async function uploadFile(file: File, onProgress: (pct: number) => void): Promise<DatasetView> {
+  const headers = await authHeaders()
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/upload')
+    headers.forEach((value, key) => xhr.setRequestHeader(key, value))
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
     }
     xhr.onerror = () => reject(new Error('Could not reach the server. Check your connection and try again.'))
     xhr.onload = () => {
+      handleUnauthorized(xhr.status)
       let body: any = null
       try {
         body = JSON.parse(xhr.responseText)
@@ -91,7 +96,7 @@ export function uploadFile(file: File, onProgress: (pct: number) => void): Promi
 }
 
 export async function getProfile(id: number): Promise<DatasetView> {
-  const r = await fetch(`/api/datasets/${id}/profile`)
+  const r = await authFetch(`/api/datasets/${id}/profile`)
   if (!r.ok) throw await asError(r)
   return r.json()
 }
@@ -101,7 +106,7 @@ export async function confirmColumns(
   columns: { name: string; kind: Kind; off: boolean }[],
   question: string | null,
 ): Promise<DatasetView> {
-  const r = await fetch(`/api/datasets/${id}/columns`, {
+  const r = await authFetch(`/api/datasets/${id}/columns`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ columns, question }),

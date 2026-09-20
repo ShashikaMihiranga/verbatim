@@ -28,7 +28,7 @@ Tests: `pytest`. New migration after editing `app/models.py`: `alembic revision 
 
 ## Upload and column profiling
 
-`POST /api/upload` (.csv, .xlsx, .xls), `GET /api/datasets/{id}/profile`, `PATCH /api/datasets/{id}/columns`. The profiler in `app/profiling/` guesses each column's kind, unit and sensitivity and reports what it cleaned; the user confirms on the Check columns screen (`/upload`, `/check-columns`). Settings (environment): `UPLOAD_DIR` (default `~/.verbatim/uploads`), `MAX_UPLOAD_MB` (default 50). Optional: set `ANTHROPIC_API_KEY` (and `pip install anthropic`) to let Claude refine the guesses from headers and about 30 samples per column; without it nothing leaves the server. Auth is a dev stub until Clerk lands.
+`POST /api/upload` (.csv, .xlsx, .xls), `GET /api/datasets/{id}/profile`, `PATCH /api/datasets/{id}/columns`. The profiler in `app/profiling/` guesses each column's kind, unit and sensitivity and reports what it cleaned; the user confirms on the Check columns screen (`/upload`, `/check-columns`). Settings (environment): `UPLOAD_DIR` (default `~/.verbatim/uploads`), `MAX_UPLOAD_MB` (default 50). Optional: set `ANTHROPIC_API_KEY` (and `pip install anthropic`) to let Claude refine the guesses from headers and about 30 samples per column; without it nothing leaves the server. Every data route needs a signed-in user (see "Set up Clerk").
 
 ## Adaptive cleaning
 
@@ -39,6 +39,24 @@ After Check columns the app proposes a cleaning plan that fits the data, shows w
 - Personal details in text (emails, phone numbers, links, obvious ID numbers) are masked by `app/cleaning/redact.py`, on by default and reviewable. Send text to a model only through `app/cleaning/payload.py`. Names and addresses are not detected.
 - Sensitive columns: groups under `MIN_GROUP_SIZE` (default 30) are marked hidden with counts withheld, and no examples or raw rows of those columns appear in any report.
 - Limits (environment): `CLEAN_MAX_ROWS` (200000), `CLEAN_MAX_COLUMNS` (300), `CLEAN_TIMEOUT_SECONDS` (30), `CLEAN_CONCURRENCY` (2 jobs at once, then 429). Fuzzy matching uses `rapidfuzz` (pinned).
+
+## Set up Clerk
+
+Sign-in uses Clerk with our own screens (custom flow). The backend only needs Clerk's public key list; the Clerk **secret key is not used anywhere** and must never be added to this repo, the frontend or Railway variables for this app.
+
+1. Create an application at https://dashboard.clerk.com. Under User & authentication, enable Email (with password and email verification code), Google and Microsoft. Turn on bot protection (Attack protection) if you want it.
+2. Under API keys, copy the **Publishable key** (starts with `pk_`; it is public by design). In Railway, add it as a **build variable** named `VITE_CLERK_PUBLISHABLE_KEY` (Vite bakes it in at build time, so redeploy after setting it). Without it the app still runs and shows "Sign-in is not configured yet".
+3. Find your Frontend API host (Configure, Domains, or the decoded publishable key; it looks like `xxxx.clerk.accounts.dev` in development or `clerk.yourdomain.com` in production). In Railway, set these service variables:
+   - `CLERK_FRONTEND_API` = that host only (no `https://`). Used for the Content-Security-Policy.
+   - `CLERK_JWKS_URL` = `https://<frontend-api-host>/.well-known/jwks.json`
+   - `CLERK_ISSUER` = `https://<frontend-api-host>` (must match the token `iss` exactly, no trailing slash)
+   - `CLERK_AUTHORIZED_PARTIES` = your public site origin(s), comma separated, e.g. `https://your-app.up.railway.app` (checked against the token `azp` claim; set it, since it blocks tokens minted for other sites)
+4. Add your Railway domain to Clerk's allowed origins / redirect URLs, including `/sso-callback` (Google and Microsoft return there).
+5. Redeploy, then open `/sign-up`, create an account, enter the emailed code, and confirm you land on `/upload`. `GET /api/me` with a valid token returns your user id.
+
+Rules to keep: **`ALLOW_DEV_USER` must never be set on Railway.** The shared dev user only works when `ENV=dev` and `ALLOW_DEV_USER=true` together, and production ignores it. If `CLERK_JWKS_URL` or `CLERK_ISSUER` is missing, every data route answers 401 (fail closed). Optional: `SIGNIN_VARIANT_WEIGHTS` (for example `a=1,b=1,c=2,d=1`) changes how often each sign-in design (A to D) is shown; each visit is counted in `signin_variant_log` (variant and time only, no IP or browser data). Note: "Keep me signed in" is not shown because Clerk sets session length in its dashboard.
+
+Local development without Clerk: `ENV=dev ALLOW_DEV_USER=true uvicorn app.main:app --reload` uses one shared dev user and the sign-in pages show "not configured". Frontend tests: `cd frontend && npm test`.
 
 ## Layout
 
