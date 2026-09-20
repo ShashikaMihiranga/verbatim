@@ -1,0 +1,3 @@
+# Python is the main provider; add Node so the frontend can be built in the same image.
+[phases.setup]
+nixPkgs = ["python312", "nodejs_22"]
