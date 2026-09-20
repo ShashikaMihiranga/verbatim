@@ -72,7 +72,7 @@ export default function CheckColumns() {
         profile.columns.map((c) => ({ name: c.name, kind: kinds[c.name], off: !!off[c.name] })),
         question.trim() || null,
       )
-      nav(`/report?dataset=${id}`)
+      nav(`/cleaning?dataset=${id}`)
     } catch (e) {
       setError((e as Error).message)
       setSaving(false)
@@ -180,7 +180,7 @@ export default function CheckColumns() {
         <span className="muted" style={{ fontSize: 15 }}>Your file stays private to your workspace.</span>
         <Link to="/upload" className="btn quiet" style={{ textDecoration: 'none' }}>Back</Link>
         <button className="btn" type="button" onClick={save} disabled={saving}>
-          {saving ? 'Saving...' : 'Build report'}
+          {saving ? 'Saving...' : 'Continue'}
         </button>
       </div>
     </>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, Route, Routes } from 'react-router-dom'
 import CheckColumns from './CheckColumns'
+import Cleaning from './Cleaning'
 import Upload from './Upload'
 
 const placeholders: [string, string][] = [
@@ -9,6 +10,7 @@ const placeholders: [string, string][] = [
   ['/projects', 'Projects'],
   ['/upload', 'Upload'],
   ['/check-columns', 'Check columns'],
+  ['/cleaning', 'Cleaning review'],
   ['/report', 'Report'],
 ]
 
@@ -49,8 +51,9 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/upload" element={<Upload />} />
         <Route path="/check-columns" element={<CheckColumns />} />
+        <Route path="/cleaning" element={<Cleaning />} />
         {placeholders
-          .filter(([p]) => p !== '/upload' && p !== '/check-columns')
+          .filter(([p]) => p !== '/upload' && p !== '/check-columns' && p !== '/cleaning')
           .map(([path, title]) => (
           <Route key={path} path={path} element={<Placeholder title={title} />} />
         ))}
