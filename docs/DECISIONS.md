@@ -65,3 +65,4 @@
 
 ## 2026-09-21
 - Railway build switched from Nixpacks to a Dockerfile: Nixpacks gave Node 22.10 (Vite 8 needs 22.12+) and npm skipped the rolldown native binding, so `npm run build` failed. Procfile and nixpacks.toml removed.
+- Railway start command is shell-wrapped in railway.json (`sh -c`), because a dashboard start command is run without a shell on Docker builds, so `$PORT` stayed literal and uvicorn exited with a usage error. railway.json overrides the dashboard value.
