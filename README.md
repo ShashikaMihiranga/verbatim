@@ -28,15 +28,16 @@ Tests: `pytest`. New migration after editing `app/models.py`: `alembic revision 
 
 ## Layout
 
-- `app/charts.py`: chart renderers. Each `f_*` function returns HTML with inline SVG, using the CSS variables in `CSS`. Data is still the EV sample at the top of the file.
+- `app/charts.py`: chart renderers. Each `f_*(data: ReportData)` returns HTML with inline SVG, using the CSS variables in `CSS`; `render(frame_id, data=None)` defaults to the EV sample.
+- `app/chart_data.py`: typed data classes (`ReportData`, `ThemeNode`, ...) that charts read. `app/fixtures/ev_sample.py`: the EV sample as a `ReportData`. `app/api_charts.py`: `GET /api/charts` and `GET /api/charts/{id}`.
+- `tests/golden/*.html`: byte-for-byte snapshots of the 20 frames on the EV sample (regression guard in `tests/test_charts_data.py`).
 - `app/main.py`: FastAPI routes and static serving. `app/api.py`: JSON API under `/api`. `app/config.py`, `app/db.py`, `app/models.py`: settings, SQLAlchemy, tables. `migrations/`: Alembic. `frontend/`: React + Vite + TypeScript.
 - `railway.json` (build, pre-deploy migration, start, health check `/health`), `nixpacks.toml` (adds Node), `Procfile` (fallback start command).
 
 ## Next steps
 
-1. Move the sample data out of `charts.py` into an input object, so every `f_*` takes `data` as an argument.
-2. Add `POST /api/analyze` (upload, clean, embed, cluster, label).
-3. Add the chart-selection engine from SPEC.md section 4.
+1. Add `POST /api/analyze` (upload, clean, embed, cluster, label).
+2. Add the chart-selection engine from SPEC.md section 4.
 
 ## Deploy to Railway
 

@@ -7,7 +7,7 @@ Read first: `docs/PROJECT_VISION.md` (the main goal and decisions), then `SPEC.m
 Also read: `SPEC.md` (product decisions, data flow, chart-selection rules, structured-column plan).
 
 ## Layout
-- `app/main.py`: FastAPI routes. `app/charts.py`: chart renderers (inline SVG/HTML with CSS variables), still on EV sample data.
+- `app/main.py`: FastAPI routes. `app/charts.py`: chart renderers (inline SVG/HTML with CSS variables); every chart takes a `ReportData` (`app/chart_data.py`), EV sample in `app/fixtures/ev_sample.py`.
 - `design/screens/*.dc.html`: approved and candidate designs (charts, sign-in options A-D, upload, check-columns, three sample reports). `.dc.html` files only render inside the Claude Design canvas; treat them as visual reference and copy values from them.
 - `design/*.py`: scripts that generated the designs. Their output paths are hard-coded to a scratch folder; they are reference, not part of the app.
 
@@ -29,7 +29,7 @@ Also read: `SPEC.md` (product decisions, data flow, chart-selection rules, struc
 - Deploy: Railway reads `railway.json`; health check `/health`.
 
 ## Next tasks (in order)
-1. Make `charts.py` take a data object instead of module-level EV sample data.
+1. ~~Make `charts.py` take a data object instead of module-level EV sample data.~~ Done: see `app/chart_data.py`, `app/fixtures/ev_sample.py`.
 2. Auth (use a proven provider; do not hand-roll password storage) and per-user project storage.
 3. `POST /api/upload` for .xlsx/.csv and the column-profiling step ("Check columns" screen).
 4. Text pipeline: clean, embed, cluster, label with Claude, sentiment.
