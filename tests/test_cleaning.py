@@ -114,7 +114,8 @@ def test_redaction_masks_and_counts():
     text = ("Mail jane.doe@example.co.uk or call +61 412 345 678, also (02) 9876 5432. See https://foo.com/x?y=1 "
             "and www.bar.org. Card 4111 1111 1111 1111, SSN 123-45-6789, passport 123456789.")
     out, c = redact_text(text)
-    assert c == {"email": 1, "phone": 2, "url": 2, "id": 3}
+    # the bare 9-digit "passport" run is a phone number in a text column (see test_cleaning_hardening.py)
+    assert c == {"email": 1, "phone": 3, "url": 2, "id": 2, "name": 0, "address": 0}
     for leak in ("jane", "412 345", "9876", "foo.com", "bar.org", "4111", "123-45", "123456789"):
         assert leak not in out
     assert "[email]" in out and "[phone]" in out and "[link]" in out and "[id]" in out
@@ -163,19 +164,38 @@ def test_clean_text_has_no_pii_and_non_answers_are_blank():
     assert clean[Q].isna().sum() >= 23  # blanked cells stay as rows, they are not silently dropped
 
 
-def test_duplicates_collapse_keeps_count_and_lists_rows():
+def test_repeated_long_answers_are_flagged_not_removed():
     df, prof = car_survey()
-    clean, rep = apply_plan(df, plan_cleaning(df, prof))
-    assert rep.rows_in == 300 and rep.rows_out == 287
+    plan, rep0 = plan_with_preview(df, prof)
+    clean, rep = apply_plan(df, plan)
+    assert rep.rows_in == 300 and rep.rows_out == 300 and rep.removed_rows_total == 0  # different people, same sentence
+    st = step(rep, "collapse_duplicate_answers")
+    assert st.details["repeats_flagged"] == 13 and st.details["identical_rows_removed"] == 0
     a = clean[clean[Q].astype(str).str.startswith("The public charging")]
-    assert len(a) == 1 and int(a["_verbatim_dup_count"].iloc[0]) == 9
-    assert all("exact repeat" in r["reason"] for r in rep.removed_rows)
+    assert len(a) == 9 and int(a["_verbatim_dup_count"].max()) == 9
+    assert a["_verbatim_flags"].astype(str).str.contains("same answer as row").sum() == 8
+
+
+def test_fully_identical_rows_with_a_repeated_answer_are_removed_and_reported():
+    df, prof = car_survey()
+    i = int(df.index[df[Q].astype(str).str.startswith("The public charging")][0])
+    df.loc[len(df)] = df.loc[i].tolist()
+    df.loc[len(df)] = df.loc[i].tolist()
+    plan, _ = plan_with_preview(df, prof)
+    clean, rep = apply_plan(df, plan)
+    st = step(rep, "collapse_duplicate_answers")
+    assert st.details["identical_rows_removed"] == 2 and st.details["repeats_flagged"] == 13
+    assert rep.rows_in == 302 and rep.rows_out == 300 and rep.removed_rows_total == 2 and rep.accounted_for
+    assert all("identical to an earlier row in every column" in r["reason"] for r in rep.removed_rows)
+    assert {r["row"] for r in rep.removed_rows} == {301, 302}
 
 
 def test_nothing_dropped_silently():
     df, prof = car_survey()
     df.loc[len(df)] = [None] * df.shape[1]  # a blank row on top of the repeats
     df.loc[len(df)] = [None] * df.shape[1]
+    j = int(df.index[df[Q].astype(str).str.startswith("The public charging")][0])
+    df.loc[len(df)] = df.loc[j].tolist()  # a whole-row copy: the only kind of repeat that is removed
     clean, rep = apply_plan(df, plan_cleaning(df, prof))
     assert rep.rows_in - rep.rows_out == rep.removed_rows_total == len(rep.removed_rows) == sum(rep.removed_by_step.values())
     assert rep.accounted_for and not rep.removed_rows_truncated
@@ -213,18 +233,30 @@ def test_model_x_and_model_y_are_not_merged():
 
 
 # ---------------------------------------------------------------- scores, dates, numbers
-def test_score_scale_detected_and_out_of_range_marked_not_fixed():
+def test_score_scale_guessed_keeps_values_until_confirmed_then_blanks():
     df, prof = car_survey()
     plan, rep = plan_with_preview(df, prof, NO_DEDUPE)
     rng = step(rep, "check_score_range")
-    assert rng.details["scale"] == [1, 5] and rng.details["invalid"] == 5
+    assert rng.details["scale"] == [1, 5] and rng.details["scale_source"] == "observed"
+    assert rng.details["invalid"] == 0 and rng.details["outside_guessed_scale"] == 5 and rng.details["needs_confirmation"]
+    assert any("confirm the scale" in w.lower() for w in rep.warnings)
     coerce = step(rep, "coerce_numbers", "Likelihood to buy")
     assert coerce.details["unreadable"] == 2
     clean, _ = apply_plan(df, plan)
-    col = clean["Likelihood to buy"]
-    assert col.dropna().between(1, 5).all() and col.isna().sum() == 7  # 5 invalid + 2 unreadable, none "fixed"
+    assert clean["Likelihood to buy"].isna().sum() == 2  # only the 2 unreadable "x"; the 9s and 10s are still there
+    assert (clean["Likelihood to buy"] == 9).sum() == 3 and (clean["Likelihood to buy"] == 10).sum() == 2
     flags = clean["_verbatim_flags"].dropna().astype(str)
-    assert flags.str.contains("invalid, outside 1 to 5 (was 9)", regex=False).sum() == 3  # the original value stays in the flag
+    assert flags.str.contains("outside the guessed 1 to 5 scale (was 9)", regex=False).sum() == 3
+    # the user confirms the scale: now, and only now, out-of-range answers are blanked (original value kept in the flag)
+    ov = {**NO_DEDUPE, "check_score_range:Likelihood to buy": {"params": {"scale": [1, 5]}}}
+    plan2, rep2 = plan_with_preview(df, prof, ov)
+    rng2 = step(rep2, "check_score_range")
+    assert rng2.details["scale_source"] == "user" and rng2.details["invalid"] == 5
+    clean2, _ = apply_plan(df, plan2)
+    col = clean2["Likelihood to buy"]
+    assert col.dropna().between(1, 5).all() and col.isna().sum() == 7  # 5 invalid + 2 unreadable, none "fixed"
+    flags2 = clean2["_verbatim_flags"].dropna().astype(str)
+    assert flags2.str.contains("invalid, outside 1 to 5 (was 9)", regex=False).sum() == 3
     assert (col == 4).sum() >= 48 + 5  # "4/5" read as 4
 
 
@@ -585,6 +617,12 @@ def test_api_rejects_bad_edits(env):
     assert p({"steps": [{"id": "mask_pii:" + Q, "surprise": True}]}) == 422
     assert p({"steps": [{"id": f"check_score_range:Likelihood to buy", "params": {"scale": [5, 1]}}]}) == 422
     assert p({"steps": [{"id": f"check_score_range:Likelihood to buy", "params": {"scale": [0, 10]}}]}) == 200
+    na = "blank_non_answers:" + Q
+    assert p({"steps": [{"id": na, "params": {"extra_terms": ["kein plan", "sin novedad"]}}]}) == 200
+    assert p({"steps": [{"id": na, "params": {"extra_terms": "kein plan"}}]}) == 422
+    assert p({"steps": [{"id": na, "params": {"extra_terms": [1]}}]}) == 422
+    assert p({"steps": [{"id": na, "params": {"extra_terms": ["x" * 61]}}]}) == 422
+    assert p({"steps": [{"id": na, "params": {"extra_terms": ["a"] * 101}}]}) == 422
     assert p({"steps": [{"id": "x"}] * 501}) == 422
     assert env.client.post(f"/api/datasets/{did}/clean/plan", json={"min_group_size": 1}).status_code == 422
 

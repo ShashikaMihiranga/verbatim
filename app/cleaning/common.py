@@ -15,6 +15,8 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from .export import needs_guard
+
 MAX_EXAMPLE_CHARS = 160
 MAX_CELL_CHARS = 20_000
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f​-‏‪-‮⁠⁦-⁩﻿]")
@@ -41,8 +43,12 @@ class Deadline:
 
 
 def safe_text(v: Any, n: int = MAX_EXAMPLE_CHARS) -> str:
-    """Text for echoing back to the browser: control characters removed, length capped. JSON string only."""
+    """Text for echoing back to the browser: control characters removed, length capped. JSON string only.
+    Text a spreadsheet would run as a formula (=, +, -, @ first) gets a leading quote, so a report example that a
+    person copies into Excel is inert. Merge-table keys are the one exception: they must match the data."""
     s = _CTRL.sub("", str(v)).replace("\n", " ").replace("\r", " ")
+    if needs_guard(s):
+        s = "'" + s
     return s if len(s) <= n else s[: n - 1] + "…"
 
 

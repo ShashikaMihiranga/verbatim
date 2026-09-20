@@ -123,6 +123,11 @@ def _clean_params(key: str, params: dict[str, Any]) -> dict[str, Any]:
                   and 0 <= v[0] < v[1] <= 100)
             if not ok:
                 raise HTTPException(422, "scale must be two whole numbers, low then high, for example [1, 5].")
+        elif k in ("extra_terms", "safe_words"):
+            ok = (isinstance(v, list) and len(v) <= 100 and all(isinstance(x, str) and 1 <= len(x.strip()) <= 60 for x in v))
+            if not ok:
+                raise HTTPException(422, f"{k} must be a list of at most 100 short pieces of text.")
+            v = [safe_text(x, 60).strip() for x in v]
         elif k == "day_first":
             if v is not None and not isinstance(v, bool):
                 raise HTTPException(422, "day_first must be true, false or null.")

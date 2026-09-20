@@ -68,38 +68,86 @@ def detect_scale(values: pd.Series) -> tuple[tuple[int, int] | None, float]:
     return s, cover[s]
 
 
+_HINT_RANGE = re.compile(r"(?<![\d.])([01])\s*(?:-|–|—|to)\s*(\d{1,3})(?![\d.])", re.I)
+_HINT_OUTOF = re.compile(r"(?:out of|/)\s*(\d{1,3})(?![\d.])", re.I)
+
+
+def header_scale(col: str, nums: pd.Series) -> tuple[int, int] | None:
+    """A scale named in the column header: "0-10", "1 to 5", "out of 10", "/10". "out of N" and "/N" start at 0
+    only if someone actually answered 0, otherwise at 1. Returns None when the header says nothing clear."""
+    name = str(col)[:300]
+    m = _HINT_RANGE.search(name)
+    if m:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        return (lo, hi) if 3 <= hi <= 100 and lo < hi else None
+    m = _HINT_OUTOF.search(name)
+    if m:
+        hi = int(m.group(1))
+        if 3 <= hi <= 100:
+            vals = nums.dropna().astype(float)
+            return (0 if len(vals) and float(vals.min()) == 0 else 1, hi)
+    return None
+
+
 def build_check_score_range(ctx: Ctx, col: str, pov: dict) -> Step | None:
+    """Scale sources, most to least trusted: the user's own edit, a hint in the column header, then the observed
+    values (lowest confidence: a 1 to 10 question where nobody picked above 7 looks like 1 to 7). Only the first
+    two may blank values; a scale that came only from the data flags out-of-range answers and asks for confirmation."""
     nums = ctx.df[col].map(lambda v: parse_number(v, allow_ratio=True) if v is not None else None)
     chosen = pov.get("scale")
     detected, cov = detect_scale(nums)
-    scale = tuple(chosen) if chosen else detected
-    if scale is None:
+    hint = header_scale(col, nums)
+    if chosen:
+        scale, source = tuple(chosen), "user"
+        basis = "You set this scale."
+    elif hint:
+        scale, source = hint, "header"
+        basis = f"The column name says {hint[0]} to {hint[1]}. If that is wrong, change it here."
+    elif detected:
+        scale, source = detected, "observed"
+        basis = (f"Guessed from the answers only ({cov:.0%} fall inside it), so nothing is blanked. Answers outside it are "
+                 "flagged; confirm or change the scale here, and only then will out-of-range answers be blanked.")
+    else:
         return None
-    basis = ("You set this scale." if chosen else
-             f"Detected from the answers ({cov:.0%} fall inside it). If the real scale is different, change it here.")
+    action = ("are marked invalid (blank plus a flag with the original value)" if source != "observed"
+              else "are flagged and kept until you confirm the scale")
     return mk("check_score_range", col, f"Check \"{col}\" is on a {scale[0]} to {scale[1]} scale",
-              f"Answers outside {scale[0]} to {scale[1]} are marked invalid (blank plus a flag with the original value). "
-              f"They are not rounded or moved into range. {basis}",
-              {"scale": [int(scale[0]), int(scale[1])], "detected": list(detected) if detected else None})
+              f"Answers outside {scale[0]} to {scale[1]} {action}. They are not rounded or moved into range. {basis}",
+              {"scale": [int(scale[0]), int(scale[1])], "detected": list(detected) if detected else None,
+               "scale_source": source})
 
 
 def run_check_score_range(ctx: Ctx, step: Step) -> Outcome:
     col = step.column
     lo, hi = step.params["scale"]
+    source = step.params.get("scale_source", "observed")  # plans stored before this field existed never blank
+    blank = source in ("user", "header")
     hide = ctx.sensitive(col)
 
-    def fn(v: Any, c: int) -> Any:
+    def outside(v: Any) -> bool:
         f = parse_number(v)
-        return v if f is None or lo <= f <= hi else None
+        return f is not None and not lo <= f <= hi
+
+    def fn(v: Any, c: int) -> Any:
+        return None if blank and outside(v) else v
 
     def flagger(v: Any) -> str | None:
-        f = parse_number(v)
-        if f is None or lo <= f <= hi:
+        if not outside(v):
             return None
-        return "invalid (outside scale)" if hide else f"invalid, outside {lo} to {hi} (was {safe_text(v, 20)})"
+        if blank:
+            return "invalid (outside scale)" if hide else f"invalid, outside {lo} to {hi} (was {safe_text(v, 20)})"
+        return ("outside the guessed scale, confirm the scale" if hide else
+                f"outside the guessed {lo} to {hi} scale (was {safe_text(v, 20)}), confirm the scale")
 
     out = map_uniques(ctx, col, fn, flagger=flagger)
-    out.details.update({"scale": [lo, hi], "invalid": out.details.pop("flagged_cells", 0)})
+    n = out.details.pop("flagged_cells", 0)
+    out.details.update({"scale": [lo, hi], "invalid": n if blank else 0, "outside_guessed_scale": 0 if blank else n,
+                        "scale_source": source, "needs_confirmation": (not blank) and n > 0})
+    if not blank and n:
+        out.rows = out.cells = n  # reported as flagged even though nothing changed
+        ctx.warnings.append(
+            f"\"{safe_text(col, 80)}\": {n} answers look outside the guessed {lo} to {hi} scale. They were kept and "
+            "flagged. Confirm the scale for this column; until you do, nothing is blanked.")
     return out
 
 
