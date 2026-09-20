@@ -39,7 +39,7 @@ def run_drop_empty_columns(ctx: Ctx, step: Step) -> Outcome:
     return Outcome(rows=0, cells=len(empty), details={"columns": [safe_text(c, 120) for c in empty]})
 
 
-# ------------------------------------------------------------------ repeated answers
+# ------------------------------------------------------------------ repeated answers (flag; remove only identical rows)
 def build_collapse_duplicate_answers(ctx: Ctx, col: None = None, pov: dict | None = None) -> Step | None:
     cols = [c for c in ctx.df.columns if ctx.kind(c) == "open_text"]
     if not cols:
@@ -51,10 +51,12 @@ def build_collapse_duplicate_answers(ctx: Ctx, col: None = None, pov: dict | Non
         return None
     p75 = float(np.percentile(words, 75))
     min_words = int(min(10, max(3, round(p75))))
-    return mk("collapse_duplicate_answers", None, "Collapse exact repeats of the same long answer",
+    return mk("collapse_duplicate_answers", None, "Flag repeats of the same long answer",
               f"When several rows contain exactly the same open-ended answer of at least {min_words} words (the limit is set from "
-              "how long answers usually are in this file), keep the first row and remove the repeats. The kept row records how "
-              "many copies there were. Short answers such as \"Price\" are never collapsed because many people genuinely say them.",
+              "how long answers usually are in this file), the repeats are flagged and kept: two different people can type the "
+              "same sentence, so a repeated answer alone never removes a row. A row is removed only when it is identical to an "
+              "earlier row in every column; each removal is listed in the report. The first row records how many copies of the "
+              "answer there were. Short answers such as \"Price\" are never flagged.",
               {"columns": cols, "min_words": min_words})
 
 
@@ -69,20 +71,31 @@ def run_collapse_duplicate_answers(ctx: Ctx, step: Step) -> Outcome:
     idx_series = pd.Series(ctx.df.index, index=ctx.df.index)
     first = idx_series.groupby(key).transform("first")
     size = key.map(key.value_counts())
-    dup = eligible & (idx_series != first)
+    repeat = eligible & (idx_series != first)
     kept = eligible & (idx_series == first) & (size > 1)
     for i, n in zip(ctx.df.index[kept], size[kept]):
         ctx.dup_counts[i] = int(n)
-    removed = list(ctx.df.index[dup])
+    # removal needs the WHOLE row to match an earlier row, in every column; a repeated sentence alone only flags
+    same_row = ctx.df.astype(str).duplicated(keep="first")
+    remove = repeat & same_row
+    flag = repeat & ~same_row
+    removed = list(ctx.df.index[remove])
+    flagged = list(ctx.df.index[flag])
     for i in removed:
-        ctx.removed[i] = (step.id, f"exact repeat of the answer in row {int(first[i]) + 1}")
-    out = Outcome(rows=len(removed), cells=len(removed), details={"answers_repeated": int(kept.sum()),
-                                                                 "columns": [safe_text(c, 120) for c in cols]})
+        ctx.removed[i] = (step.id, f"identical to an earlier row in every column, including the repeated answer (first copy: row {int(first[i]) + 1})")
+    for i in flagged:
+        ctx.flags[i].append(f"{cols[0]}: same answer as row {int(first[i]) + 1} (row kept: other columns differ)")
+    out = Outcome(rows=len(removed) + len(flagged), cells=len(removed) + len(flagged),
+                  details={"answers_repeated": int(kept.sum()), "repeats_flagged": len(flagged),
+                           "identical_rows_removed": len(removed), "columns": [safe_text(c, 120) for c in cols]})
     if not any(ctx.sensitive(c) for c in cols):
         top = size[kept].sort_values(ascending=False).head(3)
         for i, n in top.items():
+            n_rem = int((remove & (first == i)).sum())
+            n_flag = int((flag & (first == i)).sum())
             out.examples.append({"before": f"{n} rows: {safe_text(ctx.df.loc[i, cols[0]])}",
-                                 "after": f"1 row kept, {n - 1} repeat(s) removed"})
+                                 "after": f"all {n} rows kept, {n_flag} flagged" if not n_rem else
+                                 f"{n - n_rem} rows kept ({n_flag} flagged), {n_rem} fully identical row(s) removed"})
     if removed:
         ctx.df = ctx.df.drop(index=removed)
     return out
