@@ -1,0 +1,298 @@
+{
+ "v": 3,
+ "attachments": {},
+ "boards": {
+  "Main.dc.html": {
+   "h": 1160,
+   "title": "Tokens",
+   "w": 1180,
+   "x": 0,
+   "y": 300
+  },
+  "arc.dc.html": {
+   "h": 760,
+   "title": "[arc]",
+   "w": 1180,
+   "x": 0,
+   "y": 11520
+  },
+  "bubbles.dc.html": {
+   "h": 800,
+   "title": "[bubbles]",
+   "w": 1180,
+   "x": 0,
+   "y": 9620
+  },
+  "byScore.dc.html": {
+   "h": 660,
+   "title": "[byScore]",
+   "w": 1180,
+   "x": 0,
+   "y": 13340
+  },
+  "columns.dc.html": {
+   "h": 860,
+   "title": "[columns]",
+   "w": 1280,
+   "x": 1360,
+   "y": 19240
+  },
+  "context.dc.html": {
+   "h": 760,
+   "title": "[context]",
+   "w": 1180,
+   "x": 0,
+   "y": 16940
+  },
+  "diverge.dc.html": {
+   "h": 780,
+   "title": "[diverge]",
+   "w": 1180,
+   "x": 0,
+   "y": 7800
+  },
+  "heatmap.dc.html": {
+   "h": 700,
+   "title": "[heatmap]",
+   "w": 1180,
+   "x": 0,
+   "y": 14120
+  },
+  "icicle.dc.html": {
+   "h": 620,
+   "title": "[icicle]",
+   "w": 1180,
+   "x": 0,
+   "y": 5060
+  },
+  "map.dc.html": {
+   "h": 820,
+   "title": "[map]",
+   "w": 1180,
+   "x": 0,
+   "y": 12400
+  },
+  "mekko.dc.html": {
+   "h": 800,
+   "title": "[mekko]",
+   "w": 1180,
+   "x": 0,
+   "y": 8700
+  },
+  "overview.dc.html": {
+   "h": 680,
+   "title": "[overview]",
+   "w": 1180,
+   "x": 0,
+   "y": 1580
+  },
+  "quality.dc.html": {
+   "h": 880,
+   "title": "[quality]",
+   "w": 1180,
+   "x": 0,
+   "y": 15940
+  },
+  "rank-mobile.dc.html": {
+   "h": 960,
+   "title": "[rank] Mobile 390",
+   "w": 390,
+   "x": 1260,
+   "y": 6720
+  },
+  "rank.dc.html": {
+   "h": 860,
+   "title": "[rank]",
+   "w": 1180,
+   "x": 0,
+   "y": 6720
+  },
+  "sankey.dc.html": {
+   "h": 860,
+   "title": "[sankey]",
+   "w": 1180,
+   "x": 0,
+   "y": 10540
+  },
+  "sentsun.dc.html": {
+   "h": 800,
+   "title": "[sentsun]",
+   "w": 1180,
+   "x": 0,
+   "y": 5800
+  },
+  "signin.dc.html": {
+   "h": 820,
+   "title": "[signin]",
+   "w": 1280,
+   "x": 0,
+   "y": 18100
+  },
+  "signup.dc.html": {
+   "h": 900,
+   "title": "[signup]",
+   "w": 1280,
+   "x": 1360,
+   "y": 18100
+  },
+  "sunburst-mobile.dc.html": {
+   "h": 960,
+   "title": "[sunburst] Mobile 390",
+   "w": 390,
+   "x": 1260,
+   "y": 2380
+  },
+  "sunburst.dc.html": {
+   "h": 1640,
+   "title": "[sunburst]",
+   "w": 1180,
+   "x": 0,
+   "y": 2380
+  },
+  "treemap.dc.html": {
+   "h": 800,
+   "title": "[treemap]",
+   "w": 1180,
+   "x": 0,
+   "y": 4140
+  },
+  "trend.dc.html": {
+   "h": 880,
+   "title": "[trend]",
+   "w": 1180,
+   "x": 0,
+   "y": 14940
+  },
+  "upload.dc.html": {
+   "h": 920,
+   "title": "[upload]",
+   "w": 1280,
+   "x": 0,
+   "y": 19240
+  },
+  "signin-a.dc.html": {
+   "x": 0,
+   "y": 20480,
+   "w": 1280,
+   "h": 820,
+   "title": "[signin] A, previous version"
+  },
+  "signin-b.dc.html": {
+   "x": 1360,
+   "y": 20480,
+   "w": 1280,
+   "h": 820,
+   "title": "[signin] B, words to themes"
+  },
+  "signin-c.dc.html": {
+   "x": 2720,
+   "y": 20480,
+   "w": 1280,
+   "h": 820,
+   "title": "[signin] C, quote wall"
+  },
+  "signin-d.dc.html": {
+   "x": 4080,
+   "y": 20480,
+   "w": 1280,
+   "h": 820,
+   "title": "[signin] D, mosaic"
+  },
+  "report-ev.dc.html": {
+   "x": 0,
+   "y": 21700,
+   "w": 1280,
+   "h": 3500,
+   "title": "[report] A, reasons question"
+  },
+  "report-occupation.dc.html": {
+   "x": 1360,
+   "y": 21700,
+   "w": 1280,
+   "h": 2500,
+   "title": "[report] B, short factual answers"
+  },
+  "report-improve.dc.html": {
+   "x": 2720,
+   "y": 21700,
+   "w": 1280,
+   "h": 2900,
+   "title": "[report] C, improvements question"
+  }
+ },
+ "createdOnFiles": {
+  "at": "2026-09-19T12:00:00Z",
+  "v": 1
+ },
+ "designSystems": [],
+ "launch": {
+  "view": "canvas"
+ },
+ "notes": {
+  "n2": {
+   "kind": "title1",
+   "maxW": 2640,
+   "text": "Web app screens: sign in, sign up, upload, check columns",
+   "w": 240,
+   "x": 0,
+   "y": 17820
+  },
+  "t": {
+   "kind": "title1",
+   "maxW": 1650,
+   "text": "Verbatim: visuals for open-ended answers, light theme",
+   "w": 240,
+   "x": 0,
+   "y": 0
+  },
+  "n3": {
+   "x": 0,
+   "y": 20200,
+   "text": "Sign-in options: A, B, C, D",
+   "kind": "title1",
+   "maxW": 5500
+  },
+  "n4": {
+   "x": 0,
+   "y": 21420,
+   "text": "Sample reports: text plus age, sex, income and more",
+   "kind": "title1",
+   "maxW": 3900
+  }
+ },
+ "order": [
+  "Main.dc.html",
+  "overview.dc.html",
+  "sunburst.dc.html",
+  "sunburst-mobile.dc.html",
+  "treemap.dc.html",
+  "icicle.dc.html",
+  "sentsun.dc.html",
+  "rank.dc.html",
+  "rank-mobile.dc.html",
+  "diverge.dc.html",
+  "mekko.dc.html",
+  "bubbles.dc.html",
+  "sankey.dc.html",
+  "arc.dc.html",
+  "map.dc.html",
+  "byScore.dc.html",
+  "heatmap.dc.html",
+  "trend.dc.html",
+  "quality.dc.html",
+  "context.dc.html",
+  "signin.dc.html",
+  "signup.dc.html",
+  "upload.dc.html",
+  "columns.dc.html",
+  "signin-a.dc.html",
+  "signin-b.dc.html",
+  "signin-c.dc.html",
+  "signin-d.dc.html",
+  "report-ev.dc.html",
+  "report-occupation.dc.html",
+  "report-improve.dc.html"
+ ],
+ "pages": [],
+ "title": "Verbatim Visual System"
+}
