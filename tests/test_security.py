@@ -21,4 +21,4 @@ def test_security_headers_present():
 def test_api_docs_hidden_outside_dev():
     assert "swagger" not in c.get("/docs").text.lower()
     r = c.get("/openapi.json")
-    assert r.headers.get("content-type", "").split(";")[0] != "application/json"
+    assert '"openapi"' not in r.text  # no schema, whether the reply is a 404 or the app shell
