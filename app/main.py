@@ -8,8 +8,17 @@ from .api import router as api_router
 from .api_charts import router as charts_router
 from .api_upload import router as upload_router
 from .charts import FRAMES, render
+from .config import get_settings
+from .security import SecurityHeadersMiddleware
 
-app = FastAPI(title="Verbatim")
+_dev = get_settings().env == "dev"
+app = FastAPI(
+    title="Verbatim",
+    docs_url="/docs" if _dev else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if _dev else None,
+)
+app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(api_router)
 app.include_router(charts_router)
 app.include_router(upload_router)

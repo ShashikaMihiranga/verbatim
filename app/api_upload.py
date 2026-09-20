@@ -47,10 +47,13 @@ def max_upload_bytes() -> int:
 
 # ---------------------------------------------------------------- auth stub
 def current_user(db: Session = Depends(get_db)) -> User:
-    """TODO(stream 3, Clerk): replace this stub with the real Clerk-verified user dependency.
+    """Fail closed until Clerk (stream 3) is wired in.
 
-    Until then every request is the same development user, so nothing here is safe for production.
+    The shared development user is only available when ALLOW_DEV_USER=true, which must never be set
+    on a public deployment. Otherwise every data endpoint answers 401.
     """
+    if os.environ.get("ALLOW_DEV_USER", "").lower() != "true":
+        raise HTTPException(401, "Sign-in is required. Uploads are disabled until accounts are live.")
     user = db.scalar(select(User).where(User.clerk_id == "dev-user"))
     if user is None:
         user = User(clerk_id="dev-user")

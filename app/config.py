@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    env: str = "dev"
+    env: str = "production"  # set ENV=dev locally; anything else hides API docs
     database_url: str = "sqlite:///./dev.db"
     clerk_jwks_url: str | None = None
     clerk_issuer: str | None = None
