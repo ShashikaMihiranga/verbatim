@@ -9,3 +9,4 @@ dist/
 !.env.example
 *.db
 .pytest_cache/
+.claude/worktrees/
