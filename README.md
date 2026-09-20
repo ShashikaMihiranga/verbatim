@@ -87,3 +87,12 @@ Local development without Clerk: `ENV=dev ALLOW_DEV_USER=true uvicorn app.main:a
 3. Railway reads `railway.json`, builds Python deps and the frontend with Nixpacks, runs `alembic upgrade head`, and starts uvicorn on `$PORT`. Add a Postgres service and set `DATABASE_URL` (reference variable).
 4. Settings, Networking, Generate Domain.
 5. When the analysis step arrives, add `ANTHROPIC_API_KEY` under Variables. Never commit it.
+
+## Deploy to Railway (Docker build)
+
+Railway builds with the `Dockerfile` (front end on Node 22, runtime on Python 3.12). Nixpacks is no longer used, because its Node was too old for Vite 8 and skipped the native build engine.
+
+- Build variable: `VITE_CLERK_PUBLISHABLE_KEY` (Railway passes service variables to the Dockerfile `ARG`).
+- Runtime variables: see "Set up Clerk", plus `DATABASE_URL`, and `TRUST_PROXY=true`.
+- Migrations run before each deploy (`preDeployCommand` in `railway.json`).
+- Uploaded files live in the container's disk and are lost on redeploy. Attach a Railway volume and set `UPLOAD_DIR` to its mount path before real use.
