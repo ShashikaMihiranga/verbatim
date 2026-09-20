@@ -214,18 +214,30 @@ def test_model_x_and_model_y_are_not_merged():
 
 
 # ---------------------------------------------------------------- scores, dates, numbers
-def test_score_scale_detected_and_out_of_range_marked_not_fixed():
+def test_score_scale_guessed_keeps_values_until_confirmed_then_blanks():
     df, prof = car_survey()
     plan, rep = plan_with_preview(df, prof, NO_DEDUPE)
     rng = step(rep, "check_score_range")
-    assert rng.details["scale"] == [1, 5] and rng.details["invalid"] == 5
+    assert rng.details["scale"] == [1, 5] and rng.details["scale_source"] == "observed"
+    assert rng.details["invalid"] == 0 and rng.details["outside_guessed_scale"] == 5 and rng.details["needs_confirmation"]
+    assert any("confirm the scale" in w.lower() for w in rep.warnings)
     coerce = step(rep, "coerce_numbers", "Likelihood to buy")
     assert coerce.details["unreadable"] == 2
     clean, _ = apply_plan(df, plan)
-    col = clean["Likelihood to buy"]
-    assert col.dropna().between(1, 5).all() and col.isna().sum() == 7  # 5 invalid + 2 unreadable, none "fixed"
+    assert clean["Likelihood to buy"].isna().sum() == 2  # only the 2 unreadable "x"; the 9s and 10s are still there
+    assert (clean["Likelihood to buy"] == 9).sum() == 3 and (clean["Likelihood to buy"] == 10).sum() == 2
     flags = clean["_verbatim_flags"].dropna().astype(str)
-    assert flags.str.contains("invalid, outside 1 to 5 (was 9)", regex=False).sum() == 3  # the original value stays in the flag
+    assert flags.str.contains("outside the guessed 1 to 5 scale (was 9)", regex=False).sum() == 3
+    # the user confirms the scale: now, and only now, out-of-range answers are blanked (original value kept in the flag)
+    ov = {**NO_DEDUPE, "check_score_range:Likelihood to buy": {"params": {"scale": [1, 5]}}}
+    plan2, rep2 = plan_with_preview(df, prof, ov)
+    rng2 = step(rep2, "check_score_range")
+    assert rng2.details["scale_source"] == "user" and rng2.details["invalid"] == 5
+    clean2, _ = apply_plan(df, plan2)
+    col = clean2["Likelihood to buy"]
+    assert col.dropna().between(1, 5).all() and col.isna().sum() == 7  # 5 invalid + 2 unreadable, none "fixed"
+    flags2 = clean2["_verbatim_flags"].dropna().astype(str)
+    assert flags2.str.contains("invalid, outside 1 to 5 (was 9)", regex=False).sum() == 3
     assert (col == 4).sum() >= 48 + 5  # "4/5" read as 4
 
 
