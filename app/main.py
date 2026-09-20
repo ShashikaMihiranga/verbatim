@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router as api_router
 from .api_charts import router as charts_router
+from .api_cleaning import router as cleaning_router
 from .api_upload import router as upload_router
 from .charts import FRAMES, render
 from .config import get_settings
@@ -22,6 +23,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(api_router)
 app.include_router(charts_router)
 app.include_router(upload_router)
+app.include_router(cleaning_router)
 
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
