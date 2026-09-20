@@ -5,10 +5,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import router as api_router
+from .api_upload import router as upload_router
 from .charts import FRAMES, render
 
 app = FastAPI(title="Verbatim")
 app.include_router(api_router)
+app.include_router(upload_router)
 
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
