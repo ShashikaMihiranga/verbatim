@@ -1,4 +1,6 @@
-import html, math, random, json, os
+import html, math, random
+
+from .chart_data import ReportData
 
 
 def esc(s): return html.escape(str(s), quote=False)
@@ -45,34 +47,29 @@ class Component extends DCLogic {{
 </html>
 '''
 
-# ---------- data ----------
-THEMES = [
-    ("Cost", 30, -0.05, 14258, "t1"),
-    ("Charging", 26, -0.20, 12357, "t2"),
-    ("Range and battery", 16, -0.10, 7604, "t3"),
-    ("Not needed", 10, -0.02, 4753, "t4"),
-    ("Doubts about the technology", 8, -0.15, 3802, "t5"),
-    ("Availability", 5, 0.10, 2376, "t6"),
-    ("Uncertainty", 3, 0.05, 1426, "t7"),
-    ("Other", 2, -0.03, 950, "other"),
-]
-TCOL = {n: c for n, _, _, _, c in THEMES}
+# ---------- design constants and data accessors ----------
+# Text colour to print on top of each theme colour token (design, not sample data).
 TH_ON = {"t1": "#ffffff", "t2": "#ffffff", "t3": "#12303a", "t4": "#12303a", "t5": "#ffffff",
          "t6": "#12303a", "t7": "#12303a", "other": "#12303a"}
-SUBS = {
-    "Cost": [("Upfront price", 15), ("Battery replacement cost", 7.5), ("Insurance and running costs", 7.5)],
-    "Charging": [("No home charger", 11.7), ("Too few public chargers", 9.1), ("Slow to charge", 5.2)],
-    "Range and battery": [("Range anxiety", 9.6), ("Battery life", 6.4)],
-    "Not needed": [("Current car is fine", 5.5), ("Barely drive", 2.5), ("Hybrid or petrol is enough", 2)],
-    "Doubts about the technology": [("Too new", 4), ("Resale value", 4)],
-    "Availability": [("Waiting lists", 3), ("No dealers nearby", 2)],
-}
-ANSWERED = 47525
-OVERALL = -0.10
-DIM = 0.28
+DIM = 0.28  # opacity of unselected themes
 
-def tone(s):
-    d = s - OVERALL
+def rows(data):
+    return [(t.name, t.share, t.sentiment, t.count, t.color) for t in data.themes]
+
+def subs_of(data, name):
+    for t in data.themes:
+        if t.name == name:
+            return [(c.name, c.share) for c in t.children]
+    return []
+
+def bub_of(data):
+    return {t.name: t.map_xy for t in data.themes if t.map_xy is not None}
+
+def tones_of(data):
+    return {t.name: tuple(t.tones) for t in data.themes}
+
+def tone(s, overall):
+    d = s - overall
     if abs(d) < 0.03:
         return "var(--neu)"
     t = min(1, (abs(d) - 0.03) / 0.07)
@@ -151,12 +148,12 @@ def arc_label(cx, cy, rm, thick, a0, a1, name, pct, fs, color):
                   f'style="font-size:{fs}px;font-weight:{wt};fill:{color}">{esc(t)}</text>')
     return f'<g transform="translate({x:.1f} {y:.1f}) rotate({rot:.1f})">{items}</g>'
 
-def sunburst(W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, external=True, cfs=34, csub=15):
+def sunburst(data, W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, external=True, cfs=34, csub=15):
     hole, r1, r2 = 0.36 * R, 0.68 * R, 0.70 * R
     o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Two-ring sunburst: themes inside, sub-themes outside">']
     a = 0.0
     ext = []
-    for name, share, sent, cnt, col in THEMES:
+    for name, share, sent, cnt, col in rows(data):
         span = share * 3.6
         a0, a1 = a, a + span
         a = a1
@@ -168,7 +165,7 @@ def sunburst(W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, external
         else:
             g.append(arc_label(cx, cy, (hole + r1) / 2, r1 - hole, a0, a1, name, f"{share}%", fs_in, TH_ON[col]))
         aa = a0
-        for k, (sn, sp) in enumerate(SUBS.get(name, [])):
+        for k, (sn, sp) in enumerate(subs_of(data, name)):
             sspan = sp * 3.6
             mixp = [46, 36, 27][k]
             g.append(f'<path d="{wedge(cx, cy, r2, R, aa, aa + sspan)}" style="fill:color-mix(in srgb,var(--{col}) {mixp}%,var(--surface));stroke:var(--surface);stroke-width:2.5"/>')
@@ -182,11 +179,8 @@ def sunburst(W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, external
         o.append("".join(g))
     # external callouts for small themes (desktop)
     if external:
-        pos = {
-            "Doubts about the technology": (160, 144, ["Doubts about", "the technology", "8%"]),
-            "Availability": (250, 78, ["Availability", "5%"]),
-            "Uncertainty": (306, 40, ["Uncertainty 3%"]),
-        }
+        pos = {t.name: t.callout for t in data.themes if t.callout}
+        notes = {t.name: t.note for t in data.themes}
         for name, share, cnt, col, mid in ext:
             op = 1 if selected in (None, name) else DIM
             px, py = polar(cx, cy, R + 2, mid)
@@ -205,21 +199,21 @@ def sunburst(W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, external
             else:  # Other callout
                 t = f'<g style="opacity:{op}"><polyline points="{px:.1f},{py:.1f} {px + 14:.1f},{py - 30:.1f} {px + 26:.1f},{py - 30:.1f}" style="fill:none;stroke:var(--muted);stroke-width:1"/>'
                 t += f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" style="fill:var(--other)"/>'
-                t += T(px + 32, py - 40, "Other 950 (2%)", 14, 600)
-                t += T(px + 32, py - 22, "Folded in: answers too rare for a theme", 13, 400, "var(--muted)")
+                t += T(px + 32, py - 40, f"{name} {fmt(cnt)} ({share}%)", 14, 600)
+                t += T(px + 32, py - 22, notes[name], 13, 400, "var(--muted)")
                 t += "</g>"
                 o.append(t)
-    o.append(T(cx, cy - csub * 0.9, "47,525", cfs, 300, "var(--ink)", "middle"))
+    o.append(T(cx, cy - csub * 0.9, fmt(data.answered), cfs, 300, "var(--ink)", "middle"))
     o.append(T(cx, cy + cfs * 0.45, "answered", csub, 400, "var(--muted)", "middle"))
     o.append("</svg>")
     return "".join(o)
 
-def theme_rows(selected=None, hover=None, mobile=False):
+def theme_rows(data, selected=None, hover=None, mobile=False):
     rh = 38 if mobile else 40
     fs = 14 if mobile else 15
     o = [f'<div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 10px;font-size:13px;font-weight:500;color:var(--muted)">'
          f'<span style="width:12px"></span><span style="flex:1">Theme</span><span style="width:{54 if mobile else 64}px;text-align:right">Answers</span><span style="width:{40 if mobile else 44}px;text-align:right">Share</span></div>']
-    for name, share, sent, cnt, col in THEMES:
+    for name, share, sent, cnt, col in rows(data):
         sel = name == selected
         dim = selected is not None and not sel
         if sel:
@@ -235,42 +229,42 @@ def theme_rows(selected=None, hover=None, mobile=False):
                  f'<span style="width:{54 if mobile else 64}px;text-align:right;font-size:{fs}px">{fmt(cnt)}</span>'
                  f'<span style="width:{40 if mobile else 44}px;text-align:right;font-size:{fs}px;color:var(--muted)">{share}%</span></div>')
         if sel:
-            for k, (sn, sp) in enumerate(SUBS.get(name, [])):
+            for k, (sn, sp) in enumerate(subs_of(data, name)):
                 mixp = [46, 36, 27][k]
                 o.append(f'<div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px 0 30px;font-size:{fs - 1}px">'
                          f'<span style="width:10px;height:10px;border-radius:2px;background:color-mix(in srgb,var(--{col}) {mixp + 20}%,var(--surface));flex:none"></span>'
                          f'<span style="flex:1;line-height:1.2">{esc(sn)}</span>'
-                         f'<span style="width:{54 if mobile else 64}px;text-align:right">{fmt(round(sp / 100 * ANSWERED))}</span>'
+                         f'<span style="width:{54 if mobile else 64}px;text-align:right">{fmt(round(sp / 100 * data.answered))}</span>'
                          f'<span style="width:{40 if mobile else 44}px;text-align:right;color:var(--muted)">{sp:g}%</span></div>')
     return "".join(o)
 
-def f_sunburst():
+def f_sunburst(data: ReportData):
     def panel(cap, selected, hover):
         return (f'<div style="font-size:14px;font-weight:500;color:var(--muted);margin:0 0 10px">{esc(cap)}</div>'
                 f'<div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;display:flex;gap:24px;height:630px">'
-                f'<div style="flex:none">{sunburst(640, 580, 380, 300, 245, 14, 12.5, selected, hover)}</div>'
-                f'<div style="flex:1;min-width:0">{theme_rows(selected, hover)}</div></div>')
-    body = (f'<div style="padding:56px 48px">{hdr("What are the themes?", "Why haven\'t you bought an electric vehicle yet?")}'
+                f'<div style="flex:none">{sunburst(data, 640, 580, 380, 300, 245, 14, 12.5, selected, hover)}</div>'
+                f'<div style="flex:1;min-width:0">{theme_rows(data, selected, hover)}</div></div>')
+    body = (f'<div style="padding:56px 48px">{hdr("What are the themes?", data.question)}'
             f'<div style="height:24px"></div>'
-            + panel("Default, hover on Range and battery", None, "Range and battery")
+            + panel(f"Default, hover on {data.hover_theme}", None, data.hover_theme)
             + '<div style="height:40px"></div>'
-            + panel("Charging selected, others dimmed", "Charging", None) + "</div>")
+            + panel(f"{data.selected_theme} selected, others dimmed", data.selected_theme, None) + "</div>")
     return body, 1180, 1640
 
-def f_sunburst_m():
+def f_sunburst_m(data: ReportData):
+    ot = next((t for t in data.themes if t.color == "other"), None)
+    other_line = esc(f"{ot.name} {fmt(ot.count)} ({ot.share}%). {ot.note}.") if ot else ""
     body = (f'<div style="padding:24px 16px">{hdr("What are the themes?")}'
             f'<div style="height:16px"></div>'
             f'<div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:12px 0 0">'
-            f'{sunburst(358, 340, 179, 172, 150, 11, 10.5, None, None, False, 24, 12)}'
-            f'<div style="padding:0 16px 12px">{theme_rows(None, None, True)}'
-            f'<div style="margin-top:14px;font-size:13px;color:var(--muted);line-height:1.4">Other 950 (2%). Folded in: answers too rare for a theme.</div></div></div></div>')
+            f'{sunburst(data, 358, 340, 179, 172, 150, 11, 10.5, None, None, False, 24, 12)}'
+            f'<div style="padding:0 16px 12px">{theme_rows(data, None, None, True)}'
+            f'<div style="margin-top:14px;font-size:13px;color:var(--muted);line-height:1.4">{other_line}</div></div></div></div>')
     return body, 390, 960
 
 # ---------- overview ----------
-def f_overview():
-    stats = [("Responses", "50,000", ""), ("Answered", "95%", "(2,475 blank, n/a or don't know)"),
-             ("Typical length", "8 words", ""), ("Average sentiment", "-0.10", "Negative is expected for this question"),
-             ("Themes", "7", "(17 sub-themes)")]
+def f_overview(data: ReportData):
+    stats = data.overview.stats
     st = '<div style="display:flex;margin-top:36px">'
     for i, (l, n, note) in enumerate(stats):
         bd = "border-left:1px solid var(--line);padding-left:24px;" if i else ""
@@ -278,35 +272,34 @@ def f_overview():
                f'<div style="font-size:54px;font-weight:300;line-height:1.15;margin:4px 0 6px">{esc(n)}</div>'
                f'<div style="font-size:14px;color:var(--muted);line-height:1.4;min-height:40px">{esc(note)}</div></div>')
     st += "</div>"
-    sent = ["Cost is the largest theme at 30% of answers, led by \"Upfront price\".",
-            "Charging carries the most negative wording (-0.20 against -0.10 overall).",
-            "Age group \"65+\" mentions Not needed 2.6 times as often as the average respondent."]
+    sent = data.overview.insights
     ws = "".join(f'<div style="padding:20px 0;border-top:1px solid var(--line);font-size:24px;font-weight:300;line-height:1.35">{esc(s)}</div>' for s in sent)
-    body = (f'<div style="padding:56px 48px">{hdr("How big, how clean, what's notable".replace("what's","what\'s"), "Why haven\'t you bought an electric vehicle yet?")}'
+    body = (f'<div style="padding:56px 48px">{hdr("How big, how clean, what's notable".replace("what's","what\'s"), data.question)}'
             f'{st}<div style="margin-top:56px;font-size:22px;font-weight:600;margin-bottom:12px">What stands out</div>'
             f'<div style="border-bottom:1px solid var(--line);max-width:960px">{ws}</div></div>')
     return body, 1180, 680
 
 # ---------- rank ----------
-def rank_rows(mobile=False, selected=None, hover=None):
+def rank_rows(data, mobile=False, selected=None, hover=None):
     o = ""
-    for name, share, sent, cnt, col in THEMES:
+    mx = max(t.share for t in data.themes)
+    for name, share, sent, cnt, col in rows(data):
         sel = name == selected
         op = DIM if (selected and not sel) else 1
         bg = "background:var(--surface);" if (name == hover or sel) else ""
         ring = "outline:2px solid var(--ink);outline-offset:-2px;" if sel else ""
         if mobile:
-            bw = share / 30 * 236
+            bw = share / mx * 236
             o += (f'<div style="padding:10px 12px;border-radius:8px;{bg}{ring}opacity:{op}">'
                   f'<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:500"><span>{esc(name)}</span>'
                   f'<span style="font-weight:400;color:var(--muted)">{sent:+.2f}</span></div>'
-                  f'<div style="display:flex;align-items:center;gap:10px;margin-top:6px"><div style="width:{bw:.0f}px;height:22px;border-radius:3px;background:{tone(sent)};flex:none"></div>'
+                  f'<div style="display:flex;align-items:center;gap:10px;margin-top:6px"><div style="width:{bw:.0f}px;height:22px;border-radius:3px;background:{tone(sent, data.overall_sentiment)};flex:none"></div>'
                   f'<div style="line-height:1.15"><div style="font-size:16px;font-weight:600">{share}%</div><div style="font-size:12px;color:var(--muted)">{fmt(cnt)}</div></div></div></div>')
         else:
-            bw = share / 30 * 560
+            bw = share / mx * 560
             o += (f'<div style="display:flex;align-items:center;height:64px;padding:0 16px;border-radius:8px;{bg}{ring}opacity:{op}">'
                   f'<div style="width:250px;font-size:17px;font-weight:500;flex:none">{esc(name)}</div>'
-                  f'<div style="flex:1;display:flex;align-items:center;gap:14px"><div style="width:{bw:.0f}px;height:28px;border-radius:3px;background:{tone(sent)}"></div>'
+                  f'<div style="flex:1;display:flex;align-items:center;gap:14px"><div style="width:{bw:.0f}px;height:28px;border-radius:3px;background:{tone(sent, data.overall_sentiment)}"></div>'
                   f'<div style="line-height:1.2"><div style="font-size:18px;font-weight:600">{share}%</div><div style="font-size:13px;color:var(--muted)">{fmt(cnt)}</div></div></div>'
                   f'<div style="width:90px;text-align:right;font-size:17px">{sent:+.2f}</div></div>')
     return o
@@ -317,37 +310,35 @@ def rank_legend():
                 f'<span style="width:16px;height:16px;border-radius:3px;background:{c}"></span>{t}</span>')
     return (sw("var(--neg)", "More negative than average") + sw("var(--neu)", "About average") + sw("var(--pos)", "Milder than average"))
 
-def f_rank():
+def f_rank(data: ReportData):
     body = (f'<div style="padding:56px 48px"><div style="display:flex;justify-content:space-between;align-items:flex-start">'
-            f'<div>{hdr("What should we fix first?", "Bar length is share of answered. Tint compares each theme with the overall average (-0.10).")}</div>'
+            f'<div>{hdr("What should we fix first?", f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f}).")}</div>'
             f'{seg(["Themes", "Sub-themes"], "Themes")}</div>'
             f'<div style="margin-top:22px;display:flex;flex-wrap:wrap">{rank_legend()}</div>'
             f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="width:250px">Theme</div><div style="flex:1">Share of answered, with count</div><div style="width:90px;text-align:right">Avg sentiment</div></div>'
-            f'{rank_rows(False, None, "Charging")}</div>')
+            f'{rank_rows(data, False, None, data.selected_theme)}</div>')
     return body, 1180, 860
 
-def f_rank_m():
+def f_rank_m(data: ReportData):
     body = (f'<div style="padding:24px 16px">{hdr("What should we fix first?")}'
             f'<div style="margin-top:14px">{seg(["Themes", "Sub-themes"], "Themes", None, True)}</div>'
             f'<div style="margin-top:14px;display:flex;flex-wrap:wrap;row-gap:6px">{rank_legend()}</div>'
-            f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">Charging selected, others dimmed</div>'
-            f'<div style="margin-top:6px">{rank_rows(True, "Charging")}</div></div>')
+            f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">{esc(data.selected_theme)} selected, others dimmed</div>'
+            f'<div style="margin-top:6px">{rank_rows(data, True, data.selected_theme)}</div></div>')
     return body, 390, 960
 
 # ---------- diverge ----------
-DIV = [("Cost", 38, 40, 22), ("Charging", 52, 33, 15), ("Range and battery", 44, 38, 18), ("Not needed", 30, 45, 25),
-       ("Doubts about the technology", 47, 36, 17), ("Availability", 28, 40, 32), ("Uncertainty", 25, 45, 30), ("Other", 30, 40, 30)]
-
-def f_diverge():
+def f_diverge(data: ReportData):
+    DIV = [(t.name, *t.tones) for t in data.themes]
     s = 5.2; cx = 600; rh = 60; y0 = 64
-    o = [f'<svg width="1084" height="{y0 + rh * 8 + 10}" viewBox="0 0 1084 {y0 + rh * 8 + 10}" role="img" aria-label="Diverging sentiment bars">']
+    o = [f'<svg width="1084" height="{y0 + rh * len(DIV) + 10}" viewBox="0 0 1084 {y0 + rh * len(DIV) + 10}" role="img" aria-label="Diverging sentiment bars">']
     o.append(T(cx - 160, 20, "Negative", 14, 500, "var(--muted)", "end"))
     o.append(T(cx, 20, "Neutral", 14, 500, "var(--muted)", "middle"))
     o.append(T(cx + 160, 20, "Positive", 14, 500, "var(--muted)", "start"))
     o.append(T(1084, 20, "negative / positive", 14, 500, "var(--muted)", "end"))
     for i, (name, ng, nu, ps) in enumerate(DIV):
         y = y0 + i * rh
-        if name == "Charging":
+        if name == data.selected_theme:
             o.append(f'<rect x="-12" y="{y}" width="1108" height="{rh}" rx="8" style="fill:var(--surface)"/>')
         cy = y + rh / 2
         o.append(T(0, cy, name, 16, 500))
@@ -359,61 +350,55 @@ def f_diverge():
         o.append(T(cx, cy, f"{nu}%", 14, 500, "var(--on-neu)", "middle"))
         o.append(T(cx + hn + ps * s / 2, cy, f"{ps}%", 14, 600, "var(--on-pos)", "middle"))
         o.append(T(1084, cy, f"{ng}% / {ps}%", 16, 600, "var(--ink)", "end"))
-    o.append(f'<line x1="{cx}" y1="{y0 - 4}" x2="{cx}" y2="{y0 + rh * 8}" style="stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3"/>')
+    o.append(f'<line x1="{cx}" y1="{y0 - 4}" x2="{cx}" y2="{y0 + rh * len(DIV)}" style="stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3"/>')
     o.append("</svg>")
     body = (f'<div style="padding:56px 48px">{hdr("Which themes sound negative or positive?", "Share of each theme\'s answers with negative, neutral and positive wording.")}'
             f'<div style="height:24px"></div>{"".join(o)}</div>')
     return body, 1180, 780
 
 # ---------- bubbles ----------
-BUB = {"Cost": (0.30, 0.35), "Charging": (0.68, 0.50), "Range and battery": (0.82, 0.25), "Not needed": (0.15, 0.75),
-       "Doubts about the technology": (0.45, 0.80), "Availability": (0.50, 0.15), "Uncertainty": (0.28, 0.65)}
-
-def f_bubbles():
+def f_bubbles(data: ReportData):
+    bub = bub_of(data)
     px0, pw, py0, ph = 60, 960, 40, 520
     o = ['<svg width="1084" height="620" viewBox="0 0 1084 620" role="img" aria-label="Theme similarity map">']
     hov = None
-    for name, share, sent, cnt, col in THEMES:
-        if name not in BUB:
+    for name, share, sent, cnt, col in rows(data):
+        if name not in bub:
             continue
-        x = px0 + BUB[name][0] * pw
-        y = py0 + BUB[name][1] * ph
+        x = px0 + bub[name][0] * pw
+        y = py0 + bub[name][1] * ph
         r = 12.5 * math.sqrt(share)
         o.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" style="fill:var(--{col});stroke:var(--bg);stroke-width:2"/>')
         o.append(T(x, y + r + 16, name, 14, 500, "var(--ink)", "middle"))
         o.append(T(x, y + r + 34, f"{share}%", 14, 400, "var(--muted)", "middle"))
-        if name == "Range and battery":
+        if name == data.hover_theme:
             o.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 6:.1f}" style="fill:none;stroke:var(--ink);stroke-width:2"/>')
             tx, ty = x + r + 12, y - 62
             o.append(f'<rect x="{tx - 100:.1f}" y="{ty - 28:.1f}" width="200" height="52" rx="8" style="fill:var(--ink)"/>')
-            o.append(T(tx, ty - 10, "Range and battery", 14, 600, "var(--bg)", "middle"))
-            o.append(T(tx, ty + 10, "16% of answered, -0.10", 13, 400, "var(--bg)", "middle"))
+            o.append(T(tx, ty - 10, name, 14, 600, "var(--bg)", "middle"))
+            o.append(T(tx, ty + 10, f"{share}% of answered, {sent:.2f}", 13, 400, "var(--bg)", "middle"))
     o.append("</svg>")
     body = (f'<div style="padding:56px 48px">{hdr("How do themes relate?", "Circle area is share. Distance means similar wording.")}'
             f'<div style="height:16px"></div>{"".join(o)}</div>')
     return body, 1180, 800
 
 # ---------- byScore ----------
-BYS = [("Low (0-6)", [27, 25, 15, 18, 9, 2, 2, 2], -0.14, 16000),
-       ("Middle (7-8)", [33, 28, 17, 3, 7, 7, 3, 2], -0.10, 19000),
-       ("High (9-10)", [30, 24, 18, 1, 6, 14, 5, 2], -0.03, 12525)]
-SHORT = ["Cost", "Charging", "Range and battery", "Not needed", "Doubts about the technology", "Availability", "Uncertainty", "Other"]
-
-def key_row():
+def key_row(data):
     o = '<div style="display:flex;flex-wrap:wrap;gap:8px 24px">'
-    for name, share, sent, cnt, col in THEMES:
+    for name, share, sent, cnt, col in rows(data):
         o += (f'<span style="display:inline-flex;align-items:center;gap:8px;font-size:14px">'
               f'<span style="width:12px;height:12px;border-radius:3px;background:var(--{col})"></span>{esc(name)}</span>')
     return o + "</div>"
 
-def f_byscore():
-    rows = ""
+def f_byscore(data: ReportData):
+    BYS = [(b.label, b.mix, b.sentiment, b.answers) for b in data.score.bands]
+    rows_html = ""
     for lab, vals, sent, n in BYS:
         segs = ""
         for i, v in enumerate(vals):
-            col = THEMES[i][4]
+            col = data.themes[i].color
             wpx = v * 7
-            name = SHORT[i]
+            name = data.themes[i].name
             show_name = wpx >= len(name) * 7.6 + 16
             txt = f"{v}%" if v >= 5 else f"{v}"
             inner = ""
@@ -423,72 +408,60 @@ def f_byscore():
                 inner = f'<div style="font-size:{15 if v >= 5 else 11}px;font-weight:600">{txt}</div>'
             segs += (f'<div style="flex:0 0 {v}%;background:var(--{col});color:{TH_ON[col]};border-right:2px solid var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">{inner}</div>')
         pp = min(55, abs(sent) / 0.2 * 55)
-        rows += (f'<div style="display:flex;align-items:center;padding:20px 0;border-top:1px solid var(--line)">'
+        rows_html += (f'<div style="display:flex;align-items:center;padding:20px 0;border-top:1px solid var(--line)">'
                  f'<div style="width:200px;flex:none"><div style="font-size:18px;font-weight:600">{lab}</div><div style="font-size:14px;color:var(--muted)">{fmt(n)} answers</div></div>'
                  f'<div style="width:700px;height:66px;display:flex;border-radius:6px;overflow:hidden;flex:none">{segs}</div>'
                  f'<div style="margin-left:32px;display:inline-flex;align-items:baseline;gap:8px;padding:6px 16px;border:1px solid var(--line);border-radius:999px;background:color-mix(in srgb,var(--neg) {pp:.0f}%,var(--surface))">'
                  f'<span style="font-size:13px;color:var(--ink)">avg sentiment</span><span style="font-size:17px;font-weight:600">{sent:+.2f}</span></div></div>')
-    body = (f'<div style="padding:56px 48px">{hdr("What does each score group talk about?", "Theme mix by Likelihood to buy. Each bar adds to 100%.")}'
-            f'<div style="height:24px"></div><div style="border-bottom:1px solid var(--line)">{rows}</div>'
-            f'<div style="margin-top:24px">{key_row()}</div></div>')
+    body = (f'<div style="padding:56px 48px">{hdr("What does each score group talk about?", f"Theme mix by {data.score.name}. Each bar adds to 100%.")}'
+            f'<div style="height:24px"></div><div style="border-bottom:1px solid var(--line)">{rows_html}</div>'
+            f'<div style="margin-top:24px">{key_row(data)}</div></div>')
     return body, 1180, 660
 
 # ---------- heatmap ----------
-AGES = [("18-24", 5100), ("25-34", 9800), ("35-44", 10600), ("45-54", 9300), ("55-64", 7200), ("65+", 5500)]
-HM = [("Cost", 30, [40, 38, 32, 27, 24, 20]), ("Charging", 26, [30, 32, 31, 27, 22, 18]),
-      ("Range and battery", 16, [13, 14, 16, 17, 19, 20]), ("Not needed", 10, [4, 5, 8, 11, 17, 26]),
-      ("Doubts about the technology", 8, [6, 7, 8, 9, 10, 10])]
-
 def ramp_mix(v, overall):
     r = v / overall
     if r <= 1:
         return 8 + 22 * r
     return 30 + 60 * min(1, (r - 1) / 1.5)
 
-def f_heatmap():
-    g = '<div style="display:grid;grid-template-columns:250px repeat(6,minmax(0,1fr));gap:4px">'
+def f_heatmap(data: ReportData):
+    seg_ = data.segment
+    AGES = [(g.label, g.n) for g in seg_.groups]
+    HM = [(r.theme, r.overall, r.values) for r in seg_.rows]
+    g = f'<div style="display:grid;grid-template-columns:250px repeat({len(AGES)},minmax(0,1fr));gap:4px">'
     g += '<div></div>'
     for a, n in AGES:
         g += f'<div style="padding:0 0 8px;text-align:center"><div style="font-size:16px;font-weight:500">{a}</div><div style="font-size:13px;color:var(--muted)">n={fmt(n)}</div></div>'
-    for name, ov, vals in HM:
+    for ri, (name, ov, vals) in enumerate(HM):
         g += f'<div style="display:flex;flex-direction:column;justify-content:center;padding-right:12px"><div style="font-size:16px;font-weight:500;line-height:1.25">{esc(name)}</div><div style="font-size:13px;color:var(--muted)">overall {ov}%</div></div>'
         for j, v in enumerate(vals):
             m = ramp_mix(v, ov)
             tc = "var(--on-ramp)" if m >= 55 else "var(--ink)"
-            hov = (name == "Not needed" and j == 5)
+            hov = (seg_.highlight == (ri, j))
             ring = "outline:2px solid var(--ink);outline-offset:2px;" if hov else ""
             tip = ""
             if hov:
                 tip = ('<div style="position:absolute;left:50%;bottom:calc(100% + 12px);transform:translateX(-72%);width:250px;padding:10px 14px;border-radius:8px;background:var(--ink);color:var(--bg);font-size:14px;line-height:1.35;z-index:3">'
-                       'Age group "65+" mentions Not needed 2.6 times as often as the average respondent.</div>')
+                       + esc(seg_.highlight_text) + '</div>')
             g += (f'<div style="position:relative;height:66px;border-radius:4px;background:color-mix(in srgb,var(--ramp) {m:.0f}%,var(--surface));color:{tc};display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:{600 if m >= 55 else 500};{ring}">{v}%{tip}</div>')
     g += "</div>"
     steps = "".join(f'<span style="width:34px;height:14px;background:color-mix(in srgb,var(--ramp) {m}%,var(--surface));display:inline-block"></span>' for m in (10, 30, 50, 70, 90))
     legend = (f'<div style="margin-top:28px;display:flex;align-items:center;gap:12px;font-size:14px;color:var(--muted)">'
               f'<span>At or below overall share</span><span style="display:inline-flex;gap:2px">{steps}</span><span>Above overall share</span></div>')
-    body = (f'<div style="padding:56px 48px">{hdr("Who raises what?", "Share of each age group\'s answers. Darker means above the overall share.")}'
+    body = (f'<div style="padding:56px 48px">{hdr("Who raises what?", f"Share of each {seg_.name.lower()}'s answers. Darker means above the overall share.")}'
             f'<div style="height:64px"></div>{g}{legend}</div>')
     return body, 1180, 700
 
 # ---------- trend ----------
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-def series(a, b, noise, seed):
-    rnd = random.Random(seed)
-    out = []
-    for i in range(12):
-        base = a + (b - a) * i / 11
-        n = 0 if i in (0, 11) else rnd.uniform(-noise, noise)
-        out.append(base + n)
-    return out
-
-def f_trend():
-    S = [("Cost", "t1", series(26, 34, 1.1, 3)), ("Charging", "t2", series(33, 22, 1.1, 5)),
-         ("Range and battery", "t3", series(16, 16, 0.5, 7)), ("Not needed", "t4", series(10, 10, 0.4, 11)),
-         ("Doubts about the technology", "t5", series(8, 8, 0.3, 13))]
-    sent = series(-0.14, -0.07, 0.012, 17)
+def f_trend(data: ReportData):
+    tr = data.trend
+    MONTHS = tr.labels
+    NP = len(MONTHS)
+    S = [(x.theme, x.color, x.values) for x in tr.series]
+    sent = tr.sentiment
     x0, x1 = 56, 830
-    dx = (x1 - x0) / 11
+    dx = (x1 - x0) / (NP - 1)
     ty0, ty1 = 34, 394      # 0..40 %
     by0, by1 = 462, 622     # 0 .. -0.20
     def X(i): return x0 + dx * i
@@ -499,12 +472,12 @@ def f_trend():
     for g in (0, 10, 20, 30, 40):
         o.append(f'<line x1="{x0}" y1="{Y(g):.1f}" x2="{x1}" y2="{Y(g):.1f}" style="stroke:var(--line);stroke-width:1"/>')
         o.append(T(x0 - 10, Y(g), f"{g}%", 13, 400, "var(--muted)", "end"))
-    HV = 8
+    HV = tr.hover_index
     for name, col, vals in S:
         pts = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(vals))
         o.append(f'<polyline points="{pts}" style="fill:none;stroke:var(--{col});stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round"/>')
-        o.append(f'<circle cx="{X(11):.1f}" cy="{Y(vals[11]):.1f}" r="4" style="fill:var(--{col})"/>')
-        o.append(T(x1 + 16, Y(vals[11]) - 0, f"{name} {vals[11]:.0f}%", 14, 600, "var(--ink)"))
+        o.append(f'<circle cx="{X(NP - 1):.1f}" cy="{Y(vals[-1]):.1f}" r="4" style="fill:var(--{col})"/>')
+        o.append(T(x1 + 16, Y(vals[-1]) - 0, f"{name} {vals[-1]:.0f}%", 14, 600, "var(--ink)"))
         o.append(f'<circle cx="{X(0):.1f}" cy="{Y(vals[0]):.1f}" r="4" style="fill:var(--{col})"/>')
         o.append(T(X(0) + 8, Y(vals[0]) - 12, f"{vals[0]:.0f}%", 13, 500, "var(--muted)"))
     # hover crosshair
@@ -521,43 +494,38 @@ def f_trend():
     o.append(f'<polyline points="{pts}" style="fill:none;stroke:var(--ink);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round"/>')
     o.append(f'<circle cx="{X(0):.1f}" cy="{YS(sent[0]):.1f}" r="4" style="fill:var(--ink)"/>')
     o.append(T(X(0) + 8, YS(sent[0]) - 14, f"{sent[0]:.2f}", 13, 500, "var(--muted)"))
-    o.append(f'<circle cx="{X(11):.1f}" cy="{YS(sent[11]):.1f}" r="4" style="fill:var(--ink)"/>')
-    o.append(T(x1 + 16, YS(sent[11]), f"Average sentiment {sent[11]:.2f}", 14, 600))
+    o.append(f'<circle cx="{X(NP - 1):.1f}" cy="{YS(sent[-1]):.1f}" r="4" style="fill:var(--ink)"/>')
+    o.append(T(x1 + 16, YS(sent[-1]), f"Average sentiment {sent[-1]:.2f}", 14, 600))
     o.append(f'<circle cx="{X(HV):.1f}" cy="{YS(sent[HV]):.1f}" r="4.5" style="fill:var(--surface);stroke:var(--ink);stroke-width:2.5"/>')
     o.append(T(X(HV) + 10, YS(sent[HV]) - 12, f"{sent[HV]:.2f}", 13, 600))
     for i, m in enumerate(MONTHS):
         o.append(T(X(i), by1 + 26, m, 13, 500 if i == HV else 400, "var(--ink)" if i == HV else "var(--muted)", "middle"))
     o.append("</svg>")
-    body = (f'<div style="padding:56px 48px">{hdr("What's rising or fading?".replace("What's", "What\'s"), "Monthly, January to December.")}'
+    body = (f'<div style="padding:56px 48px">{hdr("What's rising or fading?".replace("What's", "What\'s"), tr.note)}'
             f'<div style="height:24px"></div>{"".join(o)}</div>')
     return body, 1180, 880
 
 # ---------- freq ----------
-OCC = [("Teacher", 9.3, True), ("Nurse", 6.6, False), ("Software engineer", 4.8, True), ("Accountant", 4.0, False),
-       ("Sales assistant", 3.3, False), ("Manager", 2.9, False), ("Retail worker", 2.7, True), ("Student", 2.1, False),
-       ("Electrician", 1.9, False), ("Retired", 1.8, False)]
-
-def f_freq():
-    rows = ""
+def f_freq(data: ReportData):
+    fq = data.frequency
+    OCC = [(i.label, i.pct, i.merged) for i in fq.items]
+    mx = max(p for _, p, _ in OCC)
+    rows_html = ""
     for i, (n, p, merged) in enumerate(OCC):
-        bw = p / 9.3 * 560
-        cnt = round(p / 100 * 47973)
-        note = '<span style="font-size:13px;color:var(--muted);margin-left:16px">3 spellings merged</span>' if merged else ""
-        bg = "background:var(--surface);" if n == "Nurse" else ""
-        rows += (f'<div style="display:flex;align-items:center;height:52px;padding:0 16px;border-radius:8px;{bg}">'
-                 f'<div style="width:220px;font-size:17px;font-weight:500;flex:none">{n}</div>'
+        bw = p / mx * 560
+        cnt = round(p / 100 * fq.answered)
+        note = f'<span style="font-size:13px;color:var(--muted);margin-left:16px">{merged} spellings merged</span>' if merged else ""
+        bg = "background:var(--surface);" if n == fq.highlight else ""
+        rows_html += (f'<div style="display:flex;align-items:center;height:52px;padding:0 16px;border-radius:8px;{bg}">'
+                 f'<div style="width:220px;font-size:17px;font-weight:500;flex:none">{esc(n)}</div>'
                  f'<div style="flex:1;display:flex;align-items:center;gap:14px"><div style="width:{bw:.0f}px;height:26px;border-radius:3px;background:var(--accent)"></div>'
                  f'<div style="line-height:1.2"><span style="font-size:17px;font-weight:600">{p}%</span> <span style="font-size:13px;color:var(--muted);margin-left:6px">{fmt(cnt)}</span>{note}</div></div></div>')
-    body = (f'<div style="padding:56px 48px">{hdr("What did people say most?", "What is your occupation? 47,973 answered.")}'
-            f'<div style="height:20px"></div>{rows}'
-            f'<div style="margin-top:28px;padding-top:20px;border-top:1px solid var(--line);font-size:16px;color:var(--muted);max-width:820px">1,461 different answers after merging spelling and plural variants. The ten most common cover 39% of answers, and 41% of the distinct answers were given only once.</div></div>')
+    body = (f'<div style="padding:56px 48px">{hdr("What did people say most?", f"{fq.question} {fmt(fq.answered)} answered.")}'
+            f'<div style="height:20px"></div>{rows_html}'
+            f'<div style="margin-top:28px;padding-top:20px;border-top:1px solid var(--line);font-size:16px;color:var(--muted);max-width:820px">{esc(fq.footnote)}</div></div>')
     return body, 1180, 860
 
 # ---------- phrases ----------
-PH = [("worried", 4909, -0.25), ("home charger", 3638, -0.16), ("not enough", 3068, -0.02), ("public charger", 2964, -0.24),
-      ("too expensive", 2815, -0.03), ("long trips", 2113, -0.02), ("no driveway", 1911, -0.12), ("can't afford", 1455, -0.10),
-      ("range anxiety", 1200, -0.11), ("battery life", 1020, -0.18), ("resale value", 724, 0.01), ("waiting list", 720, 0.10)]
-
 def ph_tint(s):
     if s < -0.03:
         p = 12 + min(1, abs(s) / 0.25) * 40
@@ -567,11 +535,13 @@ def ph_tint(s):
         return f"color-mix(in srgb,var(--pos) {p:.0f}%,var(--surface))"
     return "color-mix(in srgb,var(--neu) 30%,var(--surface))"
 
-def f_phrases():
+def f_phrases(data: ReportData):
+    PH = [(p.text, p.count, p.sentiment) for p in data.phrases.phrases]
+    mx = max(c for _, c, _ in PH)
     chips = ""
     for p, c, s in PH:
-        fs = 15 + c / 4909 * 19
-        ring = "border:2px solid var(--ink);" if p == "public charger" else "border:1px solid var(--line);"
+        fs = 15 + c / mx * 19
+        ring = "border:2px solid var(--ink);" if p == data.phrases.highlight else "border:1px solid var(--line);"
         chips += (f'<div style="display:inline-flex;align-items:baseline;gap:10px;padding:{8 + fs * 0.12:.0f}px {14 + fs * 0.35:.0f}px;border-radius:999px;background:{ph_tint(s)};{ring}">'
                   f'<span style="font-size:{fs:.0f}px;font-weight:500;line-height:1.2">{esc(p)}</span>'
                   f'<span style="font-size:13px;color:var(--muted)">{fmt(c)}</span><span style="font-size:13px;color:var(--muted)">{s:+.2f}</span></div>')
@@ -585,31 +555,27 @@ def f_phrases():
     return body, 1180, 640
 
 # ---------- quotes ----------
-Q = [("No driveway so can't install a home charger", "Charging", "negative"),
-     ("Not enough public chargers near me", "Charging", "negative"),
-     ("Worried about resale value", "Doubts about the technology", "negative"),
-     ("The upfront price is too high", "Cost", "neutral"),
-     ("I barely drive, my current car is fine", "Not needed", "neutral"),
-     ("Still weighing it up, need more information", "Uncertainty", "neutral"),
-     ("I'd love one, but there's a long waiting list for the models I want", "Availability", "positive")]
 SC = {"negative": "var(--neg)", "neutral": "var(--neu)", "positive": "var(--pos)"}
 
-def f_quotes():
+def f_quotes(data: ReportData):
+    Q = [(q.text, q.theme, q.tone) for q in data.quotes.quotes]
+    tcol = {t.name: t.color for t in data.themes}
+    hi = data.quotes.highlight_index
     chips = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:20px">'
-    for name in ["All"] + [t[0] for t in THEMES if t[0] != "Other"]:
+    for name in ["All"] + [t.name for t in data.themes if t.name != "Other"]:
         if name == "All":
             st = "background:var(--accent);color:var(--on-accent);border:1px solid var(--accent);font-weight:600;"
             dot = ""
         else:
-            hv = "background:var(--surface);" if name == "Charging" else ""
+            hv = "background:var(--surface);" if name == data.selected_theme else ""
             st = f"border:1px solid var(--line);{hv}font-weight:500;"
-            dot = f'<span style="width:9px;height:9px;border-radius:50%;background:var(--{TCOL[name]})"></span>'
+            dot = f'<span style="width:9px;height:9px;border-radius:50%;background:var(--{tcol[name]})"></span>'
         chips += f'<span style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:999px;font-size:14px;{st}">{dot}{esc(name)}</span>'
     chips += "</div>"
     rows = ""
     for i, (q, th, sn) in enumerate(Q):
-        bg = "background:var(--surface);" if i == 1 else ""
-        rows += (f'<div style="display:flex;align-items:center;gap:20px;min-height:62px;padding:8px 16px;border-top:1px solid var(--line);border-radius:{8 if i == 1 else 0}px;{bg}">'
+        bg = "background:var(--surface);" if i == hi else ""
+        rows += (f'<div style="display:flex;align-items:center;gap:20px;min-height:62px;padding:8px 16px;border-top:1px solid var(--line);border-radius:{8 if i == hi else 0}px;{bg}">'
                  f'<div style="width:100px;flex:none;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)"><span style="width:11px;height:11px;border-radius:50%;background:{SC[sn]}"></span>{sn}</div>'
                  f'<div style="flex:1;font-size:19px;line-height:1.4">{esc(q)}</div>'
                  f'<div style="width:230px;flex:none;text-align:right;font-size:14px;font-weight:500;color:var(--muted)">{esc(th)}</div></div>')
@@ -619,42 +585,42 @@ def f_quotes():
     return body, 1180, 800
 
 # ---------- quality ----------
-BINS = [("1", 1900), ("2", 3800), ("3", 5700), ("4-5", 9500), ("6-8", 11400), ("9-12", 9500), ("13-20", 4300), ("21-40", 1100), ("41+", 300)]
-
-def f_quality():
+def f_quality(data: ReportData):
+    q = data.quality
+    BINS = q.bins
+    mx = max(c for _, c in BINS)
     base = 350; maxh = 270; bw = 100; gap = 20; x0 = 12
     o = ['<svg width="1084" height="440" viewBox="0 0 1084 440" role="img" aria-label="Histogram of answer length in words">']
     for i, (lab, c) in enumerate(BINS):
-        h = c / 11400 * maxh
+        h = c / mx * maxh
         x = x0 + i * (bw + gap)
-        typ = lab == "6-8"
+        typ = lab == q.typical_bin
         fill = "var(--accent)" if typ else "color-mix(in srgb,var(--accent) 55%,var(--bg))"
         o.append(f'<rect x="{x}" y="{base - h:.1f}" width="{bw}" height="{h:.1f}" rx="3" style="fill:{fill}"/>')
         o.append(T(x + bw / 2, base - h - 14, fmt(c), 15, 600, "var(--ink)", "middle"))
         o.append(T(x + bw / 2, base + 22, lab, 15, 500, "var(--ink)", "middle"))
         if typ:
-            o.append(T(x + bw / 2, base - h - 44, "Typical length 8 words", 14, 500, "var(--accent)", "middle"))
+            o.append(T(x + bw / 2, base - h - 44, q.typical_note, 14, 500, "var(--accent)", "middle"))
     o.append(f'<line x1="0" y1="{base}" x2="1084" y2="{base}" style="stroke:var(--ink);stroke-width:1"/>')
     o.append(T(542, base + 58, "Words per answer", 14, 500, "var(--muted)", "middle"))
     o.append("</svg>")
-    notes = ["2,475 blank, said nothing or n/a, or said they did not know. These are left out of the themes.",
-             "12% of answers repeat an earlier answer word for word.",
-             "Sentiment comes from a word-based scorer built for English. It reads wording, not intent, and can miss sarcasm."]
+    notes = q.notes
     nt = '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px;margin-top:20px">' + "".join(
         f'<div style="border-top:1px solid var(--line);padding-top:14px;font-size:16px;line-height:1.55">{esc(n)}</div>' for n in notes) + "</div>"
-    body = (f'<div style="padding:56px 48px">{hdr("Can I trust this?", "Answer length in words, for the 47,525 answers analysed.")}'
+    body = (f'<div style="padding:56px 48px">{hdr("Can I trust this?", f"Answer length in words, for the {fmt(data.answered)} answers analysed.")}'
             f'<div style="height:40px"></div>{"".join(o)}{nt}</div>')
     return body, 1180, 880
 
 # ---------- context ----------
-def f_context():
-    opts = ["reasons", "improvements", "experiences", "facts", "anything else", "opinions"]
+def f_context(data: ReportData):
+    cx = data.context
+    opts = cx.kind_options
     menu = ('<span style="position:absolute;left:-14px;top:calc(100% + 12px);width:270px;padding:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;z-index:5;'
             'font-size:18px;font-weight:400;line-height:1.3;display:block;text-align:left">')
     for o_ in opts:
-        if o_ == "reasons":
+        if o_ == cx.kind:
             st = "background:color-mix(in srgb,var(--accent) 14%,var(--surface));color:var(--accent);font-weight:600;"
-        elif o_ == "facts":
+        elif o_ == cx.kind_hover:
             st = "background:var(--bg);"
         else:
             st = ""
@@ -663,16 +629,16 @@ def f_context():
     ctl = "color:var(--accent);border-bottom:2px dotted var(--accent);"
     body = (f'<div style="padding:72px 80px">'
             f'<div style="font-size:48px;font-weight:300;line-height:1.25;max-width:1020px">This question asks for '
-            f'<span style="position:relative;display:inline-block;{ctl}">reasons{menu}</span>, framed '
-            f'<span style="{ctl}">negatively</span>, and answers run '
-            f'<span style="{ctl}">a sentence or two</span>.</div>'
-            f'<div style="margin-top:340px;font-size:19px;line-height:1.55;max-width:820px;color:var(--ink)">47,525 of 50,000 responses had an answer to analyse. Also found a score column (Likelihood to buy), a date column (Survey date, grouped by month), and a segment column (Age group).</div>'
+            f'<span style="position:relative;display:inline-block;{ctl}">{esc(cx.kind)}{menu}</span>, framed '
+            f'<span style="{ctl}">{esc(cx.framing)}</span>, and answers run '
+            f'<span style="{ctl}">{esc(cx.length)}</span>.</div>'
+            f'<div style="margin-top:340px;font-size:19px;line-height:1.55;max-width:820px;color:var(--ink)">{fmt(data.answered)} of {fmt(data.total)} responses had an answer to analyse. {esc(cx.columns_note)}</div>'
             f'<details style="margin-top:36px;max-width:820px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">'
             f'<summary style="display:flex;justify-content:space-between;align-items:center;padding:16px 0;font-size:18px;font-weight:500;list-style:none;cursor:pointer">How the charts were chosen<span style="font-size:24px;font-weight:300;color:var(--muted)">+</span></summary></details></div>')
     return body, 1180, 760
 
 # ---------- tokens ----------
-def f_tokens():
+def f_tokens(data: ReportData):  # static design reference, ignores data
     def sw(c):
         return f'<span style="display:inline-block;width:26px;height:26px;border-radius:6px;border:1px solid var(--line);background:{c};vertical-align:middle"></span>'
     def row(tok, l, d, use):
@@ -779,11 +745,11 @@ def frame(title, sub, inner, h, extra_top=24):
     return (f'<div style="padding:56px 48px">{hdr(title, sub)}<div style="height:{extra_top}px"></div>{inner}</div>'), 1180, h
 
 # ---- treemap
-def f_treemap():
+def f_treemap(data: ReportData):
     W, H = 1084, 580
-    rects = squarify([(n, s) for n, s, _, _, _ in THEMES], 0, 0, W, H)
+    rects = squarify([(n, s) for n, s, _, _, _ in rows(data)], 0, 0, W, H)
     o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Treemap of themes and sub-themes">']
-    for name, share, sent, cnt, col in THEMES:
+    for name, share, sent, cnt, col in rows(data):
         x, y, w, h = rects[name]
         x += 1.5; y += 1.5; w -= 3; h -= 3
         o.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="5" style="fill:var(--{col})"/>')
@@ -791,7 +757,7 @@ def f_treemap():
         hh = len(lines) * 18 + 14
         for i, t in enumerate(lines):
             o.append(T(x + 10, y + 16 + i * 18, t, 15, 600, TH_ON[col]))
-        subs = SUBS.get(name)
+        subs = subs_of(data, name)
         if subs and h - hh - 5 > 20:
             sr = squarify(subs, x + 5, y + hh, w - 10, h - hh - 5)
             for k, (sn, sp) in enumerate(subs):
@@ -807,18 +773,18 @@ def _sub_items(subs):
     return [(sn, sp) for sn, sp in subs]
 
 # ---- icicle
-def f_icicle():
+def f_icicle(data: ReportData):
     W = 1084
     o = [f'<svg width="{W}" height="380" viewBox="0 0 {W} 380" role="img" aria-label="Icicle chart: themes above, sub-themes below">']
     o.append(T(0, 8, "Themes", 14, 500, "var(--muted)"))
     y1, h1, y2, h2 = 24, 130, 158, 210
     a = 0.0
-    for name, share, sent, cnt, col in THEMES:
+    for name, share, sent, cnt, col in rows(data):
         x = a / 100 * W; w = share / 100 * W; a += share
         o.append(f'<rect x="{x + 1.5:.1f}" y="{y1}" width="{w - 3:.1f}" height="{h1}" rx="3" style="fill:var(--{col})"/>')
         o.append(fit_label(x + 1.5, y1, w - 3, h1, name, f"{share}%", 13, TH_ON[col]))
         aa = x
-        for k, (sn, sp) in enumerate(SUBS.get(name, [])):
+        for k, (sn, sp) in enumerate(subs_of(data, name)):
             sw = sp / 100 * W
             o.append(f'<rect x="{aa + 1.5:.1f}" y="{y2}" width="{sw - 3:.1f}" height="{h2}" rx="3" style="fill:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"/>')
             o.append(fit_label(aa + 1.5, y2, sw - 3, h2, sn, f"{sp:g}%", 12.5, "var(--ink)"))
@@ -828,15 +794,15 @@ def f_icicle():
     return frame("What are the themes?", "Width is share of answered. Read down from a theme to its sub-themes.", "".join(o), 620)
 
 # ---- sentiment sunburst
-def f_sentsun():
+def f_sentsun(data: ReportData):
     W = H = 580
     cx = cy = 290
     R = 280
     hole, r1, r2 = 0.34 * R, 0.62 * R, 0.64 * R
     o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Sentiment sunburst: themes inside, tone split outside">']
     a = 0.0
-    tones = {n: (ng, nu, ps) for n, ng, nu, ps in DIV}
-    for name, share, sent, cnt, col in THEMES:
+    tones = tones_of(data)
+    for name, share, sent, cnt, col in rows(data):
         span = share * 3.6
         a0, a1 = a, a + span
         a = a1
@@ -848,13 +814,13 @@ def f_sentsun():
             o.append(f'<path d="{wedge(cx, cy, r2, R, aa, aa + sp)}" style="fill:var(--{c});stroke:var(--surface);stroke-width:2.5"/>')
             o.append(arc_label(cx, cy, (r2 + R) / 2, R - r2, aa, aa + sp, None, f"{v}%", 13, on))
             aa += sp
-    o.append(T(cx, cy - 12, "47,525", 32, 300, "var(--ink)", "middle"))
+    o.append(T(cx, cy - 12, fmt(data.answered), 32, 300, "var(--ink)", "middle"))
     o.append(T(cx, cy + 16, "answered", 15, 400, "var(--muted)", "middle"))
     o.append("</svg>")
     tbl = ('<div style="flex:1;padding-top:12px"><div style="display:flex;align-items:center;gap:10px;height:30px;font-size:13px;font-weight:500;color:var(--muted)">'
            '<span style="width:12px"></span><span style="flex:1">Theme</span>'
            '<span style="width:72px;text-align:right">Negative</span><span style="width:72px;text-align:right">Neutral</span><span style="width:72px;text-align:right">Positive</span></div>')
-    for name, share, sent, cnt, col in THEMES:
+    for name, share, sent, cnt, col in rows(data):
         ng, nu, ps = tones[name]
         tbl += (f'<div style="display:flex;align-items:center;gap:10px;height:44px;border-top:1px solid var(--line);font-size:15px">'
                 f'<span style="width:12px;height:12px;border-radius:3px;background:var(--{col})"></span><span style="flex:1;line-height:1.2">{esc(name)}</span>'
@@ -866,15 +832,15 @@ def f_sentsun():
     return frame("Which themes sound negative or positive?", "Inner ring is the theme. Outer ring splits each theme by tone.", inner, 800)
 
 # ---- marimekko
-def f_mekko():
+def f_mekko(data: ReportData):
     W = 1084
     gap = 3
-    avail = W - gap * 7
+    avail = W - gap * (len(data.themes) - 1)
     Hc = 440
     o = [f'<svg width="{W}" height="600" viewBox="0 0 {W} 600" role="img" aria-label="Marimekko: theme width is share, height is tone split">']
     x = 0.0
-    tones = {n: (ng, nu, ps) for n, ng, nu, ps in DIV}
-    for name, share, sent, cnt, col in THEMES:
+    tones = tones_of(data)
+    for name, share, sent, cnt, col in rows(data):
         w = share / 100 * avail
         ng, nu, ps = tones[name]
         y = Hc
@@ -897,28 +863,30 @@ def f_mekko():
     return frame("Which themes sound negative or positive?", "Column width is share of answered. Column height splits into negative, neutral and positive wording.", "".join(o), 800)
 
 # ---- sankey
-def f_sankey():
+def f_sankey(data: ReportData):
     W, H = 1084, 620
-    names = [t[0] for t in THEMES]
-    tcol = [t[4] for t in THEMES]
-    tones = {n: (ng, nu, ps) for n, ng, nu, ps in DIV}
+    names = [t.name for t in data.themes]
+    tcol = [t.color for t in data.themes]
+    BYS = [(b.label, b.mix, b.sentiment, b.answers) for b in data.score.bands]
+    nb, nt = len(BYS), len(names)
+    tones = tones_of(data)
     L = []
     for lab, vals, sent, n in BYS:
         L.append([n * v / 100 for v in vals])
-    M = [sum(L[b][i] for b in range(3)) for i in range(8)]
+    M = [sum(L[b][i] for b in range(nb)) for i in range(nt)]
     tot = sum(M)
-    R_ = [[M[i] * tones[names[i]][t] / 100 for i in range(8)] for t in range(3)]
+    R_ = [[M[i] * tones[names[i]][t] / 100 for i in range(nt)] for t in range(3)]
     RT = [sum(r) for r in R_]
-    s = (560 - 7 * 12) / tot
+    s = (560 - (nt - 1) * 12) / tot
     xl, xm, xr, nw = 170, 520, 900, 14
-    y0l = (H - (tot * s + 2 * 36)) / 2
-    y0m = (H - (tot * s + 7 * 12)) / 2
+    y0l = (H - (tot * s + (nb - 1) * 36)) / 2
+    y0m = (H - (tot * s + (nt - 1) * 12)) / 2
     y0r = y0l
     ly = []; y = y0l
-    for b in range(3):
+    for b in range(nb):
         ly.append(y); y += sum(L[b]) * s + 36
     my = []; y = y0m
-    for i in range(8):
+    for i in range(nt):
         my.append(y); y += M[i] * s + 12
     ry = []; y = y0r
     for t in range(3):
@@ -927,19 +895,19 @@ def f_sankey():
         xm_ = (x0 + x1) / 2
         return (f'<path d="M{x0} {ya:.1f}C{xm_} {ya:.1f} {xm_} {yb:.1f} {x1} {yb:.1f}L{x1} {yb + h:.1f}C{xm_} {yb + h:.1f} {xm_} {ya + h:.1f} {x0} {ya + h:.1f}Z" style="fill:{fill};fill-opacity:{op}"/>')
     o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Flow from score band to theme to tone">']
-    o.append(T(xl, 8, "Likelihood to buy", 14, 500, "var(--muted)", "start"))
+    o.append(T(xl, 8, data.score.name, 14, 500, "var(--muted)", "start"))
     o.append(T(xm, 8, "Theme", 14, 500, "var(--muted)", "start"))
     o.append(T(xr, 8, "Tone", 14, 500, "var(--muted)", "start"))
-    inm = [my[i] for i in range(8)]
-    for b in range(3):
+    inm = [my[i] for i in range(nt)]
+    for b in range(nb):
         yy = ly[b]
-        for i in range(8):
+        for i in range(nt):
             h = L[b][i] * s
             o.append(link(xl + nw, yy, xm, inm[i], h, f"var(--{tcol[i]})", 0.55))
             inm[i] += h; yy += h
-    outm = [my[i] for i in range(8)]
+    outm = [my[i] for i in range(nt)]
     inr = list(ry)
-    for i in range(8):
+    for i in range(nt):
         for t, c in enumerate(("neg", "neu", "pos")):
             h = R_[t][i] * s
             o.append(link(xm + nw, outm[i], xr, inr[t], h, f"var(--{c})", 0.6))
@@ -949,7 +917,7 @@ def f_sankey():
         o.append(f'<rect x="{xl}" y="{ly[b]:.1f}" width="{nw}" height="{h:.1f}" rx="2" style="fill:var(--ink)"/>')
         o.append(T(xl - 12, ly[b] + h / 2 - 10, lab, 16, 600, anchor="end"))
         o.append(T(xl - 12, ly[b] + h / 2 + 10, f"{fmt(n)} answers", 14, 400, "var(--muted)", "end"))
-    for i in range(8):
+    for i in range(nt):
         h = M[i] * s
         o.append(f'<rect x="{xm}" y="{my[i]:.1f}" width="{nw}" height="{h:.1f}" rx="2" style="fill:var(--{tcol[i]})"/>')
         o.append(Th(xm + nw + 10, my[i] + h / 2, f"{names[i]} {fmt(round(M[i]))}", 14, 600))
@@ -962,13 +930,14 @@ def f_sankey():
     return frame("Who says what, and how do they feel?", "Answers flow from score group to theme to tone. Band height is number of answers.", "".join(o), 860)
 
 # ---- arc diagram
-PAIRS = [(0, 1, 1900), (1, 2, 1600), (0, 2, 1100), (0, 4, 800), (2, 4, 700), (0, 5, 400), (1, 5, 350), (1, 3, 300), (4, 6, 200), (3, 5, 150)]
-
-def f_arc():
+def f_arc(data: ReportData):
     W, base = 1084, 400
-    xs = [70 + i * (W - 140) / 7 for i in range(8)]
+    nt = len(data.themes)
+    idx = {t.name: i for i, t in enumerate(data.themes)}
+    PAIRS = [(min(idx[p.a], idx[p.b]), max(idx[p.a], idx[p.b]), p.count) for p in data.cooccurrence if p.a in idx and p.b in idx]
+    xs = [70 + i * (W - 140) / max(nt - 1, 1) for i in range(nt)]
     o = [f'<svg width="{W}" height="560" viewBox="0 0 {W} 560" role="img" aria-label="Arc diagram of themes that appear in the same answer">']
-    sel = 1
+    sel = idx.get(data.selected_theme, -1)
     for a, b, c in sorted(PAIRS, key=lambda p: p[2]):
         hit = sel in (a, b)
         r = (xs[b] - xs[a]) / 2
@@ -979,33 +948,34 @@ def f_arc():
         if sel in (a, b):
             r = (xs[b] - xs[a]) / 2
             o.append(Th((xs[a] + xs[b]) / 2, base - r - 14, fmt(c), 14, 600, "var(--ink)", "middle"))
-    for i, (name, share, sent, cnt, col) in enumerate(THEMES):
+    for i, (name, share, sent, cnt, col) in enumerate(rows(data)):
         r = 7 * math.sqrt(share)
-        dim = 1 if i in (1,) or any(sel in (a, b) and i in (a, b) for a, b, c in PAIRS) else 0.35
+        dim = 1 if i == sel or any(sel in (a, b) and i in (a, b) for a, b, c in PAIRS) else 0.35
         o.append(f'<circle cx="{xs[i]:.1f}" cy="{base}" r="{r:.1f}" style="fill:var(--{col});stroke:var(--bg);stroke-width:2;opacity:{dim}"/>')
         lines = (wrap(name, 128, 14) or [name]) + [f"{share}%"]
         for k, t in enumerate(lines):
             o.append(T(xs[i], base + 46 + k * 18, t, 14, 500 if k < len(lines) - 1 else 600, "var(--ink)" if dim == 1 else "var(--muted)", "middle"))
     o.append("</svg>")
-    return frame("Which themes come up together?", "Each arc joins two themes mentioned in the same answer. Arc thickness is the number of answers. Charging is selected.", "".join(o), 760)
+    return frame("Which themes come up together?", "Each arc joins two themes mentioned in the same answer. Arc thickness is the number of answers. " + data.selected_theme + " is selected.", "".join(o), 760)
 
 # ---- answer map
-def f_map():
-    rnd = random.Random(42)
+def f_map(data: ReportData):
+    rnd = random.Random(data.answer_map.seed)
+    bub = bub_of(data)
     W, Hh = 1084, 620
     px0, pw, py0, ph = 60, 960, 40, 520
     o = [f'<svg width="{W}" height="{Hh}" viewBox="0 0 {W} {Hh}" role="img" aria-label="Map of answers: each dot is about 50 answers, placed near answers with similar wording">']
-    sel = "Charging"
+    sel = data.selected_theme
     labels = ""
     tip = ""
-    for name, share, sent, cnt, col in THEMES:
+    for name, share, sent, cnt, col in rows(data):
         g = f'<g style="opacity:{1 if name == sel else DIM}">'
         n = round(share * 9.5)
-        if name == "Other":
+        if name not in bub:
             pts = [(px0 + rnd.random() * pw, py0 + rnd.random() * ph) for _ in range(n)]
             cxy = None
         else:
-            cx0, cy0 = px0 + BUB[name][0] * pw, py0 + BUB[name][1] * ph
+            cx0, cy0 = px0 + bub[name][0] * pw, py0 + bub[name][1] * ph
             sg = 24 + 5 * math.sqrt(share)
             pts = [(rnd.gauss(cx0, sg), rnd.gauss(cy0, sg * 0.85)) for _ in range(n)]
             cxy = (cx0, cy0)
@@ -1020,12 +990,12 @@ def f_map():
             if name == sel:
                 tip = (f'<circle cx="{cxy[0] + 14:.1f}" cy="{cxy[1] - 10:.1f}" r="8" style="fill:none;stroke:var(--ink);stroke-width:2"/>'
                        f'<rect x="{cxy[0] + 30:.1f}" y="{cxy[1] - 86:.1f}" width="330" height="58" rx="8" style="fill:var(--ink)"/>'
-                       + T(cxy[0] + 44, cxy[1] - 66, "No driveway so can't install a home charger", 14, 500, "var(--bg)")
-                       + T(cxy[0] + 44, cxy[1] - 44, "Charging, negative", 13, 400, "var(--bg)"))
+                       + T(cxy[0] + 44, cxy[1] - 66, data.answer_map.tip_text, 14, 500, "var(--bg)")
+                       + T(cxy[0] + 44, cxy[1] - 44, data.answer_map.tip_note, 13, 400, "var(--bg)"))
     o.append(labels)
     o.append(tip)
     o.append("</svg>")
-    return frame("What does the whole pool of answers look like?", "Each dot is about 50 answers, placed near answers with similar wording. Charging is selected.", "".join(o), 820)
+    return frame("What does the whole pool of answers look like?", "Each dot is about 50 answers, placed near answers with similar wording. " + data.selected_theme + " is selected.", "".join(o), 820)
 
 
 # ---------- registry and standalone rendering ----------
@@ -1037,8 +1007,25 @@ FRAMES = {
     "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m,
 }
 
-def render(frame_id: str) -> str:
-    body, w, h = FRAMES[frame_id]()
+# Human-readable title per frame id, for the chart list API.
+TITLES = {
+    "overview": "Overview", "sunburst": "Themes, sunburst", "treemap": "Themes, treemap", "icicle": "Themes, icicle",
+    "sentsun": "Sentiment sunburst", "rank": "Rank themes", "diverge": "Diverging sentiment", "mekko": "Sentiment marimekko",
+    "bubbles": "Theme similarity", "sankey": "Score to theme to tone", "arc": "Theme co-occurrence", "map": "Answer map",
+    "byScore": "Themes by score group", "heatmap": "Themes by segment", "trend": "Trend over time", "quality": "Answer quality",
+    "context": "Question context", "tokens": "Design tokens", "sunburst-mobile": "Themes, sunburst (mobile)",
+    "rank-mobile": "Rank themes (mobile)",
+}
+
+def render_parts(frame_id: str, data: ReportData | None = None):
+    """Return (body_html, width, height) for a frame. data defaults to the EV sample."""
+    if data is None:
+        from .fixtures.ev_sample import EV
+        data = EV
+    return FRAMES[frame_id](data)
+
+def render(frame_id: str, data: ReportData | None = None) -> str:
+    body, w, h = render_parts(frame_id, data)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
