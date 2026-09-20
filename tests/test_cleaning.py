@@ -114,7 +114,8 @@ def test_redaction_masks_and_counts():
     text = ("Mail jane.doe@example.co.uk or call +61 412 345 678, also (02) 9876 5432. See https://foo.com/x?y=1 "
             "and www.bar.org. Card 4111 1111 1111 1111, SSN 123-45-6789, passport 123456789.")
     out, c = redact_text(text)
-    assert c == {"email": 1, "phone": 2, "url": 2, "id": 3}
+    # the bare 9-digit "passport" run is a phone number in a text column (see test_cleaning_hardening.py)
+    assert c == {"email": 1, "phone": 3, "url": 2, "id": 2, "name": 0, "address": 0}
     for leak in ("jane", "412 345", "9876", "foo.com", "bar.org", "4111", "123-45", "123456789"):
         assert leak not in out
     assert "[email]" in out and "[phone]" in out and "[link]" in out and "[id]" in out

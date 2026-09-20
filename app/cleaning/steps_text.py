@@ -18,7 +18,7 @@ from rapidfuzz.distance import OSA
 
 from .common import MAX_CELL_CHARS, Ctx, Outcome, is_blank, map_uniques, safe_text
 from .models import Step
-from .redact import LABELS, redact_text, summarise
+from .redact import LABELS, NOT_NAMES, bare_digits_for_kind, redact_text, summarise
 
 _WS = re.compile(r"\s+")
 _HIDDEN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f​-‏‪-‮⁠⁦-⁩﻿]")
@@ -64,18 +64,21 @@ def run_normalise_text(ctx: Ctx, step: Step) -> Outcome:
 # ------------------------------------------------------------------ PII
 def build_mask_pii(ctx: Ctx, col: str, pov: dict) -> Step:
     return mk("mask_pii", col, f"Mask personal details in \"{col}\"",
-              "Replace emails, phone numbers, links and obvious ID numbers with [email], [phone], [link] and [id]. "
-              "Text is masked before it can be sent to any model. Names and addresses are not detected.")
+              "Replace emails, phone numbers (including digits typed without spaces), links and obvious ID numbers with "
+              "[email], [phone], [link] and [id], and, as a best effort, names after cues such as \"my name is\" or "
+              "\"Dr\" and street addresses with [name] and [address]. Text is masked before it can be sent to any "
+              "model. Name and address detection is a heuristic and will miss some; it is not a guarantee.")
 
 
 def run_mask_pii(ctx: Ctx, step: Step) -> Outcome:
     col, totals = step.column, {k: 0 for k in LABELS}
     hits: list[tuple[int, str, str]] = []
+    bare = bare_digits_for_kind(ctx.kind(col))
 
     def fn(v: Any, c: int) -> Any:
         if not isinstance(v, str):
             return v
-        masked, counts = redact_text(v)
+        masked, counts = redact_text(v, bare_digits=bare)
         for k, n in counts.items():
             totals[k] += n * c
         if masked != v:
@@ -88,11 +91,48 @@ def run_mask_pii(ctx: Ctx, step: Step) -> Outcome:
         # "before" keeps two characters of each hidden item so a reviewer can recognise it; masking happens
         # before truncation so a cut-off email can never leak.
         for c, v, masked in sorted(hits, key=lambda t: (-t[0], t[1]))[:3]:
-            out.examples.append({"before": safe_text(redact_text(v, partial=True)[0]), "after": safe_text(masked)})
+            out.examples.append({"before": safe_text(redact_text(v, partial=True, bare_digits=bare)[0]),
+                                 "after": safe_text(masked)})
     for k, n in totals.items():
         ctx.pii[k] += n
     out.details.update({"counts": totals, "summary": summarise(totals)})
+    if ctx.kind(col) == "open_text":
+        left = names_left_over(ctx.df[col])
+        out.details["possible_names_left"] = left
+        n_text = int(ctx.df[col].map(lambda v: isinstance(v, str)).sum())
+        if left >= 5 and left >= 0.05 * max(1, n_text):
+            ctx.warnings.append(
+                f"\"{safe_text(col, 80)}\" may still contain names or other personal details: {left} answers have "
+                "runs of capitalised words that are not at the start of a sentence. Masking of names is a best-effort "
+                "heuristic. Review this column before sharing the report.")
     return out
+
+
+_SENT_END = re.compile(r"[.!?:;]$")
+
+
+def names_left_over(s: pd.Series) -> int:
+    """Number of answers (distinct answers weighted by how often they occur) that contain two or more capitalised
+    words in a row somewhere other than the start of a sentence. Brand names trigger this too, so it only ever
+    produces a 'may still contain' warning."""
+    total = 0
+    for v, c in s.value_counts(dropna=True).items():
+        if not isinstance(v, str):
+            continue
+        toks = v.split()[:400]
+        run = 0
+        hit = False
+        for i, t in enumerate(toks):
+            w = t.strip("\"'()[],.;:!?")
+            start = i == 0 or bool(_SENT_END.search(toks[i - 1]))
+            cap = (len(w) > 1 and w[0].isupper() and w[1:].islower() and not start and w != "I"
+                   and w.lower() not in NOT_NAMES)
+            run = run + 1 if cap else 0
+            if run >= 2:
+                hit = True
+                break
+        total += int(c) if hit else 0
+    return total
 
 
 # ------------------------------------------------------------------ non-answers

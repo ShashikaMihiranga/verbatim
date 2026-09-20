@@ -9,7 +9,7 @@ import pandas as pd
 
 from .common import CleaningError
 from .models import CleaningPlan
-from .redact import redact_text
+from .redact import bare_digits_for_kind, redact_text
 
 
 def model_safe_samples(clean_df: pd.DataFrame, plan: CleaningPlan, column: str, limit: int = 30) -> list[str]:
@@ -22,4 +22,6 @@ def model_safe_samples(clean_df: pd.DataFrame, plan: CleaningPlan, column: str, 
         raise CleaningError("Only text columns can be sampled.")
     values = clean_df[column].dropna()
     values = values[values.map(lambda v: isinstance(v, str))]
-    return [redact_text(v)[0] for v in values.head(max(0, min(limit, 200)))]
+    # Always the full set of masks: emails, links, phones (bare digit runs too), IDs, cue-based names, addresses.
+    bare = bare_digits_for_kind(meta.get("kind", ""))
+    return [redact_text(v, bare_digits=bare)[0] for v in values.head(max(0, min(limit, 200)))]
