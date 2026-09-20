@@ -32,5 +32,5 @@ Also read: `SPEC.md` (product decisions, data flow, chart-selection rules, struc
 1. ~~Make `charts.py` take a data object instead of module-level EV sample data.~~ Done: see `app/chart_data.py`, `app/fixtures/ev_sample.py`.
 2. Auth (use a proven provider; do not hand-roll password storage) and per-user project storage.
 3. `POST /api/upload` for .xlsx/.csv and the column-profiling step ("Check columns" screen).
-4. Text pipeline: clean, embed, cluster, label with Claude, sentiment.
+4. Text pipeline: ~~clean~~ (done 2026-09-20: `app/cleaning/`, `app/api_cleaning.py`, `/cleaning` screen), then embed, cluster, label with Claude, sentiment. Send text to a model only through `app/cleaning/payload.py:model_safe_samples`.
 5. Findings engine and chart-selection rules (SPEC.md sections 4 and 9).

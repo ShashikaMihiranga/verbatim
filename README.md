@@ -30,6 +30,16 @@ Tests: `pytest`. New migration after editing `app/models.py`: `alembic revision 
 
 `POST /api/upload` (.csv, .xlsx, .xls), `GET /api/datasets/{id}/profile`, `PATCH /api/datasets/{id}/columns`. The profiler in `app/profiling/` guesses each column's kind, unit and sensitivity and reports what it cleaned; the user confirms on the Check columns screen (`/upload`, `/check-columns`). Settings (environment): `UPLOAD_DIR` (default `~/.verbatim/uploads`), `MAX_UPLOAD_MB` (default 50). Optional: set `ANTHROPIC_API_KEY` (and `pip install anthropic`) to let Claude refine the guesses from headers and about 30 samples per column; without it nothing leaves the server. Auth is a dev stub until Clerk lands.
 
+## Adaptive cleaning
+
+After Check columns the app proposes a cleaning plan that fits the data, shows what it did, and only then continues (`/cleaning`). `app/cleaning/` holds a planner (`plan_cleaning(df, profile)`) and executor (`apply_plan(df, plan)`); each step is a small function with a plain-English description, counts and before/after examples. A file with no text column gets no text steps, and thresholds (repeat limit, keyboard-mash vowel cut-off, length outliers, score scale, typo match level, tiny-group size) are worked out from the data.
+
+- API (owner only, same sign-in and ownership check as uploads): `POST /api/datasets/{id}/clean/plan` (plan plus preview report), `PATCH .../clean/plan` (toggle steps, edit merge tables, set scale, date order or tiny-group size), `POST .../clean/apply` (writes `UPLOAD_DIR/<sha256>.clean.csv` next to the untouched original), `GET .../clean/report`. The plan and report are stored in `datasets.profile["cleaning"]` (no migration).
+- Nothing is silent: removed rows are listed by number with the step and reason, and `accounted_for` is true only when rows in minus rows out equals the listed removals. Out-of-range scores and impossible dates are blanked and flagged (original kept in `_verbatim_flags`), outliers are flagged and kept, ID and junk columns are excluded from analysis but never deleted.
+- Personal details in text (emails, phone numbers, links, obvious ID numbers) are masked by `app/cleaning/redact.py`, on by default and reviewable. Send text to a model only through `app/cleaning/payload.py`. Names and addresses are not detected.
+- Sensitive columns: groups under `MIN_GROUP_SIZE` (default 30) are marked hidden with counts withheld, and no examples or raw rows of those columns appear in any report.
+- Limits (environment): `CLEAN_MAX_ROWS` (200000), `CLEAN_MAX_COLUMNS` (300), `CLEAN_TIMEOUT_SECONDS` (30), `CLEAN_CONCURRENCY` (2 jobs at once, then 429). Fuzzy matching uses `rapidfuzz` (pinned).
+
 ## Layout
 
 - `app/charts.py`: chart renderers. Each `f_*(data: ReportData)` returns HTML with inline SVG, using the CSS variables in `CSS`; `render(frame_id, data=None)` defaults to the EV sample.
