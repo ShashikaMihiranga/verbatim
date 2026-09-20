@@ -1,0 +1,53 @@
+:root { --on-accent: #ffffff; }
+
+.steps { display: flex; gap: 28px; font-size: 15px; flex-wrap: wrap; }
+.steps span { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-weight: 500; }
+.steps span.on { color: var(--ink); font-weight: 600; }
+.steps b { width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; border: 1px solid var(--line); font-weight: 500; }
+.steps .on b { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+.head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 32px; }
+.head h1 { margin: 0; font-size: 44px; line-height: 1.15; }
+
+.drop { border: 2px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); min-height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; }
+.drop.over { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.drop .big { font-size: 28px; font-weight: 300; }
+.drop .small { font-size: 14px; color: var(--muted); margin-top: 8px; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; height: 44px; padding: 0 24px; border-radius: 10px; background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
+.btn.quiet { background: var(--surface); color: var(--ink); border-color: var(--line); font-weight: 500; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:focus-visible, select:focus-visible, textarea:focus-visible, .drop:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
+
+.bar { width: min(420px, 100%); height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); transition: width 0.15s; }
+.err { color: var(--neg); font-weight: 500; margin-top: 12px; }
+
+.cols { display: flex; gap: 64px; flex-wrap: wrap; }
+.cols > .left { flex: 1.6 1 460px; min-width: 0; }
+.cols > .right { flex: 1 1 280px; min-width: 0; }
+.hint { font-size: 14px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
+.row { display: flex; align-items: center; gap: 16px; min-height: 60px; padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.row:last-of-type { border-bottom: 1px solid var(--line); }
+.row .nm { flex: 1 1 200px; font-weight: 500; overflow-wrap: anywhere; }
+.row .why { flex: 1 1 100%; color: var(--muted); font-size: 14px; }
+.chip { height: 36px; padding: 0 12px; border-radius: 8px; font: inherit; font-size: 15px; font-weight: 500; background: var(--surface); color: var(--ink); border: 1px solid var(--line); min-width: 160px; }
+.chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.row.ignored .nm { color: var(--muted); }
+.badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); margin-left: 8px; vertical-align: middle; }
+.badge.sens { border-color: var(--neg); color: var(--neg); }
+.badge.unsure { border-color: var(--neu); color: var(--muted); }
+.off { font-size: 14px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+
+.qbox { width: 100%; min-height: 72px; padding: 10px 14px; border-radius: 10px; background: var(--surface); border: 2px solid var(--accent); font: inherit; color: var(--ink); resize: vertical; }
+.qnote { font-size: 14px; color: var(--muted); margin: 6px 0 28px; }
+.ans { padding: 10px 0; border-top: 1px solid var(--line); font-size: 15px; overflow-wrap: anywhere; }
+.notes { margin: 32px 0 0; padding: 0; list-style: none; font-size: 14px; color: var(--muted); }
+.notes li { padding: 4px 0; }
+.foot { display: flex; justify-content: flex-end; align-items: center; gap: 16px; margin-top: 40px; flex-wrap: wrap; }
+.foot .btn { height: 48px; min-width: 140px; font-size: 16px; }
+
+@media (max-width: 640px) {
+  .head h1 { font-size: 32px; }
+  .cols { gap: 32px; }
+}

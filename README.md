@@ -26,6 +26,10 @@ If `frontend/dist` exists (`npm run build`), FastAPI serves it at `/` with SPA f
 
 Tests: `pytest`. New migration after editing `app/models.py`: `alembic revision --autogenerate -m "message"`.
 
+## Upload and column profiling
+
+`POST /api/upload` (.csv, .xlsx, .xls), `GET /api/datasets/{id}/profile`, `PATCH /api/datasets/{id}/columns`. The profiler in `app/profiling/` guesses each column's kind, unit and sensitivity and reports what it cleaned; the user confirms on the Check columns screen (`/upload`, `/check-columns`). Settings (environment): `UPLOAD_DIR` (default `~/.verbatim/uploads`), `MAX_UPLOAD_MB` (default 50). Optional: set `ANTHROPIC_API_KEY` (and `pip install anthropic`) to let Claude refine the guesses from headers and about 30 samples per column; without it nothing leaves the server. Auth is a dev stub until Clerk lands.
+
 ## Layout
 
 - `app/charts.py`: chart renderers. Each `f_*` function returns HTML with inline SVG, using the CSS variables in `CSS`. Data is still the EV sample at the top of the file.

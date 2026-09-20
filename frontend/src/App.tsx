@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, Route, Routes } from 'react-router-dom'
+import CheckColumns from './CheckColumns'
+import Upload from './Upload'
 
 const placeholders: [string, string][] = [
   ['/sign-in', 'Sign in'],
@@ -45,7 +47,11 @@ export default function App() {
       </nav>
       <Routes>
         <Route path="/" element={<Home />} />
-        {placeholders.map(([path, title]) => (
+        <Route path="/upload" element={<Upload />} />
+        <Route path="/check-columns" element={<CheckColumns />} />
+        {placeholders
+          .filter(([p]) => p !== '/upload' && p !== '/check-columns')
+          .map(([path, title]) => (
           <Route key={path} path={path} element={<Placeholder title={title} />} />
         ))}
         <Route path="*" element={<Placeholder title="Not found" />} />
