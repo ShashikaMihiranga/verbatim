@@ -136,42 +136,86 @@ def names_left_over(s: pd.Series) -> int:
 
 
 # ------------------------------------------------------------------ non-answers
+# Matching is on a folded key: lower case (casefold, so German ß matches ss), accents removed, apostrophes and
+# punctuation dropped. So "No sé", "não sei" and "Weiß nicht" match the entries "no se", "nao sei", "weiss nicht".
 _NA = {
+    # English
     "na", "none", "nothing", "nil", "null", "idk", "dunno", "i dont know", "i do not know", "dont know",
     "do not know", "no comment", "not applicable", "no answer", "nothing to add", "nothing else", "none at all",
     "no idea", "nothing really", "n a",
+    # Spanish
+    "no se", "ninguno", "ninguna", "nada", "nada mas", "sin comentarios", "sin comentario", "no aplica", "ni idea",
+    "no tengo comentarios", "ns nc", "no sabe",
+    # French
+    "rien", "aucun", "aucune", "je ne sais pas", "ne sais pas", "nsp", "pas de commentaire", "sans commentaire",
+    "sans objet", "sans avis", "rien a signaler", "rien a ajouter",
+    # German
+    "keine", "kein", "keine ahnung", "weiss nicht", "ich weiss nicht", "keine angabe", "keine antwort",
+    "kein kommentar", "nichts", "nicht zutreffend", "k a",
+    # Portuguese
+    "nao sei", "eu nao sei", "nenhum", "nenhuma", "sem comentarios", "sem comentario", "nao se aplica",
+    "sem resposta", "nada a acrescentar", "nada a declarar",
+    # a few others, whole-answer only
+    "нет", "не знаю", "ничего", "没有", "无", "不知道", "なし", "特になし", "わからない", "모름", "없음",
 }
+MAX_EXTRA_TERMS = 100
+MAX_TERM_CHARS = 60
 
 
 def _na_key(s: str) -> str:
-    s = s.lower().replace("'", "").replace("’", "")
+    s = unicodedata.normalize("NFKD", s.casefold())
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.replace("'", "").replace("’", "")
     s = re.sub(r"[^\w\s]", "", s)
     return _WS.sub(" ", s).strip()
 
 
-def is_non_answer(v: Any) -> bool:
+_NA = {_na_key(t) for t in _NA}  # fold the list the same way as the answers (matters for Hangul and accents)
+
+
+def clean_terms(terms: Any) -> list[str]:
+    """User-supplied terms (from the plan) as folded keys: at most 100, 60 characters each, strings only."""
+    if not isinstance(terms, (list, tuple)):
+        return []
+    out: list[str] = []
+    for t in terms[:MAX_EXTRA_TERMS]:
+        if isinstance(t, str):
+            k = _na_key(t[:MAX_TERM_CHARS])
+            if k and k not in out:
+                out.append(k)
+    return out
+
+
+def is_non_answer(v: Any, extra: frozenset[str] | set[str] | None = None) -> bool:
     if not isinstance(v, str):
         return False
     if all(unicodedata.category(ch)[0] in "PZC" for ch in v):
         return True  # only punctuation or spaces: "-", "...", "?"
     k = _na_key(v)
-    return k in _NA or (len(k) == 1 and k.isalpha())
+    # one ASCII letter is a non-answer; one CJK character ("好") is a real answer
+    return k in _NA or bool(extra and k in extra) or (len(k) == 1 and k.isascii() and k.isalpha())
 
 
 def build_blank_non_answers(ctx: Ctx, col: str, pov: dict) -> Step:
+    extra = clean_terms(pov.get("extra_terms"))
+    more = f" Your extra terms: {', '.join(extra)}." if extra else ""
     return mk("blank_non_answers", col, f"Blank non-answers in \"{col}\"",
-              "Treat answers like n/a, none, nothing, idk, - and ... as blank. The row stays (its other columns still "
-              "count); only this cell becomes blank so it is left out of the themes.")
+              "Treat answers like n/a, none, nothing, idk, - and ... as blank, plus common ones in Spanish, French, "
+              "German and Portuguese (no sé, ninguno, rien, keine, nada, não sei ...). Accents and capital letters do not "
+              "matter. You can add your own terms to this step. The row stays (its other columns still count); only this "
+              "cell becomes blank so it is left out of the themes." + more,
+              {"extra_terms": extra})
 
 
 def run_blank_non_answers(ctx: Ctx, step: Step) -> Outcome:
-    return map_uniques(ctx, step.column, lambda v, c: None if is_non_answer(v) else v)
+    extra = frozenset(clean_terms(step.params.get("extra_terms")))
+    return map_uniques(ctx, step.column, lambda v, c: None if is_non_answer(v, extra) else v)
 
 
 # ------------------------------------------------------------------ keyboard mash
 _ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")
 _RUNS = {r[i:i + 4] for row in _ROWS for r in (row, row[::-1]) for i in range(len(row) - 3)}
-_LAUGH = re.compile(r"^(?:ha|he|ho|hi|lol|lo|ah|eh)+$")
+_LAUGH = re.compile(r"^(?:(?:ha|he|ho|hi|lol|lo|ah|eh|ja|je|ji|jo|ka|ke)+|k{2,})$")  # haha, jajaja, kkkk
 _VOWELS = set("aeiouy")
 
 
@@ -179,10 +223,24 @@ def _vowel_ratio(t: str) -> float:
     return sum(ch in _VOWELS for ch in t) / len(t)
 
 
+def mash_applicable(text: str) -> bool:
+    """Keyboard-mash rules assume English/ASCII typing. They are skipped for text in a non-Latin script (a
+    repeated-character rule would blank real answers such as 哈哈哈) and for text with accented letters, where a
+    vowel share means little. Text with no letters at all ("....", "0000") is still checked."""
+    letters = [ch for ch in text[:2000] if ch.isalpha()]
+    if not letters:
+        return True
+    # Any non-ASCII letter (accented Latin, Cyrillic, CJK, ...) skips the whole answer: skipping only ever keeps
+    # a cell, so the safe direction is to skip on the first doubt.
+    return all(ch.isascii() for ch in letters)
+
+
 def vowel_floor(values: list[str]) -> float | None:
     """Data-derived: a quarter of this column's typical vowel share, kept between 0.05 and 0.12."""
     ratios = []
     for v in values:
+        if not mash_applicable(v):
+            continue
         for t in re.findall(r"[A-Za-z]{4,}", v)[:8]:
             ratios.append(_vowel_ratio(t.lower()))
         if len(ratios) > 20_000:
@@ -192,9 +250,9 @@ def vowel_floor(values: list[str]) -> float | None:
     return float(min(0.12, max(0.05, 0.25 * float(np.median(ratios)))))
 
 
-def is_mash_token(tok: str, floor: float | None) -> bool:
+def is_mash_token(tok: str, floor: float | None, safe: frozenset[str] | set[str] = frozenset()) -> bool:
     t = tok.lower()
-    if not (t.isascii() and t.isalpha()) or _LAUGH.match(t):
+    if not (t.isascii() and t.isalpha()) or _LAUGH.match(t) or t in safe:
         return False
     if len(t) >= 2 and len(set(t)) == 1:
         return True
@@ -205,30 +263,45 @@ def is_mash_token(tok: str, floor: float | None) -> bool:
     return bool(floor is not None and len(t) >= 6 and _vowel_ratio(t) < floor)
 
 
-def is_mash(text: Any, floor: float | None) -> bool:
-    if not isinstance(text, str):
+def is_mash(text: Any, floor: float | None, safe: frozenset[str] | set[str] = frozenset()) -> bool:
+    if not isinstance(text, str) or not mash_applicable(text):
         return False
     squashed = re.sub(r"\s", "", text)
-    if len(squashed) >= 2 and len(set(squashed)) == 1:
+    if len(squashed) >= 2 and len(set(squashed)) == 1 and not _LAUGH.match(squashed.lower()):
         return True  # "....", "!!!!", "xxxx", "0000"
     toks = re.findall(r"[^\W_]+", text)
-    return 0 < len(toks) <= 3 and all(is_mash_token(t, floor) for t in toks)
+    return 0 < len(toks) <= 3 and all(is_mash_token(t, floor, safe) for t in toks)
 
 
 def build_blank_keyboard_mash(ctx: Ctx, col: str, pov: dict) -> Step:
     vals = [v for v in ctx.df[col].dropna().unique()[:20_000] if isinstance(v, str)]
     floor = vowel_floor(vals)
+    safe = clean_terms(pov.get("safe_words"))
     return mk("blank_keyboard_mash", col, f"Blank keyboard mash in \"{col}\"",
               "Treat answers such as asdf, hjkl, aaaaa or xxxx (one repeated character, a run of neighbouring keys, "
-              "or a long word with almost no vowels for this column) as blank. "
+              "or a long word with almost no vowels for this column) as blank. Answers in a non-Latin script, or with "
+              "accented letters, are never checked, because these rules only work for English typing. Laughs such as "
+              "haha or jajaja are kept, and you can list words that must never be treated as mash. "
               + (f"The vowel cut-off ({floor:.2f}) comes from how vowels appear in this column's answers."
                  if floor is not None else "This column has too few words to set a vowel cut-off, so only the first two rules apply."),
-              {"vowel_floor": None if floor is None else round(floor, 3)})
+              {"vowel_floor": None if floor is None else round(floor, 3), "safe_words": safe})
 
 
 def run_blank_keyboard_mash(ctx: Ctx, step: Step) -> Outcome:
     floor = step.params.get("vowel_floor")
-    return map_uniques(ctx, step.column, lambda v, c: None if is_mash(v, floor) else v)
+    safe = frozenset(clean_terms(step.params.get("safe_words")))
+    skipped = 0
+
+    def fn(v: Any, c: int) -> Any:
+        nonlocal skipped
+        if isinstance(v, str) and not mash_applicable(v):
+            skipped += c
+            return v
+        return None if is_mash(v, floor, safe) else v
+
+    out = map_uniques(ctx, step.column, fn)
+    out.details["skipped_non_english"] = skipped
+    return out
 
 
 # ------------------------------------------------------------------ length outliers

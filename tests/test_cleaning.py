@@ -617,6 +617,12 @@ def test_api_rejects_bad_edits(env):
     assert p({"steps": [{"id": "mask_pii:" + Q, "surprise": True}]}) == 422
     assert p({"steps": [{"id": f"check_score_range:Likelihood to buy", "params": {"scale": [5, 1]}}]}) == 422
     assert p({"steps": [{"id": f"check_score_range:Likelihood to buy", "params": {"scale": [0, 10]}}]}) == 200
+    na = "blank_non_answers:" + Q
+    assert p({"steps": [{"id": na, "params": {"extra_terms": ["kein plan", "sin novedad"]}}]}) == 200
+    assert p({"steps": [{"id": na, "params": {"extra_terms": "kein plan"}}]}) == 422
+    assert p({"steps": [{"id": na, "params": {"extra_terms": [1]}}]}) == 422
+    assert p({"steps": [{"id": na, "params": {"extra_terms": ["x" * 61]}}]}) == 422
+    assert p({"steps": [{"id": na, "params": {"extra_terms": ["a"] * 101}}]}) == 422
     assert p({"steps": [{"id": "x"}] * 501}) == 422
     assert env.client.post(f"/api/datasets/{did}/clean/plan", json={"min_group_size": 1}).status_code == 422
 

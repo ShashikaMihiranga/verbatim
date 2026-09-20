@@ -51,9 +51,10 @@ CANDIDATES: dict[str, list[str]] = {
     "segment": ["standardise_labels", "merge_small_groups"],
     "yes_no": ["standardise_yes_no"],
 }
-ALWAYS = {"mask_pii", "exclude_columns", "check_score_range", "parse_dates"}  # shown even when they find nothing:
+ALWAYS = {"mask_pii", "exclude_columns", "check_score_range", "parse_dates", "blank_non_answers"}  # shown even when they find nothing:
 # the user should see the scale we detected and the date order we assumed
-EDITABLE_PARAMS = {"merge_small_groups": {"min_count"}, "check_score_range": {"scale"}, "parse_dates": {"day_first"}}
+EDITABLE_PARAMS = {"merge_small_groups": {"min_count"}, "check_score_range": {"scale"}, "parse_dates": {"day_first"},
+                   "blank_non_answers": {"extra_terms"}, "blank_keyboard_mash": {"safe_words"}}
 MAX_REMOVED_LISTED = 1000
 
 
