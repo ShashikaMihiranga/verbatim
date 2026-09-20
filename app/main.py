@@ -10,6 +10,7 @@ from .api_cleaning import router as cleaning_router
 from .api_upload import router as upload_router
 from .charts import FRAMES, render
 from .config import get_settings
+from .ratelimit import RateLimitMiddleware
 from .security import SecurityHeadersMiddleware
 
 _dev = get_settings().env == "dev"
@@ -19,6 +20,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json" if _dev else None,
 )
+app.add_middleware(RateLimitMiddleware)  # limits and size guards run before any route; 429 still gets security headers
 app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(api_router)
 app.include_router(charts_router)
