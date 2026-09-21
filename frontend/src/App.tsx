@@ -1,10 +1,10 @@
 import { useAuth, useUser } from '@clerk/clerk-react'
-import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import CheckColumns from './CheckColumns'
 import Cleaning from './Cleaning'
 import Upload from './Upload'
+import Landing from './home/Landing'
 import './auth/auth.css'
 import { clerkConfigured } from './authConfig'
 import ForgotPasswordPage from './auth/ForgotPasswordPage'
@@ -14,31 +14,11 @@ import VerifyPage from './auth/VerifyPage'
 import { ClerkBridge, NotConfigured, RequireAuth, SsoCallback } from './auth/guards'
 import { useSignOut } from './auth/useSignOut'
 
-function Home() {
-  const [status, setStatus] = useState('checking...')
-  useEffect(() => {
-    fetch('/api/health')
-      .then((r) => r.json())
-      .then((j) => setStatus(`API ${j.status}, database ${j.db ? 'connected' : 'unavailable'}`))
-      .catch(() => setStatus('API unreachable'))
-  }, [])
-  return (
-    <>
-      <h1>Verbatim</h1>
-      <p className="muted">Turn a spreadsheet into a short report.</p>
-      <p>
-        <Link to="/sign-in">Sign in</Link> or <Link to="/sign-up">create an account</Link> to start.
-      </p>
-      <p className="muted">{status}</p>
-    </>
-  )
-}
-
 // Signed-in visitors skip the landing page and go straight to Upload.
 function ClerkHome() {
   const { isLoaded, isSignedIn } = useAuth()
   if (isLoaded && isSignedIn) return <Navigate to="/upload" replace />
-  return <Home />
+  return <Landing />
 }
 
 const Placeholder = ({ title }: { title: string }) => (
@@ -106,8 +86,8 @@ export default function App() {
       {clerkConfigured && <ClerkBridge />}
       <Routes>
         {authRoutes}
+        <Route path="/" element={clerkConfigured ? <ClerkHome /> : <Landing />} />
         <Route element={<Shell />}>
-          <Route path="/" element={clerkConfigured ? <ClerkHome /> : <Home />} />
           <Route path="/projects" element={guard(<Placeholder title="Projects" />)} />
           <Route path="/upload" element={guard(<Upload />)} />
           <Route path="/check-columns" element={guard(<CheckColumns />)} />
