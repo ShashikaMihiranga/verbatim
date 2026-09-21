@@ -18,10 +18,13 @@ RUN pip install -r requirements.txt
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
+COPY entrypoint.sh ./entrypoint.sh
 COPY --from=web /web/dist ./frontend/dist
-RUN useradd --create-home --uid 10001 verbatim \
+RUN chmod +x /app/entrypoint.sh \
+    && useradd --create-home --uid 10001 verbatim \
     && mkdir -p /home/verbatim/.verbatim/uploads \
     && chown -R verbatim:verbatim /app /home/verbatim
 USER verbatim
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "$PORT"]
