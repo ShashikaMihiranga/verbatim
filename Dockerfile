@@ -15,6 +15,9 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+# Safety net: make `uvicorn ... --port $PORT` work even when Railway runs it without a shell.
+COPY docker/uvicorn-shim.sh /usr/local/bin/uvicorn
+RUN chmod +x /usr/local/bin/uvicorn
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
