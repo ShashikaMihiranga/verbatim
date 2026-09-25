@@ -48,6 +48,12 @@ After Check columns the app proposes a cleaning plan that fits the data, shows w
 
 `VOYAGE_API_KEY` is **optional but required to run** the real embedding client - never a build variable, never committed. Without it, `VoyageEmbeddingClient()` raises `EmbeddingNotConfigured` immediately, before any network call; the rest of the app (including all tests) works with no key set at all, using `FakeEmbeddingClient` instead. Optional: `VOYAGE_MODEL` overrides the embedding model (default `voyage-3.5`).
 
+### Jev sentiment trial (optional)
+
+`app/text_pipeline/jev_sentiment.py` and `sentiment.score_column_with_jev` offer a second, **opt-in only** way to score an answer's tone, using Jev, an AI model from TypeSafe AI. This is a narrow, approved trial scoped to sentiment scoring alone - nothing else in the app calls Jev, and nothing calls it automatically; a caller has to choose `score_column_with_jev` explicitly over the default `score_column`. The free lexicon scorer (`score_text`/`score_column`) remains the default, runs for every answer with zero external calls, and needs no key at all.
+
+`TYPESAFE_API_KEY` is **optional**, a runtime variable only (never a build variable, never committed). Without it, `HttpJevClient()` raises `JevNotConfigured` immediately, before any network call; tests use `FakeJevClient` instead, so the suite never touches the network. Get a key only from **console.typesafe.ai** - no other site issues valid keys for this service.
+
 ## Set up Clerk
 
 Sign-in uses Clerk with our own screens (custom flow). The backend only needs Clerk's public key list; the Clerk **secret key is not used anywhere** and must never be added to this repo, the frontend or Railway variables for this app.
