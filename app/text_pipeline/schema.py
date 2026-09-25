@@ -1,6 +1,6 @@
-"""Shapes shared by the embedding, clustering and pipeline modules, and by the two agents that build on
-top of this one (labelling with Claude, sentiment, cross-tabs). Plain dataclasses, not pydantic: nothing
-here crosses an HTTP boundary yet, so there is no schema to validate against.
+"""Shapes shared by the embedding, clustering, pipeline and labeling modules, and by the sentiment and
+cross-tabs work built on top of this one. Plain dataclasses, not pydantic: nothing here crosses an HTTP
+boundary yet, so there is no schema to validate against.
 
 A plain `list[float]` is used for a vector; a dedicated `EmbeddingVector` type would add nothing but a
 name (SPEC.md's "don't over-engineer").
@@ -30,3 +30,16 @@ class ClusterResult:
     clusters: list[Cluster]  # the confident groups, largest first
     noise: list[ClusterMember]  # answers HDBSCAN could not confidently place (label -1); becomes "Other" later, never dropped
     total_answers: int  # non-empty answers that went into clustering (== sum of cluster sizes + len(noise))
+
+
+@dataclass
+class ThemeLabel:
+    """Claude's read on one cluster (or the locally-synthesized "Other" group), plus the numbers our own
+    code computed - never the model's. See `labeling.py:label_clusters`."""
+
+    cluster_id: int  # matches Cluster.id for a real theme; -1 (labeling.OTHER_CLUSTER_ID) for "Other"
+    label: str  # a few words, e.g. "Battery life complaints"
+    description: str  # one plain-English sentence describing what the answers have in common
+    size: int  # == len(cluster.members) (or len(result.noise) for "Other"); copied by our code, never asked of Claude
+    merge_with: list[int]  # ids of other clusters Claude thinks are really the same theme as this one; [] if none
+    note: str | None  # e.g. a flag that this cluster looks like two sub-themes and could be split; None if nothing to add
