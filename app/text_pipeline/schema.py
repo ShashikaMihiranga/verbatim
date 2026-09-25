@@ -8,6 +8,7 @@ name (SPEC.md's "don't over-engineer").
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass
@@ -43,3 +44,14 @@ class ThemeLabel:
     size: int  # == len(cluster.members) (or len(result.noise) for "Other"); copied by our code, never asked of Claude
     merge_with: list[int]  # ids of other clusters Claude thinks are really the same theme as this one; [] if none
     note: str | None  # e.g. a flag that this cluster looks like two sub-themes and could be split; None if nothing to add
+
+
+@dataclass
+class AnswerScore:
+    """One answer's lexicon sentiment score (`sentiment.py`). Independent of clustering/theming above -
+    this scores individual answers, not groups - but shares the same masked-text input."""
+
+    row: int  # original row index in the cleaned dataframe (never renumbered), same convention as ClusterMember.row
+    text: str  # the masked answer text that was scored
+    polarity: float  # lexicon score in [-1, 1]; negative = negative wording, positive = positive wording
+    tone: Literal["neg", "neu", "pos"]  # bucketed from polarity by sentiment.py's thresholds
