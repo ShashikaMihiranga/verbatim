@@ -7,7 +7,9 @@ vectors with no LLM involved; `pipeline.embed_and_cluster` wires the two togethe
 `labeling.label_clusters` names the resulting groups with one batched Claude call, built on
 `ClusterResult` (`schema.py`). `sentiment.py` scores individual answers with a lexicon (no LLM) and offers
 an optional Claude spot-check for scorer agreement; it runs independently of clustering but shares the
-same masked-text input. Cross-tabs and the findings engine are the next stream's job.
+same masked-text input. `jev_sentiment.py` adds a second, OPT-IN way to score sentiment - Jev, a model
+from TypeSafe AI - reached only via `sentiment.score_column_with_jev`; nothing else in the app calls it.
+Cross-tabs and the findings engine are the next stream's job.
 
 Known duplication (built by two agents in parallel, merged 2026-09-25): `labeling.py` and `sentiment.py`
 each define their own `ClaudeNotConfigured` exception and `FakeClaudeClient` test double, both mirroring
@@ -33,12 +35,20 @@ from .sentiment import (
     SpotCheckParseError,
     SpotCheckReport,
     score_column,
+    score_column_with_jev,
     score_text,
     spot_check,
     tone_split,
 )
 from .sentiment import ClaudeNotConfigured as SentimentClaudeNotConfigured
 from .sentiment import FakeClaudeClient as FakeSentimentClaudeClient
+from .jev_sentiment import (
+    FakeJevClient,
+    HttpJevClient,
+    JevClient,
+    JevError,
+    JevNotConfigured,
+)
 
 __all__ = [
     "AnswerScore", "Cluster", "ClusterMember", "ClusterResult", "ThemeLabel",
@@ -49,4 +59,5 @@ __all__ = [
     "LabelingClaudeNotConfigured", "FakeLabelingClaudeClient",
     "SpotCheckParseError", "SpotCheckReport", "score_column", "score_text", "spot_check", "tone_split",
     "SentimentClaudeNotConfigured", "FakeSentimentClaudeClient",
+    "score_column_with_jev", "FakeJevClient", "HttpJevClient", "JevClient", "JevError", "JevNotConfigured",
 ]

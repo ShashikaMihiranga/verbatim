@@ -5,12 +5,15 @@ This runs independently of theme clustering (`clustering.py`, `pipeline.py`) - i
 its own, not a group of answers - though it shares the same masked-text input, via
 `app.cleaning.payload.model_safe_column` (the only door text leaves through).
 
-Two halves:
+Three parts:
   - `score_text` / `score_column` / `tone_split`: pure code, no network, no model calls, ever. This is
     what runs for every answer in production.
   - `spot_check`: an OPTIONAL Claude call that judges a representative sample and reports how often it
     agrees with the lexicon, for a quality report. Never required for scoring to work; lazy-imports
     `anthropic` and needs `ANTHROPIC_API_KEY`, following the same pattern as `app/profiling/claude_hook.py`.
+  - `score_column_with_jev`: an OPTIONAL, separate scoring path using Jev (TypeSafe AI) instead of the
+    lexicon, for a per-row tone judgement from a model rather than a word list. Opt-in only - nothing
+    above calls it, and it never replaces `score_column`. See `jev_sentiment.py` and docs/DECISIONS.md.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ import pandas as pd
 from ..cleaning.models import CleaningPlan
 from ..cleaning.payload import model_safe_column
 from ..chart_data import ToneSplit
+from .jev_sentiment import JevClient
 from .schema import AnswerScore
 
 DEFAULT_MODEL = "claude-haiku-4-5"
@@ -205,6 +209,77 @@ def score_column(clean_df: pd.DataFrame, plan: CleaningPlan, column: str) -> lis
         polarity, tone = score_text(text)
         out.append(AnswerScore(row=int(row_index), text=text, polarity=polarity, tone=tone))
     return out
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Optional Jev (TypeSafe AI) tone classifier - a separate, opt-in alternative to `score_column`'s free
+# lexicon above. Nothing above this section, and nothing else in the app, calls Jev; a caller must choose
+# `score_column_with_jev` explicitly and pass a configured `JevClient`. See `jev_sentiment.py`.
+# ---------------------------------------------------------------------------------------------------------
+
+def score_column_with_jev(
+    clean_df: pd.DataFrame,
+    plan: CleaningPlan,
+    column: str,
+    client: JevClient,
+    max_answers: int | None = None,
+) -> list[AnswerScore | None]:
+    """Score every row of `column` using Jev's tone classifier instead of the free lexicon. This is a
+    separate, OPT-IN function: `score_column` (lexicon, free, zero external calls) is completely
+    unaffected and remains what runs by default.
+
+    Same masking/row-alignment contract as `score_column`: reads through `model_safe_column` (the only
+    door text leaves through), so the output is the same length and row order as `clean_df`, and a row
+    with no answer (missing/NaN, or masked down to an empty/whitespace-only string) comes back as `None` -
+    a score is never invented for it.
+
+    Polarity mapping (a judgement call, not something the Jev API hands us directly - it returns a
+    (tone, confidence) pair, not a signed number): to keep `AnswerScore.polarity` meaningful and in the
+    same [-1, 1] shape the lexicon produces (so `tone_split`/`chart_data.ToneSplit` and anything else that
+    reads `polarity` keeps working unchanged), each row's confidence is turned into a signed polarity by
+    its tone:
+        tone == "pos" -> polarity = +confidence
+        tone == "neg" -> polarity = -confidence
+        tone == "neu" -> polarity = 0.0   (neutral has no direction to scale by confidence)
+    `AnswerScore.tone` itself is exactly what Jev returned, mapped through the same "neg"/"neu"/"pos"
+    vocabulary the lexicon uses (`jev_sentiment._JEV_CHOICE_TO_TONE`).
+
+    `max_answers` is a cost control: Jev is a paid, networked call per answer, unlike the free lexicon. If
+    `max_answers` is set and the column has more than that many non-empty rows, only the first
+    `max_answers` non-empty rows (in row order) are sent to Jev; every remaining non-empty row is scored
+    instead by the free lexicon (`score_text`) as a documented fallback - so every non-empty row still
+    gets a score, just possibly from a different method once the cap is hit. This function deliberately
+    does NOT add a per-row "source"/"method" field to `AnswerScore`: that dataclass is shared by
+    `score_column`, `tone_split` and other code this change did not need to touch, so the safer choice was
+    to leave its shape untouched (see docs/DECISIONS.md) and document the cap/fallback behaviour here
+    instead. A caller that must know which method scored which row should pass `max_answers=None` (no cap,
+    every non-empty row goes to Jev) or track the cap itself against row order.
+    """
+    masked = model_safe_column(clean_df, plan, column)
+    out: list[AnswerScore | None] = []
+    non_empty_seen = 0
+    for row_index, text in zip(clean_df.index, masked):
+        if not text or not text.strip():  # None, "", or whitespace-only - all "no answer" for scoring
+            out.append(None)
+            continue
+        non_empty_seen += 1
+        if max_answers is None or non_empty_seen <= max_answers:
+            tone, confidence = client.classify_tone(text)
+            polarity = _polarity_from_jev(tone, confidence)
+        else:
+            # Past the cap: documented free-lexicon fallback, never a silently dropped row.
+            polarity, tone = score_text(text)
+        out.append(AnswerScore(row=int(row_index), text=text, polarity=polarity, tone=tone))
+    return out
+
+
+def _polarity_from_jev(tone: Literal["neg", "neu", "pos"], confidence: float) -> float:
+    """See `score_column_with_jev`'s docstring for the reasoning behind this mapping."""
+    if tone == "pos":
+        return confidence
+    if tone == "neg":
+        return -confidence
+    return 0.0
 
 
 def _round_percentages_to_100(counts: dict[str, int], total: int) -> dict[str, float]:
