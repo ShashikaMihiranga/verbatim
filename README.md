@@ -54,6 +54,14 @@ After Check columns the app proposes a cleaning plan that fits the data, shows w
 
 `TYPESAFE_API_KEY` is **optional**, a runtime variable only (never a build variable, never committed). Without it, `HttpJevClient()` raises `JevNotConfigured` immediately, before any network call; tests use `FakeJevClient` instead, so the suite never touches the network. Get a key only from **console.typesafe.ai** - no other site issues valid keys for this service.
 
+## Build themes
+
+`app/api_themes.py` wires the text pipeline above to storage and an owner-only API, and `/report` (after `/cleaning`) is the screen: pick the confirmed open-text column, "Build themes", then theme cards (label, one-line description, share of answers, a tone bar) each with "See answers" for the real verbatim text behind that theme.
+
+- API: `POST /api/datasets/{id}/themes/build` (`{"column": str, "use_jev_sentiment": bool = false}`) embeds, clusters, labels and scores the column, replacing any themes already stored for that dataset + column; `GET /api/datasets/{id}/themes?column=...` lists them; `GET /api/datasets/{id}/themes/{tid}/answers?limit=&offset=` returns paginated, **real, unmasked** cleaned text for the rows behind one theme (the dataset owner viewing their own answers, not a boundary to a model - `model_safe_column` is not used there).
+- Needs both `VOYAGE_API_KEY` and `ANTHROPIC_API_KEY` set; either missing gives a clear `503`, before any network call, never a generic error. `use_jev_sentiment: true` additionally needs `TYPESAFE_API_KEY` (same clear `503` if missing) and replaces the free lexicon with Jev's per-row tone classifier for that build.
+- This can be slow: a real build does an embedding call plus one batched Claude call over the whole column, so `THEMES_CONCURRENCY` (default 1) caps concurrent jobs and `THEMES_DEADLINE_SECONDS` (default 300) is a soft per-request deadline - see `docs/DECISIONS.md` (2026-09-25) for why it is soft, not a hard kill. The `/report` screen says up front that this can take a minute or two.
+
 ## Set up Clerk
 
 Sign-in uses Clerk with our own screens (custom flow). The backend only needs Clerk's public key list; the Clerk **secret key is not used anywhere** and must never be added to this repo, the frontend or Railway variables for this app.
