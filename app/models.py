@@ -54,9 +54,19 @@ class Theme(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
     column_id: Mapped[int | None] = mapped_column(ForeignKey("columns.id", ondelete="SET NULL"))
+    # the open-text column name this theme was built from. Kept as a plain string (not just `column_id`)
+    # so themes can be listed/filtered/replaced without depending on a matching `columns` row existing -
+    # see app/api_themes.py and docs/DECISIONS.md (2026-09-25 entry).
+    column_name: Mapped[str | None] = mapped_column(String(255), index=True)
     label: Mapped[str] = mapped_column(String(255))
+    # one plain sentence describing what the answers in this theme have in common (Claude's read, or the
+    # locally-synthesized "Other" description - see app/text_pipeline/labeling.py:ThemeLabel.description)
+    description: Mapped[str | None] = mapped_column(Text)
     size: Mapped[int] = mapped_column(Integer, default=0)
-    sentiment: Mapped[float | None] = mapped_column()
+    sentiment: Mapped[float | None] = mapped_column()  # aggregate polarity, mean of this theme's AnswerScores
+    # neg/neu/pos percentage split for this theme's answers (app.chart_data.ToneSplit shape), stored as
+    # {"neg": float, "neu": float, "pos": float}; see app/api_themes.py and docs/DECISIONS.md.
+    tone: Mapped[dict | None] = mapped_column(JSON)
     # row indexes of real answers behind this theme
     answer_refs: Mapped[list | None] = mapped_column(JSON)
 
