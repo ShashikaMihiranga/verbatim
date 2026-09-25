@@ -7,16 +7,8 @@ import pytest
 
 from app.cleaning import plan_cleaning
 from app.chart_data import ToneSplit
-from app.text_pipeline import (
-    AnswerScore,
-    ClaudeNotConfigured,
-    FakeClaudeClient,
-    SpotCheckParseError,
-    score_column,
-    score_text,
-    spot_check,
-    tone_split,
-)
+from app.text_pipeline import AnswerScore, SpotCheckParseError, score_column, score_text, spot_check, tone_split
+from app.text_pipeline.sentiment import ClaudeNotConfigured, FakeClaudeClient
 
 
 def profile_for(df, kinds, sensitive=()):

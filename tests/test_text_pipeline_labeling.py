@@ -3,13 +3,14 @@ import json
 
 import pytest
 
-from app.text_pipeline import (
+from app.text_pipeline import LabelingError, label_clusters
+from app.text_pipeline.labeling import (
+    AnthropicClaudeClient,
     ClaudeNotConfigured,
     FakeClaudeClient,
-    LabelingError,
-    label_clusters,
+    OTHER_CLUSTER_ID,
+    OTHER_LABEL,
 )
-from app.text_pipeline.labeling import AnthropicClaudeClient, OTHER_CLUSTER_ID, OTHER_LABEL
 from app.text_pipeline.schema import Cluster, ClusterMember, ClusterResult
 
 QUESTION = "What could we do better?"
