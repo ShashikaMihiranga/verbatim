@@ -42,6 +42,12 @@ After Check columns the app proposes a cleaning plan that fits the data, shows w
 - Sensitive columns: groups under `MIN_GROUP_SIZE` (default 30) are marked hidden with counts withheld, and no examples or raw rows of those columns appear in any report.
 - Limits (environment): `CLEAN_MAX_ROWS` (200000), `CLEAN_MAX_COLUMNS` (300), `CLEAN_TIMEOUT_SECONDS` (30), `CLEAN_CONCURRENCY` (2 jobs at once, then 429). Fuzzy matching uses `rapidfuzz` (pinned).
 
+## Text pipeline: embeddings and clustering
+
+`app/text_pipeline/` turns a cleaned open-ended column into themes: `embed_and_cluster(clean_df, plan, column, client)` (`pipeline.py`) reads every answer through `app.cleaning.payload.model_safe_column` (the masked, full-column sibling of `model_safe_samples`, which only returns a capped sample), embeds the non-empty ones, and clusters the vectors with scikit-learn's `HDBSCAN` (`clustering.py`) - no LLM involved in clustering itself. `embeddings.py` defines the `EmbeddingClient` interface: `VoyageEmbeddingClient` is the real, network-backed implementation (Voyage AI), and `FakeEmbeddingClient` is a deterministic, hash-based stand-in used everywhere in tests so the suite never touches the network. `min_cluster_size` is picked adaptively from the answer count (roughly one theme per 50 answers, clamped to 5-50) unless a caller overrides it. Answers HDBSCAN cannot confidently place become `ClusterResult.noise`, never silently dropped; labelling clusters with Claude, sentiment and verbatim drill-down are the next streams, built on `ClusterResult` (`schema.py`).
+
+`VOYAGE_API_KEY` is **optional but required to run** the real embedding client - never a build variable, never committed. Without it, `VoyageEmbeddingClient()` raises `EmbeddingNotConfigured` immediately, before any network call; the rest of the app (including all tests) works with no key set at all, using `FakeEmbeddingClient` instead. Optional: `VOYAGE_MODEL` overrides the embedding model (default `voyage-3.5`).
+
 ## Set up Clerk
 
 Sign-in uses Clerk with our own screens (custom flow). The backend only needs Clerk's public key list; the Clerk **secret key is not used anywhere** and must never be added to this repo, the frontend or Railway variables for this app.
