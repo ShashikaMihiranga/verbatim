@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Link, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import CheckColumns from './CheckColumns'
 import Cleaning from './Cleaning'
+import Themes from './Themes'
 import Upload from './Upload'
 import Landing from './home/Landing'
 import './auth/auth.css'
@@ -92,7 +93,7 @@ export default function App() {
           <Route path="/upload" element={guard(<Upload />)} />
           <Route path="/check-columns" element={guard(<CheckColumns />)} />
           <Route path="/cleaning" element={guard(<Cleaning />)} />
-          <Route path="/report" element={guard(<Placeholder title="Report" />)} />
+          <Route path="/report" element={guard(<Themes />)} />
           <Route path="*" element={<Placeholder title="Not found" />} />
         </Route>
       </Routes>
