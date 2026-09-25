@@ -8,6 +8,7 @@ name (SPEC.md's "don't over-engineer").
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass
@@ -30,3 +31,14 @@ class ClusterResult:
     clusters: list[Cluster]  # the confident groups, largest first
     noise: list[ClusterMember]  # answers HDBSCAN could not confidently place (label -1); becomes "Other" later, never dropped
     total_answers: int  # non-empty answers that went into clustering (== sum of cluster sizes + len(noise))
+
+
+@dataclass
+class AnswerScore:
+    """One answer's lexicon sentiment score (`sentiment.py`). Independent of clustering/theming above -
+    this scores individual answers, not groups - but shares the same masked-text input."""
+
+    row: int  # original row index in the cleaned dataframe (never renumbered), same convention as ClusterMember.row
+    text: str  # the masked answer text that was scored
+    polarity: float  # lexicon score in [-1, 1]; negative = negative wording, positive = positive wording
+    tone: Literal["neg", "neu", "pos"]  # bucketed from polarity by sentiment.py's thresholds
