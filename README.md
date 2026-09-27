@@ -70,6 +70,12 @@ After Check columns the app proposes a cleaning plan that fits the data, shows w
 - Needs `ANTHROPIC_API_KEY` (one batched Claude call for headline sentences only, numbers in, plain English out - never raw answers); missing key gives a clear `503`, same style as themes. No themes built yet for that column gives a `422` telling you to build themes first.
 - `REPORT_CONCURRENCY` (default 2) caps concurrent build jobs, then `429`. Lighter than `THEMES_CONCURRENCY`'s default of 1 - report building's only network cost is one small batched call, not a whole embed-and-cluster pipeline - but not left uncapped either, matching `CLEAN_CONCURRENCY`'s convention for "real but modest" load. See `docs/DECISIONS.md`.
 
+## Projects
+
+The `/projects` screen lists a signed-in user's own uploaded files so they can reopen one without knowing its dataset id: the question (or filename, if no question is confirmed yet), a plain-English status ("Uploaded" through "Report ready"), a rounded upload size, and when it was uploaded - each row links to wherever that dataset's work continues (Check columns, Cleaning review, or the Report screen).
+
+- API (owner only): `GET /api/projects` returns `[{id, filename, question, row_count, created_at, status}, ...]`, newest first. `status` is computed, not stored, by checking what already exists for each dataset (confirmed columns, an applied cleaning report, any theme, any report) - see `app/api_projects.py` and `docs/DECISIONS.md`. `DELETE /api/datasets/{id}` (owner only) removes a dataset and its Column/Theme/Finding/Report rows; the uploaded/cleaned file on disk is left in place (content-addressed by hash and possibly shared - see `docs/DECISIONS.md`).
+
 ## Set up Clerk
 
 Sign-in uses Clerk with our own screens (custom flow). The backend only needs Clerk's public key list; the Clerk **secret key is not used anywhere** and must never be added to this repo, the frontend or Railway variables for this app.
