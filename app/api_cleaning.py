@@ -2,13 +2,15 @@
 
 POST  /api/datasets/{id}/clean/plan    build the plan for this dataset and return it with a preview report
 PATCH /api/datasets/{id}/clean/plan    toggle steps, edit merge tables, change a few thresholds; returns new preview
-POST  /api/datasets/{id}/clean/apply   run the plan, store the cleaned copy next to the original, store the report
+POST  /api/datasets/{id}/clean/apply   run the plan, store the cleaned copy, store the report
 GET   /api/datasets/{id}/clean/report  the stored plan and report
 
-Everything is owner-only (same `current_user` and `_own_dataset` as the upload API). The original file is never
-changed; the cleaned copy is UPLOAD_DIR/<sha256 of its bytes>.clean.csv. The plan and report live in
-datasets.profile["cleaning"], so no schema change is needed. Only one or two cleaning jobs run at once
-(CLEAN_CONCURRENCY) so a public deployment cannot be tied up by a burst of requests.
+Everything is owner-only (same `current_user` and `_own_dataset` as the upload API). The original file is
+never changed; the cleaned copy is stored in Postgres (`app.models.CleanedFile`, keyed by the sha256 of its
+bytes) - see app/api_upload.py's module docstring and docs/DECISIONS.md for why this moved off disk. The
+plan and report live in datasets.profile["cleaning"], so no schema change was needed for those. Only one or
+two cleaning jobs run at once (CLEAN_CONCURRENCY) so a public deployment cannot be tied up by a burst of
+requests.
 """
 from __future__ import annotations
 
@@ -16,19 +18,19 @@ import hashlib
 import os
 import re
 import threading
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .api_upload import ALLOWED_EXT, _own_dataset, current_user, upload_dir
+from .api_upload import ALLOWED_EXT, _own_dataset, current_user, scratch_file
 from .cleaning import EDITABLE_PARAMS, CleaningError, CleaningPlan, apply_plan, plan_with_preview
 from .cleaning.common import safe_text
 from .db import get_db
-from .models import Dataset, User
+from .models import CleanedFile, Dataset, UploadedFile, User
 from .profiling import LoadError, load_table
 
 router = APIRouter(prefix="/api")
@@ -47,16 +49,18 @@ class _Slot:
         _SLOTS.release()
 
 
-def _load_df(ds: Dataset):
+def _load_df(db: Session, ds: Dataset):
     profile = ds.profile or {}
     ext = profile.get("stored_ext")
     if not _HEX64.fullmatch(ds.file_hash or "") or ext not in ALLOWED_EXT:
         raise HTTPException(404, "The original file for this dataset is not available.")
-    path = upload_dir() / f"{ds.file_hash}{ext}"  # name built from the hash only: no path traversal
-    if not path.is_file():
+    row = db.get(UploadedFile, ds.file_hash)
+    if row is None:
+        # Now only happens if data is genuinely corrupted/missing, not from a redeploy (see docs/DECISIONS.md).
         raise HTTPException(404, "The original file for this dataset is not available.")
     try:
-        return load_table(path).df
+        with scratch_file(row.content, ext) as path:
+            return load_table(path).df
     except LoadError as e:
         raise HTTPException(400, str(e)) from e
 
@@ -140,7 +144,7 @@ def _clean_params(key: str, params: dict[str, Any]) -> dict[str, Any]:
 def build_plan(dataset_id: int, body: PlanRequest | None = None, db: Session = Depends(get_db),
                user: User = Depends(current_user)):
     ds = _own_dataset(db, user, dataset_id)
-    df = _load_df(ds)
+    df = _load_df(db, ds)
     settings = {"min_group_size": body.min_group_size} if body and body.min_group_size else None
     with _Slot():
         plan, preview = _run(lambda: plan_with_preview(df, ds.profile, None, settings))
@@ -181,7 +185,7 @@ def edit_plan(dataset_id: int, body: PlanPatch, db: Session = Depends(get_db), u
                 if m.enabled is not None:
                     one["enabled"] = m.enabled
                 table[m.from_] = {**table.get(m.from_, {}), **one}
-    df = _load_df(ds)
+    df = _load_df(db, ds)
     with _Slot():
         new_plan, preview = _run(lambda: plan_with_preview(df, ds.profile, overrides, plan.settings))
     _save(db, ds, {"plan": new_plan.to_dict(), "created_at": stored.get("created_at")})  # edits invalidate an old apply
@@ -192,7 +196,7 @@ def edit_plan(dataset_id: int, body: PlanPatch, db: Session = Depends(get_db), u
 def apply_cleaning(dataset_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     ds = _own_dataset(db, user, dataset_id)
     stored = _stored(ds)
-    df = _load_df(ds)
+    df = _load_df(db, ds)
     with _Slot():
         if "plan" in stored:
             plan = CleaningPlan.from_dict(stored["plan"])
@@ -201,14 +205,12 @@ def apply_cleaning(dataset_id: int, db: Session = Depends(get_db), user: User = 
         clean, report = _run(lambda: apply_plan(df, plan))
     data = clean.to_csv(index=False).encode("utf-8")
     digest = hashlib.sha256(data).hexdigest()
-    dest_dir = upload_dir()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    tmp = dest_dir / f".tmp-{uuid.uuid4().hex}"  # server-generated name
-    try:
-        tmp.write_bytes(data)
-        os.replace(tmp, dest_dir / f"{digest}.clean.csv")
-    finally:
-        tmp.unlink(missing_ok=True)
+    if db.get(CleanedFile, digest) is None:  # insert-or-reuse: dedup by hash, same as the raw-bytes store
+        db.add(CleanedFile(clean_hash=digest, content=data))
+        try:
+            db.commit()
+        except IntegrityError:  # another request stored the same bytes first; they are identical either way
+            db.rollback()
     _save(db, ds, {
         "plan": plan.to_dict(), "report": report.to_dict(), "clean_hash": digest,
         "applied_at": datetime.now(timezone.utc).isoformat(), "created_at": stored.get("created_at"),
