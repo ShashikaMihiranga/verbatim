@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
+from threading import Event
 from types import SimpleNamespace
 
 import pandas as pd
@@ -19,8 +21,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
 
+import app.db as db_module
 from app.api_report import _SLOTS
 from app.api_themes import get_claude_client
 from app.api_upload import current_user
@@ -28,6 +31,7 @@ from app.db import Base, get_db
 from app.main import app
 from app.models import Finding, Report, Theme
 from app.text_pipeline.labeling import FakeClaudeClient
+from tests.job_test_support import BlockingClient, wait_for_job
 
 Q = "What could we do better?"
 
@@ -80,7 +84,12 @@ def install_fake_claude():
 def env(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    # A real file-backed SQLite database, not `sqlite://` (in-memory) with a single shared `StaticPool`
+    # connection - see tests/test_api_themes.py's own `env` fixture for why: async build jobs now run real
+    # pipeline work on a background thread while the main test thread keeps polling, and a shared in-memory
+    # connection object serialises that badly (observed directly as sporadic corruption under the full
+    # suite). `NullPool` gives every session its own real connection to the same file.
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", poolclass=NullPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -89,6 +98,10 @@ def env(tmp_path, monkeypatch):
             yield s
 
     app.dependency_overrides[get_db] = override
+    # The background job thread `POST .../report/build` now starts does not go through FastAPI's DI (it is
+    # not a request) - it opens its own session via `app.db.SessionLocal()` at call time (see app/jobs.py).
+    # Point that same module attribute at this test's own engine.
+    monkeypatch.setattr(db_module, "SessionLocal", Session)
     yield SimpleNamespace(client=TestClient(app), Session=Session)
     app.dependency_overrides.clear()
 
@@ -131,6 +144,23 @@ def seed_themes(env, did, specs: list[dict]):
         s.commit()
 
 
+def start_report_job(env, did, column=Q) -> int:
+    """Starts a report build and returns its job id WITHOUT waiting - for tests that need to observe an
+    intermediate state before the (fake) pipeline is allowed to finish."""
+    r = env.client.post(f"/api/datasets/{did}/report/build", json={"column": column})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["status"] == "running" and body["job_id"]
+    return body["job_id"]
+
+
+def build_report_job(env, did, column=Q, timeout=5.0) -> dict:
+    """Starts a report build through the real async route and waits for it to finish, returning the final
+    job body - the report-side equivalent of tests/test_api_themes.py's `build_themes_job`."""
+    job_id = start_report_job(env, did, column)
+    return wait_for_job(env.client, did, job_id, timeout=timeout)
+
+
 # Two themes that clear both `candidate_findings`' size floor (min_group_size, default 30) and their
 # kind-specific effect-size gates: Reliability (60 answers, share 75%, clear #1 -> dominant_theme;
 # sentiment -0.30) and Support (20 answers, sentiment +0.30). Weighted overall sentiment is -0.15, so both
@@ -170,7 +200,11 @@ def test_build_then_get_round_trip_renders_real_chart_html_with_real_theme_names
     assert applied["report"]["rows_out"] == 80  # no rows silently dropped - answer_refs below assume this
     seed_themes(env, did, notable_theme_specs())
 
-    built = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
+    job = build_report_job(env, did)
+    assert job["status"] == "done", job
+    assert job["error"] is None
+
+    built = env.client.get(f"/api/datasets/{did}/report", params={"column": Q})
     assert built.status_code == 200, built.text
     body = built.json()
 
@@ -223,7 +257,9 @@ def test_nothing_notable_writes_overview_and_quality_only(env):
     clean_and_apply(env, did)
     seed_themes(env, did, nothing_notable_theme_specs())
 
-    built = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
+    job = build_report_job(env, did)
+    assert job["status"] == "done", job
+    built = env.client.get(f"/api/datasets/{did}/report", params={"column": Q})
     assert built.status_code == 200, built.text
     body = built.json()
     assert body["also_checked_nothing_notable"] is True
@@ -243,10 +279,11 @@ def test_rebuild_replaces_prior_report_not_duplicates(env):
     clean_and_apply(env, did)
     seed_themes(env, did, notable_theme_specs())
 
-    first = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
-    assert first.status_code == 200, first.text
-    second = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
-    assert second.status_code == 200, second.text
+    first = build_report_job(env, did)
+    assert first["status"] == "done", first
+    second = build_report_job(env, did)
+    assert second["status"] == "done", second
+    assert second["id"] != first["id"]  # a fresh build replaces the prior Job row too, not just Report/Finding rows
 
     with env.Session() as s:
         reports = s.scalars(select(Report).where(Report.dataset_id == did)).all()
@@ -258,14 +295,17 @@ def test_rebuild_replaces_prior_report_not_duplicates(env):
 
 # ---------------------------------------------------------------- errors
 
-def test_no_themes_yet_returns_422(env):
+def test_no_themes_yet_surfaces_as_job_error_not_a_synchronous_422(env):
+    """`NoThemesForColumn` can only be known once `build_findings` actually runs (it queries stored `Theme`
+    rows), so - like `TooFewAnswers` on the themes side - it now surfaces as `job.error`, not a synchronous
+    422; the build route still accepts the request (202) and starts a job."""
     install_fake_claude()
     did = upload_csv(env, survey_df())
     clean_and_apply(env, did)
 
-    r = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
-    assert r.status_code == 422, r.text
-    assert "themes" in r.json()["detail"].lower()
+    job = build_report_job(env, did)
+    assert job["status"] == "failed", job
+    assert "themes" in job["error"].lower()
 
 
 def test_missing_claude_key_returns_503(env):
@@ -324,12 +364,14 @@ def test_ownership_isolation(env):
     did = upload_csv(env, survey_df())
     clean_and_apply(env, did)
     seed_themes(env, did, notable_theme_specs())
-    built = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
-    assert built.status_code == 200, built.text
+    job = build_report_job(env, did)
+    assert job["status"] == "done", job
 
     as_user(uid2)
     assert env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q}).status_code == 404
     assert env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).status_code == 404
+    assert env.client.get(f"/api/datasets/{did}/jobs/{job['id']}").status_code == 404
+    assert env.client.get(f"/api/datasets/{did}/jobs/latest", params={"column": Q, "kind": "report"}).status_code == 404
 
 
 # ---------------------------------------------------------------- no real network
@@ -362,7 +404,134 @@ def test_zero_network_is_ever_attempted(env):
     seed_themes(env, did, notable_theme_specs())
 
     with _NoSockets():
-        r = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
-        assert r.status_code == 200, r.text
+        # The guard stays active for the whole build-then-poll-then-get sequence, not just the POST: the
+        # real pipeline work now runs on a background thread that keeps going after the request returns,
+        # and `socket.socket` is patched process-wide (not per-thread), so a socket opened from that thread
+        # while this `with` block is still open would still be caught.
+        job = build_report_job(env, did)
+        assert job["status"] == "done", job
         g = env.client.get(f"/api/datasets/{did}/report", params={"column": Q})
         assert g.status_code == 200, g.text
+
+
+# ---------------------------------------------------------------- async job behaviour (this stream)
+
+def test_job_step_changes_while_running_then_reaches_done(env):
+    """The core ask of this stream: a poller sees a real intermediate `job.step` before the job reaches
+    "done" - `BlockingClient` pauses the fake Claude client's `complete` method (the one real network-
+    shaped call `build_findings` makes, for `write_headline`) on a `threading.Event` this test controls."""
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+
+    blocking = BlockingClient(FakeClaudeClient(_fake_claude_reply), "complete")
+    app.dependency_overrides[get_claude_client] = lambda: blocking
+
+    job_id = start_report_job(env, did)
+
+    assert blocking.reached.wait(timeout=5), "the pipeline never reached the headline-writing call"
+    mid = env.client.get(f"/api/datasets/{did}/jobs/{job_id}")
+    assert mid.status_code == 200, mid.text
+    mid_body = mid.json()
+    assert mid_body["status"] == "running"
+    assert mid_body["step"] == "Deciding what's worth telling"
+    assert mid_body["error"] is None
+
+    blocking.released.set()
+    final = wait_for_job(env.client, did, job_id, timeout=5)
+    assert final["status"] == "done", final
+    assert final["step"] == "Done"
+
+
+def test_latest_job_lookup_lets_a_reloaded_page_resume_watching(env):
+    """`GET .../jobs/latest` is what a reloaded page uses to find a build it did not itself start - see
+    tests/test_api_themes.py's identical test for the fuller rationale; this is the report-side version,
+    checked mid-run (not just after the fact) using the same blocking-Claude-client trick."""
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+
+    nothing_yet = env.client.get(f"/api/datasets/{did}/jobs/latest", params={"column": Q, "kind": "report"})
+    assert nothing_yet.status_code == 404
+
+    blocking = BlockingClient(FakeClaudeClient(_fake_claude_reply), "complete")
+    app.dependency_overrides[get_claude_client] = lambda: blocking
+    job_id = start_report_job(env, did)
+    assert blocking.reached.wait(timeout=5)
+
+    latest = env.client.get(f"/api/datasets/{did}/jobs/latest", params={"column": Q, "kind": "report"})
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["id"] == job_id
+    assert latest.json()["status"] == "running"
+    # a different kind for the same dataset+column must not match
+    assert env.client.get(
+        f"/api/datasets/{did}/jobs/latest", params={"column": Q, "kind": "themes"}
+    ).status_code == 404
+
+    blocking.released.set()
+    final = wait_for_job(env.client, did, job_id, timeout=5)
+    assert final["status"] == "done", final
+    latest_done = env.client.get(f"/api/datasets/{did}/jobs/latest", params={"column": Q, "kind": "report"})
+    assert latest_done.json()["id"] == job_id
+    assert latest_done.json()["status"] == "done"
+
+
+class _TwoWayBlock:
+    """Like `tests.job_test_support.BlockingClient`, but only releases its callers once (at least) TWO
+    concurrent calls have arrived - needed to prove `REPORT_CONCURRENCY`'s default cap of 2 is genuinely
+    exhausted by two real (blocked) jobs at once, not just simulated by holding the semaphore directly."""
+
+    def __init__(self, inner, method_name: str) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+        self.both_reached = Event()
+        self.released = Event()
+
+        def _blocking(*args, **kwargs):
+            with self._lock:
+                self._count += 1
+                if self._count >= 2:
+                    self.both_reached.set()
+            ok = self.released.wait(timeout=10)
+            if not ok:
+                raise AssertionError(f"_TwoWayBlock.{method_name} was never released by the test")
+            return getattr(inner, method_name)(*args, **kwargs)
+
+        setattr(self, method_name, _blocking)
+
+
+def test_concurrency_cap_holds_while_jobs_are_genuinely_running(env):
+    """Unlike `test_concurrency_cap_returns_429` above (which simulates busy slots by acquiring `_SLOTS`
+    directly, with no real work happening), this drives two REAL background jobs that are genuinely still
+    running (both blocked on a fake Claude client) to exhaust `REPORT_CONCURRENCY`'s default cap of 2, shows
+    a third build attempt is still rejected (429) while they hold both slots, then that both still complete
+    normally once released."""
+    blocking = _TwoWayBlock(FakeClaudeClient(_fake_claude_reply), "complete")
+    app.dependency_overrides[get_claude_client] = lambda: blocking
+
+    # Distinct content per upload (not just a different `name`): `POST /api/upload` dedupes by content hash
+    # per user, so three byte-identical files would silently reuse the same one `Dataset` row - each call
+    # below varies `n_support` so the three uploads are genuinely different datasets.
+    did1 = upload_csv(env, survey_df(n_support=20), name="a.csv")
+    clean_and_apply(env, did1)
+    seed_themes(env, did1, notable_theme_specs())
+
+    did2 = upload_csv(env, survey_df(n_support=21), name="b.csv")
+    clean_and_apply(env, did2)
+    seed_themes(env, did2, notable_theme_specs())
+
+    job1_id = start_report_job(env, did1)
+    job2_id = start_report_job(env, did2)
+    assert blocking.both_reached.wait(timeout=5), "both jobs never reached the blocking call at the same time"
+
+    did3 = upload_csv(env, survey_df(n_support=22), name="c.csv")
+    clean_and_apply(env, did3)
+    seed_themes(env, did3, notable_theme_specs())
+    r3 = env.client.post(f"/api/datasets/{did3}/report/build", json={"column": Q})
+    assert r3.status_code == 429, r3.text
+
+    blocking.released.set()
+    final1 = wait_for_job(env.client, did1, job1_id, timeout=5)
+    final2 = wait_for_job(env.client, did2, job2_id, timeout=5)
+    assert final1["status"] == "done", final1
+    assert final2["status"] == "done", final2

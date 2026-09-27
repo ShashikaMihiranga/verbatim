@@ -17,12 +17,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
 
+import app.db as db_module
 from app.api_projects import router as projects_router  # noqa: F401 (import proves the module loads cleanly)
 from app.api_upload import current_user
 from app.db import Base, get_db
 from app.main import app
+from tests.job_test_support import wait_for_job
 from tests.test_api_report import Q, install_fake_claude, survey_df
 from tests.test_api_themes import install_fakes as install_theme_fakes
 
@@ -34,7 +36,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    # A real file-backed SQLite database, not `sqlite://` (in-memory) with a single shared `StaticPool`
+    # connection - this file drives `build_themes`/`build_report` through the real HTTP API, both of which
+    # now run their real work on a background thread; see tests/test_api_themes.py's own `env` fixture for
+    # why a shared in-memory connection serialises that badly.
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", poolclass=NullPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -43,6 +49,10 @@ def env(tmp_path, monkeypatch):
             yield s
 
     app.dependency_overrides[get_db] = override
+    # The background job thread build_themes/build_report now start does not go through FastAPI's DI (it
+    # is not a request) - it opens its own session via `app.db.SessionLocal()` at call time (see
+    # app/jobs.py). Point that same module attribute at this test's own engine.
+    monkeypatch.setattr(db_module, "SessionLocal", Session)
     yield SimpleNamespace(client=TestClient(app), Session=Session)
     app.dependency_overrides.clear()
 
@@ -95,15 +105,23 @@ def clean_and_apply(env, did):
 
 
 def build_themes(env, did):
+    """Both build routes are now async (202 + a `Job` row) rather than synchronous - drive the real
+    request-then-poll sequence a real client would, same as tests/test_api_themes.py's own helper."""
     r = env.client.post(f"/api/datasets/{did}/themes/build", json={"column": Q})
-    assert r.status_code == 200, r.text
-    return r.json()
+    assert r.status_code == 202, r.text
+    body = r.json()
+    job = wait_for_job(env.client, did, body["job_id"], timeout=5)
+    assert job["status"] == "done", job
+    return job
 
 
 def build_report(env, did):
     r = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
-    assert r.status_code == 200, r.text
-    return r.json()
+    assert r.status_code == 202, r.text
+    body = r.json()
+    job = wait_for_job(env.client, did, body["job_id"], timeout=5)
+    assert job["status"] == "done", job
+    return job
 
 
 def by_id(projects, did):
