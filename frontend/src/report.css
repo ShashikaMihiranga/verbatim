@@ -1,27 +1,52 @@
+/* One continuous report page: shared background/typography throughout, no boxed "mini document" cards
+   around each chart - see docs/DECISIONS.md (dated entry on this redesign) for the reasoning. Rhythm
+   (dividers between sections, generous vertical space) follows design/screens/report-ev.dc.html. */
+
 .rp-build { margin-top: 32px; }
 
-.rp-header { margin: -8px 0 24px; }
-.rp-question { font-size: 26px; font-weight: 300; line-height: 1.3; }
+.rp { margin-top: 8px; }
+
+.rp-title { font-size: clamp(26px, 5vw, 40px); font-weight: 300; line-height: 1.2; }
 .rp-summary { color: var(--muted); font-size: 16px; margin-top: 6px; }
 
-.rp-block { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 20px 22px; margin-bottom: 20px; }
-.rp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
-.rp-sentence { font-size: 19px; font-weight: 500; line-height: 1.4; margin: 0; }
-
-.rp-frame { border-radius: 10px; overflow-x: auto; border: 1px solid var(--line); background: var(--bg); }
-.rp-frame iframe { display: block; width: 100%; min-width: 1180px; border: none; background: var(--bg); }
-
-.rp-nothing {
-  color: var(--muted);
-  font-size: 16px;
-  padding: 28px 0;
-  text-align: center;
-  border: 1px dashed var(--line);
-  border-radius: 14px;
-  margin-bottom: 20px;
+.rp-chips-label { margin-top: 24px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.rp-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.rp-chip {
+  display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--line); font-size: 14px; font-weight: 500;
 }
+.rp-chip-note { color: var(--muted); font-weight: 400; margin-left: 6px; }
+
+.rp-standout { margin-top: 40px; }
+.rp-standout-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+.rp-standout-list { border-bottom: 1px solid var(--line); }
+.rp-standout-row {
+  display: flex; align-items: center; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line);
+}
+.rp-standout-n { width: 22px; flex: none; font-size: 18px; font-weight: 600; color: var(--accent); }
+.rp-standout-sentence { flex: 1; font-size: 20px; font-weight: 300; line-height: 1.35; }
+
+/* Every section below (overview chart, each finding, the quality footer, "nothing notable") shares this
+   one rhythm - a top divider and generous top margin - instead of a bordered/backgrounded card. */
+.rp-section { margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--line); }
+
+.rp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 22px; }
+.rp-head-side { display: flex; align-items: center; gap: 16px; flex: none; padding-top: 2px; }
+.rp-sentence { font-size: clamp(19px, 2.4vw, 24px); font-weight: 300; line-height: 1.35; margin: 0; max-width: 760px; }
+
+/* The chart fragment itself keeps its own designed pixel width (from the API's chart_width) so its
+   internal fixed-layout pieces (grids, flex rows with hardcoded widths) lay out exactly as intended.
+   The outer scroll container only grows a horizontal scrollbar when that width genuinely exceeds the
+   viewport - never a blanket forced minimum applied to every chart regardless of its real size. */
+.rp-chart-scroll { max-width: 100%; overflow-x: auto; }
+.rp-chart { max-width: none; }
+.rp-chart svg { display: block; overflow: visible; max-width: 100%; }
+
+.rp-nothing { color: var(--muted); font-size: 16px; }
 
 @media (max-width: 640px) {
-  .rp-question { font-size: 22px; }
-  .rp-block { padding: 16px; }
+  .rp-sentence { max-width: none; }
+  .rp-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .rp-head-side { padding-top: 0; }
+  .rp-section { margin-top: 36px; padding-top: 20px; }
 }

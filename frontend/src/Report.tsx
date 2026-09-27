@@ -1,35 +1,40 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { AnswerList } from './Themes'
 import type { ReportBlock, ReportResponse } from './reportApi'
 import './themes.css'
 import './report.css'
 
-// Matches the fixed pixel heights app/charts.py's own frame() helper bakes into each chart's HTML
-// (overview 680, rank 860, treemap/sentsun 800, quality 880 - see app/charts.py), plus a small margin so
-// the iframe never clips the chart. The chart HTML itself is not responsive (SPEC.md/CLAUDE.md's charts
-// were designed desktop-first); a horizontal scrollbar on narrow screens is the accepted fallback, not a
-// silent clip - see docs/DECISIONS.md.
-const CHART_HEIGHTS: Record<string, number> = {
-  overview: 720, rank: 900, treemap: 840, sentsun: 840, quality: 920,
-}
-
 function Badge({ confidence }: { confidence: 'solid' | 'tentative' }) {
   return <span className={`th-badge ${confidence}`}>{confidence === 'solid' ? 'Solid' : 'Tentative'}</span>
 }
 
-// Charts arrive as a full, already-rendered HTML document (app.charts.render()'s own shape: <!doctype
-// html>...) built server-side from stored numbers, never from anything a viewer typed. It is never dropped
-// into the page with dangerouslySetInnerHTML (no code in this app does that - see Cleaning.tsx's own
-// comment to that effect); an iframe with a fully-locked-down sandbox keeps it isolated even though the
-// content here is trusted, matching this project's general "never trust rendered HTML" habit rather than
-// carving out an exception for this one case.
-function ChartFrame({ block }: { block: ReportBlock }) {
-  const height = CHART_HEIGHTS[block.chart_id] ?? 800
+// Chart fragments arrive as a raw SVG/HTML BODY FRAGMENT (app.charts.render_parts's shape - no
+// <!doctype html>, no own background, no own font load), built server-side from stored numbers and run
+// through app.charts.py's own esc() escaping - never from anything a viewer typed. That is exactly why
+// this is the one place in the app that uses dangerouslySetInnerHTML, unlike every other screen (see
+// Cleaning.tsx's own comment), which renders potentially user-authored text as plain React children:
+// there is no user-authored text anywhere in this string, only numbers and theme labels a Claude call or
+// this app's own code already produced, HTML-escaped, before they ever reached here.
+//
+// It is sized by its own reported chart_width/chart_height (not a hardcoded per-chart-id guess): the
+// outer .rp-chart-scroll only grows a horizontal scrollbar when this fixed-pixel content genuinely does
+// not fit the viewport, instead of forcing every chart to a blanket minimum width regardless of its real
+// size.
+function ChartFragment({ block }: { block: ReportBlock }) {
   return (
-    <div className="rp-frame">
-      <iframe title={block.chart_title} srcDoc={block.chart_html} sandbox="" loading="lazy" style={{ height }} />
+    <div className="rp-chart-scroll">
+      <div
+        className="rp-chart"
+        style={{ width: block.chart_width, minHeight: block.chart_height }}
+        aria-label={block.chart_title}
+        dangerouslySetInnerHTML={{ __html: block.chart_html }}
+      />
     </div>
   )
+}
+
+function Divider({ children }: { children: ReactNode }) {
+  return <div className="rp-section">{children}</div>
 }
 
 function FindingBlock({ datasetId, block }: { datasetId: number; block: ReportBlock }) {
@@ -37,21 +42,21 @@ function FindingBlock({ datasetId, block }: { datasetId: number; block: ReportBl
   const finding = block.finding
   if (!finding) return null
   return (
-    <div className="rp-block">
+    <Divider>
       <div className="rp-head">
         <p className="rp-sentence">{finding.sentence}</p>
-        <Badge confidence={finding.confidence} />
+        <div className="rp-head-side">
+          <Badge confidence={finding.confidence} />
+          {finding.theme_id != null && (
+            <button type="button" className="th-see" onClick={() => setOpen(!open)}>
+              {open ? 'Hide answers' : 'See answers'}
+            </button>
+          )}
+        </div>
       </div>
-      <ChartFrame block={block} />
-      {finding.theme_id != null && (
-        <>
-          <button type="button" className="th-see" onClick={() => setOpen(!open)}>
-            {open ? 'Hide answers' : 'See answers'}
-          </button>
-          {open && <AnswerList id={datasetId} themeId={finding.theme_id} />}
-        </>
-      )}
-    </div>
+      <ChartFragment block={block} />
+      {open && finding.theme_id != null && <AnswerList id={datasetId} themeId={finding.theme_id} />}
+    </Divider>
   )
 }
 
@@ -62,27 +67,50 @@ export default function ReportView({ report, datasetId }: { report: ReportRespon
 
   return (
     <div className="rp">
-      <div className="rp-header">
-        <div className="rp-question">{report.question}</div>
-        <div className="rp-summary">{report.summary}</div>
+      <div className="rp-title">{report.question}</div>
+      <div className="rp-summary">{report.summary}</div>
+
+      <div className="rp-chips-label">Columns used</div>
+      <div className="rp-chips">
+        <span className="rp-chip">
+          {report.column}
+          <span className="rp-chip-note">open-ended text</span>
+        </span>
       </div>
 
-      {overview && (
-        <div className="rp-block rp-overview">
-          <ChartFrame block={overview} />
+      {findings.length > 0 && (
+        <div className="rp-standout">
+          <div className="rp-standout-title">What stands out</div>
+          <div className="rp-standout-list">
+            {findings.map((b, i) => (
+              <div className="rp-standout-row" key={b.finding_id ?? b.chart_id}>
+                <span className="rp-standout-n">{i + 1}</span>
+                <span className="rp-standout-sentence">{b.finding?.sentence}</span>
+                {b.finding && <Badge confidence={b.finding.confidence} />}
+              </div>
+            ))}
+          </div>
         </div>
+      )}
+
+      {overview && (
+        <Divider>
+          <ChartFragment block={overview} />
+        </Divider>
       )}
 
       {findings.length > 0
         ? findings.map((b) => <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} />)
         : report.also_checked_nothing_notable && (
-            <div className="rp-nothing">Also checked, nothing notable.</div>
+            <Divider>
+              <div className="rp-nothing">Also checked, nothing notable.</div>
+            </Divider>
           )}
 
       {quality && (
-        <div className="rp-block rp-quality">
-          <ChartFrame block={quality} />
-        </div>
+        <Divider>
+          <ChartFragment block={quality} />
+        </Divider>
       )}
     </div>
   )

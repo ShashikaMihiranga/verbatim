@@ -12,7 +12,12 @@ export interface ReportBlock {
   kind: 'overview' | 'finding' | 'quality'
   chart_id: string
   chart_title: string
+  // Raw body fragment (app.charts.render_parts's shape: no <!doctype html>, no own background/font load) -
+  // meant to be embedded straight into this page's own DOM, sized by its own chart_width/chart_height
+  // rather than a hardcoded guess. See Report.tsx's ChartFragment for why embedding it is safe here.
   chart_html: string
+  chart_width: number
+  chart_height: number
   priority: number
   finding_id: number | null
   finding: ReportFinding | null
