@@ -273,10 +273,16 @@ def f_overview(data: ReportData):
                f'<div style="font-size:14px;color:var(--muted);line-height:1.4;min-height:40px">{esc(note)}</div></div>')
     st += "</div>"
     sent = data.overview.insights
+    # The report page (app/findings.py's build_report_data) always pairs this chart with its own real,
+    # Claude-written "What stands out" list built from actual findings, so it clears data.overview.insights
+    # to keep this chart's own baked-in copy from duplicating that heading right above it. Standalone
+    # callers (the EV sample page, /api/charts/overview) still pass real insights, so this stays unchanged
+    # for them: the heading only disappears when there is genuinely nothing to show under it.
     ws = "".join(f'<div style="padding:20px 0;border-top:1px solid var(--line);font-size:24px;font-weight:300;line-height:1.35">{esc(s)}</div>' for s in sent)
+    standout = (f'<div style="margin-top:56px;font-size:22px;font-weight:600;margin-bottom:12px">What stands out</div>'
+                f'<div style="border-bottom:1px solid var(--line);max-width:960px">{ws}</div>') if sent else ""
     body = (f'<div style="padding:56px 48px">{hdr("How big, how clean, what's notable".replace("what's","what\'s"), data.question)}'
-            f'{st}<div style="margin-top:56px;font-size:22px;font-weight:600;margin-bottom:12px">What stands out</div>'
-            f'<div style="border-bottom:1px solid var(--line);max-width:960px">{ws}</div></div>')
+            f'{st}{standout}</div>')
     return body, 1180, 680
 
 # ---------- rank ----------

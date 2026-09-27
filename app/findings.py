@@ -282,6 +282,12 @@ def build_report_data(
     total_rows = dataset.row_count if dataset.row_count else total_answered
 
     overview = _build_overview(nodes, overall, total_rows, total_answered, answer_lengths)
+    # The report page this feeds always shows its own real, Claude-written "What stands out" list built
+    # from actual findings (app/api_report.py's response, rendered by Report.tsx above the overview chart)
+    # - clearing this chart's own copy here stops it printing a second, redundant "What stands out" heading
+    # right below the page's real one. app/charts.py's f_overview only shows that heading when insights is
+    # non-empty, so this cleanly removes the whole duplicate section rather than leaving an empty one.
+    overview.insights = []
     quality = _build_quality(cleaning_report, total_rows, total_answered, answer_lengths)
     context = ContextData(
         kind="anything else",
