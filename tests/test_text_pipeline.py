@@ -1,10 +1,12 @@
 """Stream 6: text pipeline (embed + cluster). All fixtures are inline; FakeEmbeddingClient only, no network."""
 import itertools
 import os
+import socket
 
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.cluster import HDBSCAN
 
 from app.cleaning import CleaningError, model_safe_column, plan_cleaning
 from app.text_pipeline import (
@@ -13,8 +15,15 @@ from app.text_pipeline import (
     TooFewAnswers,
     VoyageEmbeddingClient,
     adaptive_min_cluster_size,
+    adaptive_min_samples,
+    adaptive_n_components,
     cluster_answers,
     embed_and_cluster,
+)
+from app.text_pipeline.clustering import (
+    MIN_ANSWERS_FOR_REDUCTION,
+    MIN_DIMENSIONS_FOR_REDUCTION,
+    _reduce_for_clustering,
 )
 
 
@@ -174,6 +183,173 @@ def test_cluster_answers_deterministic_given_same_input():
     labels2 = sorted(tuple(sorted(m.row for m in c.members)) for c in r2.clusters)
     assert labels1 == labels2
     assert {m.row for m in r1.noise} == {m.row for m in r2.noise}
+
+
+# ---------------------------------------------------------------- high-dimensional fixture (proves the bug + fix)
+#
+# The bug this section proves: on a real 23,486-row product-review dataset, clustering the raw
+# 1024-dimensional Voyage embeddings directly with HDBSCAN put 22,641/23,486 answers (96%) into noise -
+# essentially no themes found - because density-based clustering degrades badly on raw high-dimensional
+# vectors (distances concentrate; HDBSCAN can no longer tell a dense region from background noise). Every
+# other fixture in this file uses FakeEmbeddingClient's 32-dimensional vectors, which never triggered this
+# because the failure is specifically about high dimensionality. This fixture is deliberately different:
+# real dimensionality (300, comfortably past MIN_DIMENSIONS_FOR_REDUCTION), enough rows to clear
+# MIN_ANSWERS_FOR_REDUCTION, and a few genuinely separable groups plus unstructured noise vectors - built
+# with plain numpy (not FakeEmbeddingClient, which is only 32-dimensional by design) so the group structure
+# is known ground truth to assert against.
+
+HIGH_DIM_GROUPS = 3
+HIGH_DIM_GROUP_SIZE = 60
+HIGH_DIM_NOISE_COUNT = 15
+HIGH_DIM_DIMS = 300
+HIGH_DIM_NOISE_SCALE = 0.3  # per-dimension noise added to each group member, before renormalising to unit length
+
+
+def _high_dimensional_fixture(seed: int = 7):
+    """`HIGH_DIM_GROUPS` separable groups of `HIGH_DIM_GROUP_SIZE` vectors each, plus `HIGH_DIM_NOISE_COUNT`
+    unrelated noise vectors, all `HIGH_DIM_DIMS`-dimensional and unit-length (like real embeddings). Each
+    group is a random direction in `HIGH_DIM_DIMS`-space; members are that direction plus substantial
+    per-dimension noise spread across ALL dimensions (mimicking how a real embedding's true semantic signal
+    is thin relative to the many other directions in the space) before renormalising. Returns
+    `(vectors, true_group_of_each_row)`, `true_group_of_each_row[i]` being 0/1/2 for a real group or -1 for
+    a noise vector; deterministic for a fixed `seed` (same numpy `RandomState` every call).
+    """
+    rng = np.random.RandomState(seed)
+    centers = rng.normal(size=(HIGH_DIM_GROUPS, HIGH_DIM_DIMS))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+
+    vectors: list[list[float]] = []
+    true_groups: list[int] = []
+    for g in range(HIGH_DIM_GROUPS):
+        for _ in range(HIGH_DIM_GROUP_SIZE):
+            v = centers[g] + rng.normal(scale=HIGH_DIM_NOISE_SCALE, size=HIGH_DIM_DIMS)
+            v = v / np.linalg.norm(v)
+            vectors.append(v.tolist())
+            true_groups.append(g)
+    for _ in range(HIGH_DIM_NOISE_COUNT):
+        v = rng.normal(size=HIGH_DIM_DIMS)
+        v = v / np.linalg.norm(v)
+        vectors.append(v.tolist())
+        true_groups.append(-1)
+    return vectors, true_groups
+
+
+def test_reduce_for_clustering_skips_itself_below_the_answer_count_threshold():
+    small_vectors = [[0.1] * (MIN_DIMENSIONS_FOR_REDUCTION + 10) for _ in range(MIN_ANSWERS_FOR_REDUCTION - 1)]
+    assert _reduce_for_clustering(small_vectors) is small_vectors
+
+
+def test_reduce_for_clustering_skips_itself_below_the_dimension_threshold():
+    low_dim_vectors = [[0.1] * (MIN_DIMENSIONS_FOR_REDUCTION - 1) for _ in range(MIN_ANSWERS_FOR_REDUCTION + 10)]
+    assert _reduce_for_clustering(low_dim_vectors) is low_dim_vectors
+
+
+def test_reduce_for_clustering_reduces_large_high_dimensional_input():
+    vectors, _ = _high_dimensional_fixture()
+    reduced = _reduce_for_clustering(vectors)
+    assert len(reduced) == len(vectors)
+    assert len(reduced[0]) == adaptive_n_components(len(vectors))
+    assert len(reduced[0]) < len(vectors[0])  # a real reduction happened, not a no-op
+
+
+def test_cluster_answers_on_raw_high_dimensional_vectors_finds_almost_nothing():
+    """The bug, reproduced directly: HDBSCAN straight on raw high-dimensional vectors (no reduction, the
+    module's behaviour before this fix) fails to recover even well-separated groups."""
+    vectors, true_groups = _high_dimensional_fixture()
+    min_cluster_size = 20
+    model = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_cluster_size, store_centers="centroid", copy=True)
+    labels = model.fit_predict(np.asarray(vectors))
+
+    n_clusters = len({label for label in labels if label != -1})
+    noise_count = int((labels == -1).sum())
+    assert n_clusters == 0  # not one real cluster recovered from 3 genuinely separable groups
+    assert noise_count == len(vectors)  # every single answer written off as noise
+
+
+def test_cluster_answers_recovers_separable_groups_with_reduction():
+    """The fix, proven against the same fixture: routing through `cluster_answers` (UMAP reduction, then
+    HDBSCAN with the tuned `min_samples`) recovers the real group structure the raw-vector path above missed
+    entirely."""
+    vectors, true_groups = _high_dimensional_fixture()
+    texts = [f"answer {i}" for i in range(len(vectors))]
+    row_indexes = list(range(len(vectors)))
+
+    result = cluster_answers(vectors, texts, row_indexes, min_cluster_size=20)
+
+    assert sum(len(c.members) for c in result.clusters) + len(result.noise) == result.total_answers
+    # real structure recovered: at least as many clusters as true groups, and most answers land somewhere
+    # real rather than being written off as noise (contrast with 0 clusters / 100% noise for the raw path).
+    assert len(result.clusters) >= 2
+    noise_fraction = len(result.noise) / result.total_answers
+    assert noise_fraction < 0.5
+
+    # purity: for each recovered cluster, most of its members should share the same true group
+    true_group_of_row = dict(zip(row_indexes, true_groups))
+    correctly_grouped = 0
+    total_grouped = 0
+    for cluster in result.clusters:
+        member_true_groups = [true_group_of_row[m.row] for m in cluster.members]
+        total_grouped += len(member_true_groups)
+        most_common = max(set(member_true_groups), key=member_true_groups.count)
+        correctly_grouped += sum(1 for g in member_true_groups if g == most_common)
+    assert total_grouped > 0
+    assert correctly_grouped / total_grouped > 0.75  # clusters are overwhelmingly single-group, not a jumble
+
+
+def test_cluster_answers_reduction_path_is_deterministic_given_same_input():
+    vectors, _ = _high_dimensional_fixture()
+    texts = [f"answer {i}" for i in range(len(vectors))]
+    row_indexes = list(range(len(vectors)))
+
+    r1 = cluster_answers(vectors, texts, row_indexes, min_cluster_size=20)
+    r2 = cluster_answers(vectors, texts, row_indexes, min_cluster_size=20)
+
+    labels1 = sorted(tuple(sorted(m.row for m in c.members)) for c in r1.clusters)
+    labels2 = sorted(tuple(sorted(m.row for m in c.members)) for c in r2.clusters)
+    assert labels1 == labels2
+    assert {m.row for m in r1.noise} == {m.row for m in r2.noise}
+
+
+def test_adaptive_min_samples_is_smaller_than_min_cluster_size_and_bounded():
+    assert adaptive_min_samples(5) == 3  # floor
+    assert adaptive_min_samples(50) == 10  # ceiling
+    assert adaptive_min_samples(30) == round(30 / 3)
+    assert adaptive_min_samples(30) < 30  # always more permissive than min_cluster_size itself
+
+
+def test_adaptive_n_components_is_bounded_and_grows_mildly_with_answer_count():
+    assert adaptive_n_components(60) == 5  # floor
+    assert adaptive_n_components(10_000) == 15  # ceiling
+    mid = adaptive_n_components(3000)
+    assert 5 < mid < 15
+    assert mid == round(3000 / 300)
+
+
+# ---------------------------------------------------------------- zero network (UMAP/HDBSCAN are pure local compute)
+
+
+class _NoSockets:
+    def __enter__(self):
+        self._orig = socket.socket
+
+        def _blocked(*a, **k):
+            raise AssertionError("a real socket was opened - clustering must never touch the network")
+
+        socket.socket = _blocked
+        return self
+
+    def __exit__(self, *exc):
+        socket.socket = self._orig
+
+
+def test_cluster_answers_with_reduction_never_touches_the_network():
+    vectors, _ = _high_dimensional_fixture()
+    texts = [f"answer {i}" for i in range(len(vectors))]
+    row_indexes = list(range(len(vectors)))
+
+    with _NoSockets():
+        result = cluster_answers(vectors, texts, row_indexes, min_cluster_size=20)
+    assert result.total_answers == len(vectors)
 
 
 # ---------------------------------------------------------------- pipeline
