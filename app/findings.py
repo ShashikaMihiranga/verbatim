@@ -52,7 +52,7 @@ from .text_pipeline.labeling import OTHER_LABEL
 __all__ = [
     "Candidate", "FindingsClaudeNotConfigured", "FindingsError", "NoThemesForColumn", "FakeClaudeClient",
     "build_report_data", "candidate_findings", "label_confidence", "pick_chart", "write_headline",
-    "build_findings", "default_claude_client",
+    "build_findings", "default_claude_client", "theme_nodes", "question_for",
 ]
 
 # ---------------------------------------------------------------- tunable thresholds (documented, easy to retune)
@@ -186,6 +186,40 @@ def _theme_color(rank_index: int) -> str:
     return tokens[rank_index] if rank_index < len(tokens) else "other"
 
 
+def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
+    """Converts stored `Theme` rows into colour-assigned `ThemeNode`s: real themes largest-first get
+    "t1".."t7" tokens via `_theme_color` (falling back to "other" beyond seven - see its own docstring),
+    "Other" (if present) always goes last with the "other" token and a "Folded in: ..." note. `children`
+    is always `[]` (sub-theme wiring is out of scope for this stream - see the module docstring).
+
+    Extracted so this exact colour-assignment logic exists in exactly one place, reused by both
+    `build_report_data` below (via its own local `_node` partial application) and
+    `app.api_themes.themes_chart` (the lightweight "one chart, not a wall of cards" endpoint for the
+    Themes screen, which needs the same `Theme` rows -> `ThemeNode`s conversion but has no `Dataset`/
+    `cleaning_report`/`ReportData` context to call the full `build_report_data` with)."""
+    real = [t for t in themes if t.label != OTHER_LABEL]
+    other = next((t for t in themes if t.label == OTHER_LABEL), None)
+    ranked_real = sorted(real, key=lambda t: t.size, reverse=True)
+
+    def _node(t: Theme, color: str, note: str = "") -> ThemeNode:
+        share = round(t.size / total_answered * 100, 1) if total_answered else 0.0
+        tone = t.tone or {}
+        return ThemeNode(
+            name=t.label, share=share, sentiment=t.sentiment if t.sentiment is not None else 0.0,
+            count=t.size, color=color,
+            tones=ToneSplit(neg=tone.get("neg", 0.0), neu=tone.get("neu", 100.0), pos=tone.get("pos", 0.0)),
+            children=[],
+            note=note,
+        )
+
+    nodes = [_node(t, _theme_color(i)) for i, t in enumerate(ranked_real)]
+    if other is not None:
+        note = f"Folded in: {other.description}" if other.description else \
+            "Folded in: answers too rare, unclear or distinct to group into a theme."
+        nodes.append(_node(other, "other", note=note))
+    return nodes
+
+
 # ---------------------------------------------------------------- answer-length histogram (optional -
 # see build_report_data's docstring: this module is not handed the cleaned dataframe, only Theme rows, so
 # a real histogram needs the caller to pass pre-computed word counts; without them we say so honestly.)
@@ -254,28 +288,9 @@ def build_report_data(
     `answer_map`/`frequency`/`phrases`/`quotes` are placeholders for the same reason: none of this
     stream's chosen chart ids (`overview`, `treemap`/`rank`/`sentsun`, `quality`) read them.
     """
-    real = [t for t in themes if t.label != OTHER_LABEL]
-    other = next((t for t in themes if t.label == OTHER_LABEL), None)
-    ranked_real = sorted(real, key=lambda t: t.size, reverse=True)
     total_answered = _total_answered(themes)
     overall = _overall_sentiment(themes, total_answered)
-
-    def _node(t: Theme, color: str, note: str = "") -> ThemeNode:
-        share = round(t.size / total_answered * 100, 1) if total_answered else 0.0
-        tone = t.tone or {}
-        return ThemeNode(
-            name=t.label, share=share, sentiment=t.sentiment if t.sentiment is not None else 0.0,
-            count=t.size, color=color,
-            tones=ToneSplit(neg=tone.get("neg", 0.0), neu=tone.get("neu", 100.0), pos=tone.get("pos", 0.0)),
-            children=[],  # sub-theme wiring is out of scope for this stream - see module docstring
-            note=note,
-        )
-
-    nodes = [_node(t, _theme_color(i)) for i, t in enumerate(ranked_real)]
-    if other is not None:
-        note = f"Folded in: {other.description}" if other.description else \
-            "Folded in: answers too rare, unclear or distinct to group into a theme."
-        nodes.append(_node(other, "other", note=note))
+    nodes = theme_nodes(themes, total_answered)
 
     selected_theme = nodes[0].name if nodes else ""
     hover_theme = nodes[1].name if len(nodes) > 1 else selected_theme
@@ -580,8 +595,10 @@ def write_headline(candidates: list[Candidate], client: ClaudeClient, question: 
 
 # ==================================================================== 6. build_findings
 
-def _question_for(dataset: Dataset, column: str) -> str:
-    """Same question-resolution order `app/api_themes.py`'s `build_themes` route already uses."""
+def question_for(dataset: Dataset, column: str) -> str:
+    """Same question-resolution order `app/api_themes.py`'s `build_themes` route already uses. Public
+    (no leading underscore) because `app.api_themes.themes_chart` reuses it too, for the same "confirmed
+    question, else profiled question, else the raw column name" fallback - not re-derived a second time."""
     confirmed = (dataset.profile or {}).get("confirmed") or {}
     question = (confirmed.get("question") or "").strip()
     if question:
@@ -625,7 +642,7 @@ def build_findings(
     if not themes:
         raise NoThemesForColumn(f"No stored themes for dataset {dataset.id}, column {column!r}. Build themes first.")
 
-    question = _question_for(dataset, column)
+    question = question_for(dataset, column)
     candidates = candidate_findings(themes, min_group_size=min_group_size)
     sentences = write_headline(candidates, claude_client, question)
     report_data = build_report_data(dataset, themes, cleaning_report, question, answer_lengths=answer_lengths)

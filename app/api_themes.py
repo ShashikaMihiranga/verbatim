@@ -41,8 +41,14 @@ from sqlalchemy.orm import Session
 
 from . import db as _db
 from .api_upload import _own_dataset, current_user
+from .chart_data import (
+    ContextData, FreqData, MapData, OverviewData, PhraseData, QualityData, QuoteData, ReportData,
+    ScoreData, SegmentData, TrendData,
+)
+from .charts import render_parts
 from .cleaning import CleaningError, CleaningPlan
 from .db import get_db
+from .findings import question_for, theme_nodes
 from .jobs import create_job, start_job
 from .models import CleanedFile, Column, Dataset, Theme, User
 from .text_pipeline import (
@@ -293,17 +299,73 @@ def build_themes(
     return {"job_id": job.id, "status": "running"}
 
 
+def _stored_themes(db: Session, dataset_id: int, column: str) -> list[Theme]:
+    """Shared by `list_themes` and `themes_chart` below - one query for "this dataset + column's stored
+    Theme rows, largest-first-by-construction (see `_write_theme_rows`: clusters are sorted by size before
+    Other is appended)", not duplicated per route."""
+    return list(db.scalars(
+        select(Theme).where(Theme.dataset_id == dataset_id, Theme.column_name == column).order_by(Theme.id)
+    ).all())
+
+
 @router.get("/datasets/{dataset_id}/themes")
 def list_themes(dataset_id: int, column: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     ds = _own_dataset(db, user, dataset_id)
-    rows = db.scalars(
-        select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
-    ).all()
+    rows = _stored_themes(db, ds.id, column)
     total = sum(t.size for t in rows)
     return {
         "dataset_id": ds.id, "column": column, "total_answers": total,
         "themes": [_theme_dict(t, total) for t in rows],
     }
+
+
+@router.get("/datasets/{dataset_id}/themes/chart")
+def themes_chart(
+    dataset_id: int, column: str, db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Lightweight companion to `list_themes` above, for the Themes screen's "one chart at a glance instead
+    of a wall of cards" browse view (the user's standing complaint - see docs/DECISIONS.md): same
+    ownership/theme-lookup as `list_themes` (`_own_dataset` + `_stored_themes`, not a second copy of that
+    check), but returns a ready-to-embed treemap fragment - `app.charts.render_parts`'s exact wire shape
+    (`chart_html`/`chart_width`/`chart_height`) - instead of a JSON theme list, so the frontend can reuse
+    one fragment-rendering component (`ThemeChart.tsx`) for both this screen and the report page's overview
+    block.
+
+    Builds only enough of a `ReportData` for `render_parts("treemap", ...)` to actually need: `themes`
+    (via `app.findings.theme_nodes`, the same colour-assignment logic `build_report_data` uses - not
+    reimplemented here) and `question` (via `app.findings.question_for`, ditto). Every other `ReportData`
+    field is an innocuous placeholder (empty list, zero, empty string) since this route only ever calls the
+    treemap renderer, never the full `render_parts` dispatch table's other chart ids - unlike
+    `app.api_report._render_report`, which needs a fully-populated `ReportData` because it renders whatever
+    chart id each report block asks for.
+    """
+    ds = _own_dataset(db, user, dataset_id)
+    rows = _stored_themes(db, ds.id, column)
+    if not rows:
+        raise HTTPException(404, "No themes have been built yet for this column. Build themes first.")
+
+    total = sum(t.size for t in rows)
+    nodes = theme_nodes(rows, total)
+    question = question_for(ds, column)
+    placeholder_theme = nodes[0].name if nodes else ""
+
+    data = ReportData(
+        question=question, total=total, answered=total, overall_sentiment=0.0, themes=nodes,
+        selected_theme=placeholder_theme, hover_theme=placeholder_theme,
+        overview=OverviewData(stats=[], insights=[]),
+        score=ScoreData(name="", bands=[]),
+        segment=SegmentData(name="", groups=[], rows=[]),
+        trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
+        cooccurrence=[],
+        answer_map=MapData(seed=0, tip_text="", tip_note=""),
+        frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),
+        phrases=PhraseData(phrases=[], highlight=""),
+        quotes=QuoteData(quotes=[], highlight_index=0),
+        quality=QualityData(bins=[], typical_bin="", typical_note="", notes=[]),
+        context=ContextData(kind="", kind_options=[], kind_hover="", framing="", length="", columns_note=""),
+    )
+    chart_html, chart_width, chart_height = render_parts("treemap", data)
+    return {"chart_html": chart_html, "chart_width": chart_width, "chart_height": chart_height}
 
 
 @router.get("/datasets/{dataset_id}/themes/{theme_id}/answers")

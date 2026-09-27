@@ -1,6 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { AnswerList } from './Themes'
 import type { ReportBlock, ReportResponse } from './reportApi'
+import type { ThemeCard } from './themesApi'
+import ThemeChart from './ThemeChart'
+import ThemeDetail from './ThemeDetail'
 import './themes.css'
 import './report.css'
 
@@ -19,18 +22,11 @@ function Badge({ confidence }: { confidence: 'solid' | 'tentative' }) {
 // It is sized by its own reported chart_width/chart_height (not a hardcoded per-chart-id guess): the
 // outer .rp-chart-scroll only grows a horizontal scrollbar when this fixed-pixel content genuinely does
 // not fit the viewport, instead of forcing every chart to a blanket minimum width regardless of its real
-// size.
-function ChartFragment({ block }: { block: ReportBlock }) {
-  return (
-    <div className="rp-chart-scroll">
-      <div
-        className="rp-chart"
-        style={{ width: block.chart_width, minHeight: block.chart_height }}
-        aria-label={block.chart_title}
-        dangerouslySetInnerHTML={{ __html: block.chart_html }}
-      />
-    </div>
-  )
+// size. Rendering itself, and the click/hover delegation for chart fragments that draw `[data-theme]`
+// groups (currently only the overview block's treemap), now live in the shared `ThemeChart` component -
+// also used by Themes.tsx's browse view - rather than a second, near-identical implementation here.
+function ChartFragment({ block, onThemeSelect }: { block: ReportBlock; onThemeSelect?: (name: string) => void }) {
+  return <ThemeChart fragment={block} title={block.chart_title} onThemeSelect={onThemeSelect} />
 }
 
 function Divider({ children }: { children: ReactNode }) {
@@ -60,10 +56,26 @@ function FindingBlock({ datasetId, block }: { datasetId: number; block: ReportBl
   )
 }
 
-export default function ReportView({ report, datasetId }: { report: ReportResponse; datasetId: number }) {
+export default function ReportView({
+  report,
+  datasetId,
+  themes,
+}: {
+  report: ReportResponse
+  datasetId: number
+  // Real `Theme` rows for this column (Themes.tsx already fetches these before showing the report, so
+  // it passes them straight through rather than this view fetching them a second time). Used only to
+  // resolve the overview chart's `onThemeSelect` (a theme NAME - the treemap's own `data-theme` attribute)
+  // back to the `ThemeCard` `ThemeDetail` needs (id, description, tone, ...). Optional: a caller with no
+  // themes handy (e.g. a future standalone embed) still renders a perfectly good report, just without a
+  // theme-detail panel under the overview chart.
+  themes?: ThemeCard[]
+}) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
   const findings = report.blocks.filter((b) => b.kind === 'finding')
+  const [selectedThemeName, setSelectedThemeName] = useState<string | null>(null)
+  const selectedTheme = themes?.find((t) => t.label === selectedThemeName) ?? null
 
   return (
     <div className="rp">
@@ -95,7 +107,8 @@ export default function ReportView({ report, datasetId }: { report: ReportRespon
 
       {overview && (
         <Divider>
-          <ChartFragment block={overview} />
+          <ChartFragment block={overview} onThemeSelect={setSelectedThemeName} />
+          {selectedTheme && <ThemeDetail id={datasetId} theme={selectedTheme} />}
         </Divider>
       )}
 

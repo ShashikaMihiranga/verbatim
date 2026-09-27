@@ -6,9 +6,10 @@
 .th-build .small { color: var(--muted); font-size: 15px; margin: 0 0 20px; }
 .th-build label.jev { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin-bottom: 20px; }
 
-.th-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; margin-top: 8px; }
-.th-card { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 18px 20px; }
-.th-card.other { border-style: dashed; }
+/* .th-detail is the one theme-detail panel shown below the chart on both the Themes screen's browse view
+   and the report page's overview block (frontend/src/ThemeDetail.tsx) - same surface/border/padding
+   language the old one-card-per-theme grid used, now rendered once for whichever theme is selected. */
+.th-detail { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 18px 20px; margin-top: 20px; }
 .th-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .th-label { font-weight: 600; font-size: 17px; overflow-wrap: anywhere; }
 .th-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); white-space: nowrap; }
@@ -53,7 +54,3 @@
 .jp-failed { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 28px; text-align: center; }
 .jp-failed .big { font-size: 18px; font-weight: 500; margin-bottom: 8px; }
 .jp-failed .err { margin: 0 0 20px; }
-
-@media (max-width: 640px) {
-  .th-grid { grid-template-columns: 1fr; }
-}

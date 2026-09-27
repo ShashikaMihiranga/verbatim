@@ -25,6 +25,15 @@ export interface ThemesResponse {
   themes: ThemeCard[]
 }
 
+// Wire shape shared with app.api_report's report blocks (see reportApi.ts's ReportBlock) - both are
+// app.charts.render_parts's own {chart_html, chart_width, chart_height} shape, so the frontend can reuse
+// one fragment-rendering component (ThemeChart.tsx) for both the report page and this browse view.
+export interface ThemeChartResponse {
+  chart_html: string
+  chart_width: number
+  chart_height: number
+}
+
 export interface ThemeAnswer {
   row: number
   text: string
@@ -67,6 +76,14 @@ export async function buildThemes(id: number, column: string, useJevSentiment = 
 
 export async function getThemes(id: number, column: string): Promise<ThemesResponse> {
   const r = await authFetch(`/api/datasets/${id}/themes?${new URLSearchParams({ column })}`)
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
+// One-chart-at-a-glance treemap fragment for a column's stored themes (app/api_themes.py's
+// GET /themes/chart) - the Themes screen's browse view calls this instead of rendering one Card per theme.
+export async function getThemesChart(id: number, column: string): Promise<ThemeChartResponse> {
+  const r = await authFetch(`/api/datasets/${id}/themes/chart?${new URLSearchParams({ column })}`)
   if (!r.ok) throw await asError(r)
   return r.json()
 }

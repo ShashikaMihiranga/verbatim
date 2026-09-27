@@ -263,8 +263,19 @@ def f_sunburst_m(data: ReportData):
     return body, 390, 960
 
 # ---------- overview ----------
+# Height/width of the treemap embedded as this block's own hero chart, below. Sized to the same content
+# width every other frame's own inner SVG uses (1084px = this frame's own 1180px minus its 56px/48px
+# padding - see f_treemap/f_diverge/etc.), so it lines up with the stat strip and "What stands out" list
+# beneath it rather than picking a new, one-off width. Height is shorter than f_treemap's own standalone
+# 580px: here the treemap is a lead-in to the stats below, not the whole block, and 7 themes plus "Other"
+# still read clearly at this height (verified against tests/golden/overview.html).
+OVERVIEW_TREEMAP_W = 1084
+OVERVIEW_TREEMAP_H = 320
+
+
 def f_overview(data: ReportData):
     stats = data.overview.stats
+    chart = treemap_svg(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H)
     st = '<div style="display:flex;margin-top:36px">'
     for i, (l, n, note) in enumerate(stats):
         bd = "border-left:1px solid var(--line);padding-left:24px;" if i else ""
@@ -282,8 +293,9 @@ def f_overview(data: ReportData):
     standout = (f'<div style="margin-top:56px;font-size:22px;font-weight:600;margin-bottom:12px">What stands out</div>'
                 f'<div style="border-bottom:1px solid var(--line);max-width:960px">{ws}</div>') if sent else ""
     body = (f'<div style="padding:56px 48px">{hdr("How big, how clean, what's notable".replace("what's","what\'s"), data.question)}'
+            f'<div style="height:24px"></div>{chart}'
             f'{st}{standout}</div>')
-    return body, 1180, 680
+    return body, 1180, 680 + OVERVIEW_TREEMAP_H + 24
 
 # ---------- rank ----------
 def rank_rows(data, mobile=False, selected=None, hover=None):
@@ -751,28 +763,44 @@ def frame(title, sub, inner, h, extra_top=24):
     return (f'<div style="padding:56px 48px">{hdr(title, sub)}<div style="height:{extra_top}px"></div>{inner}</div>'), 1180, h
 
 # ---- treemap
-def f_treemap(data: ReportData):
-    W, H = 1084, 580
-    rects = squarify([(n, s) for n, s, _, _, _ in rows(data)], 0, 0, W, H)
-    o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Treemap of themes and sub-themes">']
+def treemap_svg(data: ReportData, w: int, h: int) -> str:
+    """The treemap's own `<svg>...</svg>` markup (no `frame()` wrapper) at whatever size `w`/`h` a caller
+    needs - `f_treemap` below calls this at its own standalone size, and `f_overview`/
+    `app.api_themes.themes_chart` call it again at a smaller "hero"/browse size, so the drawing logic
+    itself exists in exactly one place rather than being copy-pasted per caller.
+
+    Each theme's rect + label (and any sub-theme rects/labels nested inside it) sit inside their own
+    `<g data-theme="...">` group, so a frontend click/hover handler can resolve any part of a theme's
+    drawing - including a sub-theme rect - back to its parent theme with a single `closest('[data-theme]')`
+    lookup (see `frontend/src/ThemeChart.tsx`)."""
+    rects = squarify([(n, s) for n, s, _, _, _ in rows(data)], 0, 0, w, h)
+    o = [f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" aria-label="Treemap of themes and sub-themes">']
     for name, share, sent, cnt, col in rows(data):
-        x, y, w, h = rects[name]
-        x += 1.5; y += 1.5; w -= 3; h -= 3
-        o.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="5" style="fill:var(--{col})"/>')
-        lines = wrap(f"{name} {share}%", w - 18, 15) or [f"{share}%"]
+        rx, ry, rw, rh = rects[name]
+        rx += 1.5; ry += 1.5; rw -= 3; rh -= 3
+        g = [f'<g data-theme="{esc(name)}">']
+        g.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" rx="5" style="fill:var(--{col})"/>')
+        lines = wrap(f"{name} {share}%", rw - 18, 15) or [f"{share}%"]
         hh = len(lines) * 18 + 14
         for i, t in enumerate(lines):
-            o.append(T(x + 10, y + 16 + i * 18, t, 15, 600, TH_ON[col]))
+            g.append(T(rx + 10, ry + 16 + i * 18, t, 15, 600, TH_ON[col]))
         subs = subs_of(data, name)
-        if subs and h - hh - 5 > 20:
-            sr = squarify(subs, x + 5, y + hh, w - 10, h - hh - 5)
+        if subs and rh - hh - 5 > 20:
+            sr = squarify(subs, rx + 5, ry + hh, rw - 10, rh - hh - 5)
             for k, (sn, sp) in enumerate(subs):
                 sx, sy, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
                 sx += 1.5; sy += 1.5; sw -= 3; sh -= 3
-                o.append(f'<rect x="{sx:.1f}" y="{sy:.1f}" width="{sw:.1f}" height="{sh:.1f}" rx="3" style="fill:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"/>')
-                o.append(fit_label(sx, sy, sw, sh, sn, f"{sp:g}%", 14, "var(--ink)", False))
+                g.append(f'<rect x="{sx:.1f}" y="{sy:.1f}" width="{sw:.1f}" height="{sh:.1f}" rx="3" style="fill:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"/>')
+                g.append(fit_label(sx, sy, sw, sh, sn, f"{sp:g}%", 14, "var(--ink)", False))
+        g.append("</g>")
+        o.append("".join(g))
     o.append("</svg>")
-    return frame("What are the themes?", "Block area is share of answered. Sub-themes sit inside their theme.", "".join(o), 800)
+    return "".join(o)
+
+
+def f_treemap(data: ReportData):
+    svg = treemap_svg(data, 1084, 580)
+    return frame("What are the themes?", "Block area is share of answered. Sub-themes sit inside their theme.", svg, 800)
 
 # fix: squarify keys must be hashable and unique; sub items are (name, share) tuples keyed by name
 def _sub_items(subs):

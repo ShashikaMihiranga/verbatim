@@ -2,14 +2,16 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { getProfile } from './api'
 import type { DatasetView } from './api'
-import { buildThemes, getThemeAnswers, getThemes } from './themesApi'
-import type { ThemeAnswer, ThemeCard } from './themesApi'
+import { buildThemes, getThemeAnswers, getThemes, getThemesChart } from './themesApi'
+import type { ThemeAnswer, ThemeCard, ThemeChartResponse } from './themesApi'
 import { buildReport, getReport } from './reportApi'
 import type { ReportResponse } from './reportApi'
 import { getLatestJob, pollJob } from './jobsApi'
 import type { Job } from './jobsApi'
 import JobProgress from './JobProgress'
 import ReportView from './Report'
+import ThemeChart from './ThemeChart'
+import ThemeDetail from './ThemeDetail'
 import './upload.css'
 import './themes.css'
 import './report.css'
@@ -34,7 +36,7 @@ export function toneLabel(t: 'neg' | 'neu' | 'pos'): string {
   return t === 'neg' ? 'Negative' : t === 'pos' ? 'Positive' : 'Neutral'
 }
 
-function ToneBar({ tone }: { tone: ThemeCard['tone'] }) {
+export function ToneBar({ tone }: { tone: ThemeCard['tone'] }) {
   return (
     <>
       <div className="th-tonebar" aria-hidden="true">
@@ -96,28 +98,6 @@ export function AnswerList({ id, themeId }: { id: number; themeId: number }) {
   )
 }
 
-function Card({ id, theme }: { id: number; theme: ThemeCard }) {
-  const [open, setOpen] = useState(false)
-  const isOther = theme.label === 'Other'
-  return (
-    <div className={`th-card${isOther ? ' other' : ''}`}>
-      <div className="th-top">
-        <div className="th-label">{theme.label}</div>
-        <span className={`th-badge ${theme.confidence}`}>{theme.confidence === 'solid' ? 'Solid' : 'Tentative'}</span>
-      </div>
-      {theme.description && <div className="th-desc">{theme.description}</div>}
-      <div className="th-pct">
-        {Math.round(theme.size_pct)}%<span>of answers</span>
-      </div>
-      <ToneBar tone={theme.tone} />
-      <button type="button" className="th-see" onClick={() => setOpen(!open)}>
-        {open ? 'Hide answers' : 'See answers'}
-      </button>
-      {open && <AnswerList id={id} themeId={theme.id} />}
-    </div>
-  )
-}
-
 export default function Themes() {
   const [params] = useSearchParams()
   const id = Number(params.get('dataset'))
@@ -130,6 +110,8 @@ export default function Themes() {
   const [reportJob, setReportJob] = useState<Job | null>(null)
   const [manageThemes, setManageThemes] = useState(false)
   const [error, setError] = useState('')
+  const [themesChart, setThemesChart] = useState<ThemeChartResponse | null>(null)
+  const [selectedThemeId, setSelectedThemeId] = useState<number | null>(null)
 
   // Both builds now run as background jobs (see docs/DECISIONS.md): starting one only creates a `Job` row
   // and returns immediately, so the real "did it work" answer arrives later, from polling. `watch` starts
@@ -166,6 +148,31 @@ export default function Themes() {
       setError((e as Error).message)
     }
   }
+
+  // Fetches the one-chart-at-a-glance treemap fragment for the browse view (Themes.tsx's own reply to the
+  // "wall of cards" complaint - see docs/DECISIONS.md) once themes exist, and defaults the selected theme
+  // to the largest one (themes[0] - stored themes come back largest-first-by-construction, see
+  // app/api_themes.py's `_stored_themes`) so the detail panel below the chart is never empty on first load.
+  // Re-runs whenever `themes` changes (including a rebuild), so a stale chart never lingers.
+  useEffect(() => {
+    if (!column || !themes || themes.length === 0) {
+      setThemesChart(null)
+      return
+    }
+    setSelectedThemeId((prev) => (prev != null && themes.some((t) => t.id === prev) ? prev : themes[0].id))
+    let cancelled = false
+    getThemesChart(id, column)
+      .then((c) => {
+        if (!cancelled) setThemesChart(c)
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, column, themes])
 
   useEffect(() => {
     if (!id) return
@@ -348,7 +355,7 @@ export default function Themes() {
 
       {themes !== null && report && !manageThemes && (
         <>
-          <ReportView report={report} datasetId={id} />
+          <ReportView report={report} datasetId={id} themes={themes ?? undefined} />
           <div className="foot">
             <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning}>
               {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
@@ -362,11 +369,27 @@ export default function Themes() {
 
       {themes !== null && (!report || manageThemes) && (
         <>
-          <div className="th-grid">
-            {themes.map((t) => (
-              <Card key={t.id} id={id} theme={t} />
-            ))}
-          </div>
+          {/* One chart showing every theme at a glance, replacing the old wall-of-cards grid (see
+              docs/DECISIONS.md). Clicking or hovering a theme in the chart is handled by ThemeChart
+              itself (see its own comment); the selected theme's full detail renders once, below. */}
+          {themesChart ? (
+            <>
+              <ThemeChart
+                fragment={themesChart}
+                title="Themes"
+                onThemeSelect={(name) => {
+                  const t = themes.find((x) => x.label === name)
+                  if (t) setSelectedThemeId(t.id)
+                }}
+              />
+              {(() => {
+                const selected = themes.find((t) => t.id === selectedThemeId)
+                return selected ? <ThemeDetail id={id} theme={selected} /> : null
+              })()}
+            </>
+          ) : (
+            <p className="muted">Loading the themes chart...</p>
+          )}
           <div className="foot">
             <button type="button" className="btn quiet" onClick={() => void build()}>
               Rebuild themes

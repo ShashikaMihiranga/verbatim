@@ -487,6 +487,71 @@ def test_concurrency_cap_holds_while_a_job_is_genuinely_running(env):
     assert final["status"] == "done", final
 
 
+# ---------------------------------------------------------------- GET .../themes/chart (stream: smart chart)
+def test_themes_chart_happy_path_renders_real_theme_labels(env):
+    """Same "real theme names actually reach the rendered output" pattern `tests/test_api_report.py`'s
+    `test_build_then_get_round_trip_renders_real_chart_html_with_real_theme_names` already uses for the
+    report page's chart fragments - this pins the same thing down for the lightweight themes-chart route."""
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did)
+    assert job["status"] == "done", job
+
+    listed = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    real_labels = [t["label"] for t in listed if t["label"] != "Other"]
+    assert real_labels  # theme_df() reliably yields at least the two real clusters
+
+    r = env.client.get(f"/api/datasets/{did}/themes/chart", params={"column": Q})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert isinstance(body["chart_width"], int) and body["chart_width"] > 0
+    assert isinstance(body["chart_height"], int) and body["chart_height"] > 0
+    assert "<svg" in body["chart_html"]
+    assert "<!doctype html>" not in body["chart_html"].lower()  # a fragment, same shape as app/api_report.py
+    for label in real_labels:
+        assert label in body["chart_html"]
+    # each theme's own drawing is grouped under data-theme="<label>" (frontend/src/ThemeChart.tsx resolves
+    # clicks/hover back to a theme through this attribute - see app/charts.py:treemap_svg).
+    for label in real_labels:
+        assert f'data-theme="{label}"' in body["chart_html"]
+
+
+def test_themes_chart_missing_column_404(env):
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did)
+    assert job["status"] == "done", job
+
+    r = env.client.get(f"/api/datasets/{did}/themes/chart", params={"column": "Some other column"})
+    assert r.status_code == 404, r.text
+
+
+def test_themes_chart_empty_theme_list_404(env):
+    """No themes have ever been built at all for this dataset (never mind this column) - the same "build
+    themes first" 404 a caller would see from a bad column, not a 500 or an empty-but-200 chart."""
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+
+    r = env.client.get(f"/api/datasets/{did}/themes/chart", params={"column": Q})
+    assert r.status_code == 404, r.text
+
+
+def test_themes_chart_ownership_isolation(env):
+    install_fakes()
+    uid1, uid2 = make_users(env, "clerk-1", "clerk-2")
+    as_user(uid1)
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did)
+    assert job["status"] == "done", job
+
+    as_user(uid2)
+    r = env.client.get(f"/api/datasets/{did}/themes/chart", params={"column": Q})
+    assert r.status_code == 404, r.text
+
+
 def test_watchdog_marks_a_truly_stuck_job_failed_without_stopping_the_real_thread(env, monkeypatch):
     """`THEMES_DEADLINE_SECONDS` is now a sanity-check watchdog on the background thread, not something the
     request blocks on (see app/jobs.py:start_job's docstring). A tiny deadline plus a client that is never
