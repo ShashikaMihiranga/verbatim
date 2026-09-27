@@ -6,8 +6,12 @@ answers are untrusted, so any file a person can download and open in a spreadshe
 `csv_safe_frame` / `csv_safe_bytes` first: such cells get a single quote prefix, which spreadsheets show as plain
 text. Values after leading whitespace are treated the same way (" =1+1"), and so are the full-width look-alikes.
 
-The internal analysis file (UPLOAD_DIR/<hash>.clean.csv) is deliberately NOT changed: the pipeline reads it back
-and needs the real values. There is no download route yet; any future one must use this module.
+The internal analysis copy (`app.models.CleanedFile`, keyed by the sha256 of its bytes) is deliberately NOT
+changed: the pipeline reads it back and needs the real values. There is no download route yet; any future
+one must use this module.
+
+This module itself does no disk (or database) I/O at all - `csv_safe_frame`/`csv_safe_bytes` are pure
+in-memory pandas transforms, so it needed no change for the move off disk storage; only this comment did.
 """
 from __future__ import annotations
 
