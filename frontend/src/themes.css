@@ -40,6 +40,20 @@
 .th-progress { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 40px 28px; text-align: center; color: var(--muted); }
 .th-progress .big { font-size: 18px; font-weight: 500; color: var(--ink); margin-bottom: 6px; }
 
+/* A plain, honest "real work is happening" indicator - an indeterminate spinner, never a percentage or a
+   fake progress bar (see JobProgress.tsx). No gradients or shadows, per CLAUDE.md's design rules. */
+.jp-spinner { width: 28px; height: 28px; margin: 0 auto 16px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent); animation: jp-spin 0.9s linear infinite; }
+.jp-step { font-size: 15px; }
+.jp-note { margin-top: 10px; }
+
+@keyframes jp-spin {
+  to { transform: rotate(360deg); }
+}
+
+.jp-failed { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 28px; text-align: center; }
+.jp-failed .big { font-size: 18px; font-weight: 500; margin-bottom: 8px; }
+.jp-failed .err { margin: 0 0 20px; }
+
 @media (max-width: 640px) {
   .th-grid { grid-template-columns: 1fr; }
 }

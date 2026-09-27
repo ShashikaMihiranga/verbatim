@@ -1,4 +1,5 @@
 import { authFetch } from './authFetch'
+import type { BuildStarted } from './jobsApi'
 
 export interface ReportFinding {
   id: number
@@ -37,7 +38,10 @@ async function asError(r: Response): Promise<Error> {
   return new Error(msg)
 }
 
-export async function buildReport(id: number, column: string): Promise<ReportResponse> {
+// Starts a report build as a background job and returns immediately (202 `{job_id, status: "running"}`) -
+// see app/themesApi.ts's `buildThemes` for why: only cheap/instant checks (ownership, missing Claude key)
+// throw here now; "no themes yet" surfaces later as the job's own `error`.
+export async function buildReport(id: number, column: string): Promise<BuildStarted> {
   const r = await authFetch(`/api/datasets/${id}/report/build`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -1,4 +1,5 @@
 import { authFetch } from './authFetch'
+import type { BuildStarted } from './jobsApi'
 
 export interface ToneSplit {
   neg: number
@@ -49,7 +50,12 @@ async function asError(r: Response): Promise<Error> {
   return new Error(msg)
 }
 
-export async function buildThemes(id: number, column: string, useJevSentiment = false): Promise<ThemesResponse> {
+// Starts a themes build as a background job and returns immediately (202 `{job_id, status: "running"}`) -
+// it does NOT wait for themes to exist. Any error thrown here is a cheap, instant check that failed before
+// the job even started (ownership, unknown column, a missing embedding/Claude/Jev key, or the build being
+// busy) - once a job has started, a failure (e.g. "too few answers") surfaces later as that job's own
+// `error` field, polled via `app.jobsApi.pollJob`, not as a rejection of this call.
+export async function buildThemes(id: number, column: string, useJevSentiment = false): Promise<BuildStarted> {
   const r = await authFetch(`/api/datasets/${id}/themes/build`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

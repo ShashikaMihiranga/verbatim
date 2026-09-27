@@ -6,6 +6,9 @@ import { buildThemes, getThemeAnswers, getThemes } from './themesApi'
 import type { ThemeAnswer, ThemeCard } from './themesApi'
 import { buildReport, getReport } from './reportApi'
 import type { ReportResponse } from './reportApi'
+import { getLatestJob, pollJob } from './jobsApi'
+import type { Job } from './jobsApi'
+import JobProgress from './JobProgress'
 import ReportView from './Report'
 import './upload.css'
 import './themes.css'
@@ -122,14 +125,53 @@ export default function Themes() {
   const [column, setColumn] = useState<string | null>(null)
   const [useJev, setUseJev] = useState(false)
   const [themes, setThemes] = useState<ThemeCard[] | null>(null)
-  const [building, setBuilding] = useState(false)
+  const [themesJob, setThemesJob] = useState<Job | null>(null)
   const [report, setReport] = useState<ReportResponse | null>(null)
-  const [reportBuilding, setReportBuilding] = useState(false)
+  const [reportJob, setReportJob] = useState<Job | null>(null)
   const [manageThemes, setManageThemes] = useState(false)
   const [error, setError] = useState('')
 
+  // Both builds now run as background jobs (see docs/DECISIONS.md): starting one only creates a `Job` row
+  // and returns immediately, so the real "did it work" answer arrives later, from polling. `watch` starts
+  // that polling and wires it to whichever `set*Job`/refresh pair the caller is watching; every place that
+  // starts or resumes a job (an explicit click, or the page-load resume below) goes through it, so there is
+  // exactly one polling implementation for both themes and report jobs, not two near-duplicates.
+  function watch(job: Job, setJob: (j: Job | null) => void, refresh: () => void): () => void {
+    setJob(job)
+    if (job.status !== 'running') return () => {}
+    return pollJob(id, job.id, (j) => {
+      setJob(j)
+      if (j.status === 'done') refresh()
+    })
+  }
+
+  async function refreshThemes() {
+    if (!column) return
+    try {
+      const existing = await getThemes(id, column)
+      setThemes(existing.themes)
+      setThemesJob(null)
+      setReport(null) // a rebuilt set of themes needs its report rebuilt too - see build() below
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  async function refreshReport() {
+    if (!column) return
+    try {
+      setReport(await getReport(id, column))
+      setReportJob(null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
   useEffect(() => {
     if (!id) return
+    let stopThemesPoll = () => {}
+    let stopReportPoll = () => {}
+
     getProfile(id)
       .then(async (d) => {
         setDs(d)
@@ -138,21 +180,54 @@ export default function Themes() {
           d.profile.columns.find((c) => (conf?.columns[c.name]?.kind ?? c.kind) === 'open_text' && !conf?.columns[c.name]?.off)
             ?.name ?? null
         setColumn(col)
-        if (col) {
-          try {
-            const existing = await getThemes(id, col)
-            if (existing.themes.length > 0) setThemes(existing.themes)
-          } catch {
-            /* nothing built yet; show the build trigger */
+        if (!col) return
+
+        // Themes already built (the common case on a normal page view) win outright. Otherwise, before
+        // assuming nothing has ever been started, check for a running or just-finished job for this
+        // dataset+column - a reload mid-build (or right after one) must resume the progress/error view,
+        // never silently fall back to "ready to build" or a stale error.
+        let hasThemes = false
+        try {
+          const existing = await getThemes(id, col)
+          if (existing.themes.length > 0) {
+            setThemes(existing.themes)
+            hasThemes = true
           }
+        } catch {
+          /* nothing built yet - fall through to the job lookup below */
+        }
+        if (!hasThemes) {
           try {
-            setReport(await getReport(id, col))
+            const job = await getLatestJob(id, col, 'themes')
+            if (job) stopThemesPoll = watch(job, setThemesJob, () => void refreshThemes())
           } catch {
-            /* no report built yet; show the build-report trigger once themes exist */
+            /* no job either; show the build trigger */
+          }
+        }
+
+        let hasReport = false
+        try {
+          setReport(await getReport(id, col))
+          hasReport = true
+        } catch {
+          /* no report built yet - fall through to the job lookup below */
+        }
+        if (!hasReport) {
+          try {
+            const job = await getLatestJob(id, col, 'report')
+            if (job) stopReportPoll = watch(job, setReportJob, () => void refreshReport())
+          } catch {
+            /* no job either; show the build-report trigger once themes exist */
           }
         }
       })
       .catch((e: Error) => setError(e.message))
+
+    return () => {
+      stopThemesPoll()
+      stopReportPoll()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   if (!id) {
@@ -191,29 +266,42 @@ export default function Themes() {
   }
 
   async function build() {
-    setBuilding(true)
     setError('')
     try {
-      const r = await buildThemes(id, column as string, useJev)
-      setThemes(r.themes)
-      setReport(null)  // old report (if any) no longer matches the rebuilt themes - build it again below
+      const started = await buildThemes(id, column as string, useJev)
+      setThemes(null)
+      watch(
+        { id: started.job_id, dataset_id: id, column: column as string, kind: 'themes', status: 'running', step: 'Starting', error: null },
+        setThemesJob,
+        () => void refreshThemes(),
+      )
     } catch (e) {
+      // A cheap/instant check failed before any job started (e.g. a missing key, or busy) - still an
+      // immediate error, exactly as before.
       setError((e as Error).message)
     }
-    setBuilding(false)
   }
 
   async function buildTheReport() {
-    setReportBuilding(true)
     setError('')
     try {
-      setReport(await buildReport(id, column as string))
+      const started = await buildReport(id, column as string)
+      setReport(null)
       setManageThemes(false)
+      watch(
+        { id: started.job_id, dataset_id: id, column: column as string, kind: 'report', status: 'running', step: 'Starting', error: null },
+        setReportJob,
+        () => void refreshReport(),
+      )
     } catch (e) {
       setError((e as Error).message)
     }
-    setReportBuilding(false)
   }
+
+  const themesRunning = themesJob !== null && themesJob.status === 'running'
+  const themesFailed = themesJob !== null && themesJob.status === 'failed'
+  const reportRunning = reportJob !== null && reportJob.status === 'running'
+  const reportFailed = reportJob !== null && reportJob.status === 'failed'
 
   return (
     <>
@@ -227,14 +315,19 @@ export default function Themes() {
 
       {error && <div className="err" role="alert">{error}</div>}
 
-      {building && (
-        <div className="th-progress">
-          <div className="big">Finding themes in your answers...</div>
-          <div>This can take a minute or two for a large file. Please stay on this page.</div>
+      {themesRunning && themesJob && <JobProgress job={themesJob} />}
+
+      {themesFailed && themesJob && (
+        <div className="jp-failed">
+          <div className="big">Building themes didn't work</div>
+          <p className="err" role="alert">{themesJob.error}</p>
+          <button type="button" className="btn" onClick={() => void build()}>
+            Try again
+          </button>
         </div>
       )}
 
-      {!building && themes === null && (
+      {!themesJob && themes === null && (
         <div className="th-build">
           <div className="big">Ready to find themes</div>
           <p className="small">
@@ -253,12 +346,12 @@ export default function Themes() {
         </div>
       )}
 
-      {!building && themes !== null && report && !manageThemes && (
+      {themes !== null && report && !manageThemes && (
         <>
           <ReportView report={report} datasetId={id} />
           <div className="foot">
-            <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportBuilding}>
-              {reportBuilding ? 'Rebuilding report...' : 'Rebuild report'}
+            <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning}>
+              {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
             </button>
             <button type="button" className="btn quiet" onClick={() => setManageThemes(true)}>
               Manage themes
@@ -267,7 +360,7 @@ export default function Themes() {
         </>
       )}
 
-      {!building && themes !== null && (!report || manageThemes) && (
+      {themes !== null && (!report || manageThemes) && (
         <>
           <div className="th-grid">
             {themes.map((t) => (
@@ -287,10 +380,15 @@ export default function Themes() {
 
           {!report && (
             <div className="rp-build">
-              {reportBuilding ? (
-                <div className="th-progress">
-                  <div className="big">Building your report...</div>
-                  <div>This can take a little while for a large file. Please stay on this page.</div>
+              {reportRunning && reportJob ? (
+                <JobProgress job={reportJob} />
+              ) : reportFailed && reportJob ? (
+                <div className="jp-failed">
+                  <div className="big">Building the report didn't work</div>
+                  <p className="err" role="alert">{reportJob.error}</p>
+                  <button type="button" className="btn" onClick={() => void buildTheReport()}>
+                    Try again
+                  </button>
                 </div>
               ) : (
                 <div className="th-build">
