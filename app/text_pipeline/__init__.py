@@ -21,7 +21,7 @@ already gives both consumers a single `EmbeddingClient`.
 """
 from .schema import AnswerScore, Cluster, ClusterMember, ClusterResult, ThemeLabel
 from .embeddings import EmbeddingClient, EmbeddingNotConfigured, FakeEmbeddingClient, VoyageEmbeddingClient
-from .clustering import adaptive_min_cluster_size, cluster_answers
+from .clustering import adaptive_min_cluster_size, adaptive_min_samples, adaptive_n_components, cluster_answers
 from .pipeline import TooFewAnswers, embed_and_cluster
 from .labeling import (
     AnthropicClaudeClient,
@@ -53,7 +53,7 @@ from .jev_sentiment import (
 __all__ = [
     "AnswerScore", "Cluster", "ClusterMember", "ClusterResult", "ThemeLabel",
     "EmbeddingClient", "EmbeddingNotConfigured", "FakeEmbeddingClient", "VoyageEmbeddingClient",
-    "adaptive_min_cluster_size", "cluster_answers",
+    "adaptive_min_cluster_size", "adaptive_min_samples", "adaptive_n_components", "cluster_answers",
     "TooFewAnswers", "embed_and_cluster",
     "AnthropicClaudeClient", "ClaudeClient", "LabelingError", "label_clusters",
     "LabelingClaudeNotConfigured", "FakeLabelingClaudeClient",
