@@ -2,11 +2,14 @@
 and an owner-only HTTP layer, matching `app/api_themes.py`'s conventions exactly rather than inventing a
 second style for the same kind of route.
 
-POST /api/datasets/{id}/report/build   body {"column": str} -> builds/rebuilds the report for that column
-                                        (embeds no new network step of its own: themes must already exist -
-                                        `app.findings.build_findings` does the real work, one batched Claude
-                                        call for headlines only) and returns it fully rendered, same shape
-                                        as the GET below.
+POST /api/datasets/{id}/report/build   body {"column": str} -> validates ownership/themes-exist/Claude key
+                                        synchronously, then starts `app.findings.build_findings` (the real
+                                        work: candidate scoring, one batched Claude call for headlines,
+                                        building `ReportData`, writing `Finding`/`Report` rows) in a
+                                        background thread and returns 202 {job_id, status: "running"}
+                                        immediately - replacing any job/report already stored for that
+                                        dataset + column. Poll `GET /api/datasets/{id}/jobs/{job_id}`, then
+                                        call the GET route below once it is "done".
 GET  /api/datasets/{id}/report?column=...   returns the most recently stored report for this dataset+column,
                                         with every block's chart re-rendered fresh from the current `Theme`/
                                         `Finding` rows (see app/findings.py's `build_findings` docstring,
@@ -32,13 +35,14 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import db as _db
 from .api_themes import _load_clean_df, get_claude_client
 from .api_upload import _own_dataset, current_user
 from .charts import TITLES, render
@@ -49,6 +53,7 @@ from .findings import (
     build_findings,
     build_report_data,
 )
+from .jobs import create_job, start_job
 from .models import Dataset, Finding, Report, Theme, User
 from .text_pipeline import ClaudeClient
 from .text_pipeline.labeling import OTHER_LABEL
@@ -64,15 +69,6 @@ router = APIRouter(prefix="/api")
 # rather than inventing a third convention: this route's heaviest step is a single small batched call, not
 # the multi-step pipeline themes-building runs. See docs/DECISIONS.md.
 _SLOTS = threading.BoundedSemaphore(max(1, int(os.environ.get("REPORT_CONCURRENCY", "2") or 2)))
-
-
-class _Slot:
-    def __enter__(self):
-        if not _SLOTS.acquire(blocking=False):
-            raise HTTPException(429, "Report building is busy with other jobs. Try again in a few seconds.")
-
-    def __exit__(self, *exc):
-        _SLOTS.release()
 
 
 class BuildRequest(BaseModel):
@@ -171,9 +167,24 @@ def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dic
     }
 
 
+def _report_build_error(e: BaseException) -> str | None:
+    """Maps each exception `build_report`'s pipeline can raise to the exact human-readable message a
+    caller used to receive as an HTTP error body (422/503) - now `job.error` instead. `None` for anything
+    unanticipated, which `app.jobs.start_job` re-raises after marking the job failed generically."""
+    if isinstance(e, NoThemesForColumn):
+        return str(e)
+    if isinstance(e, FindingsClaudeNotConfigured):
+        # Defence in depth only: `get_claude_client` (the route's own `Depends`) already turns a missing
+        # key into a 503 before the route body - and so before any job is even created - runs, so this
+        # path is not expected to be reachable in practice. Kept because the brief this stream was built
+        # from asks for it explicitly. See docs/DECISIONS.md.
+        return "Report building needs a Claude key (ANTHROPIC_API_KEY) that is not configured yet."
+    return None
+
+
 # ---------------------------------------------------------------- routes
 
-@router.post("/datasets/{dataset_id}/report/build")
+@router.post("/datasets/{dataset_id}/report/build", status_code=202)
 def build_report(
     dataset_id: int,
     body: BuildRequest,
@@ -181,6 +192,11 @@ def build_report(
     user: User = Depends(current_user),
     claude_client: ClaudeClient = Depends(get_claude_client),
 ):
+    """Validates ownership and the Claude key (via `Depends(get_claude_client)`) synchronously - those stay
+    immediate HTTP errors exactly as before. Whether themes exist yet (`NoThemesForColumn`) can only be
+    known once `app.findings.build_findings` actually runs, so - like `TooFewAnswers` on the themes side -
+    it now surfaces as `job.error` rather than a synchronous 422; `_report_build_error` maps it to the same
+    message text a caller used to receive in the HTTP body. See docs/DECISIONS.md for why 202, not 200."""
     ds = _own_dataset(db, user, dataset_id)
     column = body.column
 
@@ -192,24 +208,37 @@ def build_report(
         clean_df, _plan = _load_clean_df(ds, db)
         answer_lengths = _answer_lengths_for(clean_df, column, themes)
 
-    with _Slot():
-        try:
-            report = build_findings(
-                ds, column, db, claude_client,
-                cleaning_report=_cleaning_report_for(ds), answer_lengths=answer_lengths,
-            )
-        except NoThemesForColumn as e:
-            raise HTTPException(422, str(e)) from e
-        except FindingsClaudeNotConfigured as e:
-            # Defence in depth only: `get_claude_client` above already turns a missing key into a 503
-            # before this route body ever runs (same provider `app.api_themes` uses), so this path is not
-            # expected to be reachable in practice - kept because the brief this stream was built from asks
-            # for it explicitly. See docs/DECISIONS.md.
-            raise HTTPException(
-                503, "Report building needs a Claude key (ANTHROPIC_API_KEY) that is not configured yet."
-            ) from e
+    # The only check left that can still fail synchronously: a full slot is knowable instantly, with no
+    # thread started, so it stays an immediate 429 exactly like before.
+    if not _SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "Report building is busy with other jobs. Try again in a few seconds.")
 
-    return _render_report(db, ds, column, report)
+    dataset_id_ = ds.id
+    cleaning_report = _cleaning_report_for(ds)
+    job = create_job(db, dataset_id_, column, "report")
+
+    def _work(step: Callable[[str], None]) -> None:
+        with _db.SessionLocal() as job_db:
+            job_ds = job_db.get(Dataset, dataset_id_)
+            # `build_findings` is not modified (out of scope for this stream): candidate scoring, the one
+            # batched `write_headline` Claude call, building `ReportData` and writing `Finding`/`Report`
+            # rows all happen inside this single un-instrumented call, so this is the only real phase
+            # boundary available before it - see docs/DECISIONS.md for why no separate "Writing headlines"
+            # step is faked in between.
+            step("Deciding what's worth telling")
+            report = build_findings(
+                job_ds, column, job_db, claude_client,
+                cleaning_report=cleaning_report, answer_lengths=answer_lengths,
+            )
+            step("Drawing charts")
+            # Rendered here too (and discarded) purely so a rendering bug fails the job with a plain
+            # message instead of surfacing only later as a broken GET - `GET .../report` always re-renders
+            # fresh from the stored rows regardless (app/findings.py's own "Render-vs-store-HTML" note).
+            _render_report(job_db, job_ds, column, report)
+
+    start_job(job, _SLOTS, _work, _report_build_error)
+
+    return {"job_id": job.id, "status": "running"}
 
 
 @router.get("/datasets/{dataset_id}/report")
