@@ -1,15 +1,22 @@
-"""Build-themes API (stream 6): wires the text pipeline (embed, cluster, label, sentiment - all already
-built in `app/text_pipeline/`) to storage and an owner-only API.
+"""Build-themes API (stream 6, now running as an async background job): wires the text pipeline (embed,
+cluster, label, sentiment - all already built in `app/text_pipeline/`) to storage and an owner-only API.
 
-POST /api/datasets/{id}/themes/build           embed + cluster + label + score one open-text column, replacing
-                                                any themes already stored for that dataset + column
-GET  /api/datasets/{id}/themes?column=...      list stored themes for a column
+POST /api/datasets/{id}/themes/build           validates everything cheap/instant (ownership, column,
+                                                Jev/embedding/Claude keys) synchronously, then starts the
+                                                real embed + cluster + label + score pipeline in a
+                                                background thread and returns 202 {job_id, status:
+                                                "running"} immediately - replacing any job/themes already
+                                                stored for that dataset + column, same as before
+GET  /api/datasets/{id}/themes?column=...      list stored themes for a column (poll this once the job for
+                                                that column is "done" - see app/api_jobs.py)
 GET  /api/datasets/{id}/themes/{tid}/answers   paginated, REAL (unmasked) verbatim text behind one theme
 
 Everything is owner-only (same `current_user`/`_own_dataset` as uploads and cleaning). Only one or two
 build jobs run at once (`THEMES_CONCURRENCY`) - this is much heavier than cleaning (real embedding and
-Claude calls, not just in-process pandas work), so the default cap is lower. See docs/DECISIONS.md
-(2026-09-25 entry) for the concurrency, deadline, schema and DI choices made here.
+Claude calls, not just in-process pandas work), so the default cap is lower. `app/jobs.py::start_job` is
+the shared thread/status-update helper this module shares with `app/api_report.py`. See docs/DECISIONS.md
+(2026-09-25 entry for the original concurrency/schema/DI choices; the dated "async build jobs" entry for
+why the request no longer blocks on the pipeline at all).
 
 Masking: `embed_and_cluster`/`label_clusters` only ever see text through `model_safe_column` (the pipeline's
 own contract - this module never touches `clean_df[column]` directly for that). The `/answers` route is
@@ -24,8 +31,6 @@ import io
 import os
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Callable
 
 import pandas as pd
@@ -34,9 +39,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import db as _db
 from .api_upload import _own_dataset, current_user
 from .cleaning import CleaningError, CleaningPlan
 from .db import get_db
+from .jobs import create_job, start_job
 from .models import CleanedFile, Column, Dataset, Theme, User
 from .text_pipeline import (
     AnthropicClaudeClient,
@@ -64,19 +71,12 @@ router = APIRouter(prefix="/api")
 # Embedding + Claude labelling of a full column means real network round trips, not just in-process pandas
 # work like cleaning - so the default concurrency cap is lower than `CLEAN_CONCURRENCY`'s.
 _SLOTS = threading.BoundedSemaphore(max(1, int(os.environ.get("THEMES_CONCURRENCY", "1") or 1)))
-# A generous but finite deadline: embedding + clustering + one batched Claude call on a large column can
-# genuinely take a while. 300s (5 min) is a judgement call, not a measurement - see docs/DECISIONS.md.
+# Kept as a background-thread watchdog, not retired: nothing blocks on it from the request side any more
+# (the route returns as soon as the job is created), but a truly hung embedding/Claude call could otherwise
+# leave a job stuck at "running" forever with no one ever told. `_watchdog` below marks the job failed with
+# a clear message if the pipeline itself does not finish inside this many seconds - see docs/DECISIONS.md.
 THEMES_DEADLINE_SECONDS = float(os.environ.get("THEMES_DEADLINE_SECONDS", "300") or 300)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-
-
-class _Slot:
-    def __enter__(self):
-        if not _SLOTS.acquire(blocking=False):
-            raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
-
-    def __exit__(self, *exc):
-        _SLOTS.release()
 
 
 # ---------------------------------------------------------------- client DI (see docs/DECISIONS.md)
@@ -131,28 +131,6 @@ def _load_clean_df(ds: Dataset, db: Session) -> tuple[pd.DataFrame, CleaningPlan
     return df, plan
 
 
-def _run_with_deadline(fn: Callable[[], object]) -> object:
-    """Runs `fn` in a worker thread and waits at most `THEMES_DEADLINE_SECONDS` for it.
-
-    This is a SOFT deadline: Python cannot forcibly kill a running thread, so a timed-out call keeps
-    running in the background (its result is simply discarded) rather than being interrupted mid-network-
-    call. Good enough to stop a single slow request from hanging forever; a real background job queue
-    (Celery/RQ/etc.) is the right fix at scale - see docs/DECISIONS.md.
-    """
-    ex = ThreadPoolExecutor(max_workers=1)
-    future = ex.submit(fn)
-    try:
-        return future.result(timeout=THEMES_DEADLINE_SECONDS)
-    except FutureTimeoutError:
-        raise HTTPException(
-            504,
-            f"Building themes took longer than {int(THEMES_DEADLINE_SECONDS)} seconds and was stopped. "
-            "Try again, or with a smaller file.",
-        ) from None
-    finally:
-        ex.shutdown(wait=False)
-
-
 def _theme_dict(t: Theme, total: int) -> dict:
     # "Other" is always the locally-synthesized catch-all (see app/text_pipeline/labeling.py), never a
     # real theme - identified by its label text, which that module fixes to exactly "Other".
@@ -176,8 +154,75 @@ class BuildRequest(BaseModel):
     use_jev_sentiment: bool = False
 
 
+def _write_theme_rows(
+    db: Session, dataset_id: int, column: str, result, labels, scores,
+) -> list[Theme]:
+    """The row-building/replace step `build_themes` used to run inline, synchronously, at the end of its
+    request. Factored out so the background job thread (see `app/jobs.py`) can call it with its OWN
+    short-lived `Session` once the real pipeline work finishes - the request's own `db` session is long
+    gone by then, since the request itself returned as soon as the job was created."""
+    scores_by_row = {s.row: s for s in scores if s is not None}
+
+    def _aggregate(rows: list[int]) -> tuple[dict, float]:
+        theme_scores = [scores_by_row[r] for r in rows if r in scores_by_row]
+        ts = tone_split(theme_scores)
+        sentiment = sum(s.polarity for s in theme_scores) / len(theme_scores) if theme_scores else 0.0
+        return {"neg": ts.neg, "neu": ts.neu, "pos": ts.pos}, sentiment
+
+    # `label_clusters` returns one entry per `result.clusters` (same order), plus at most one extra
+    # "Other" entry appended at the end iff `result.noise` is non-empty - see its docstring.
+    real_labels = labels[: len(result.clusters)]
+    other_labels = labels[len(result.clusters):]
+
+    column_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
+    column_id = column_row.id if column_row else None
+
+    new_rows: list[Theme] = []
+    for cluster, label in zip(result.clusters, real_labels):
+        rows = [m.row for m in cluster.members]
+        tone, sentiment = _aggregate(rows)
+        new_rows.append(Theme(
+            dataset_id=dataset_id, column_id=column_id, column_name=column,
+            label=label.label, description=label.description, size=label.size,
+            sentiment=sentiment, tone=tone, answer_refs=rows,
+        ))
+    for label in other_labels:
+        rows = [m.row for m in result.noise]
+        tone, sentiment = _aggregate(rows)
+        new_rows.append(Theme(
+            dataset_id=dataset_id, column_id=column_id, column_name=column,
+            label=label.label, description=label.description, size=label.size,
+            sentiment=sentiment, tone=tone, answer_refs=rows,
+        ))
+
+    # A rebuild replaces old themes with new ones atomically: either every step above succeeded and this
+    # commits, or an exception was already raised and nothing here runs, leaving any previously-stored
+    # themes untouched.
+    for old in db.scalars(select(Theme).where(Theme.dataset_id == dataset_id, Theme.column_name == column)).all():
+        db.delete(old)
+    db.add_all(new_rows)
+    db.commit()
+    return new_rows
+
+
+def _theme_build_error(e: BaseException) -> str | None:
+    """Maps each exception `build_themes`'s pipeline can raise to the exact human-readable message a
+    caller used to receive as an HTTP error body (422/502) - now `job.error` instead. Returns `None` for
+    anything unanticipated, which `app.jobs.start_job` re-raises after marking the job failed with a
+    generic message, so it still surfaces in server logs rather than being silently swallowed."""
+    if isinstance(e, TooFewAnswers):
+        return str(e)
+    if isinstance(e, CleaningError):
+        return str(e)
+    if isinstance(e, LabelingError):
+        return f"Theme labelling failed: {e}"
+    if isinstance(e, JevError):
+        return f"Jev sentiment scoring failed: {e}"
+    return None
+
+
 # ---------------------------------------------------------------- routes
-@router.post("/datasets/{dataset_id}/themes/build")
+@router.post("/datasets/{dataset_id}/themes/build", status_code=202)
 def build_themes(
     dataset_id: int,
     body: BuildRequest,
@@ -187,6 +232,12 @@ def build_themes(
     claude_client: ClaudeClient = Depends(get_claude_client),
     jev_factory: Callable[[], JevClient] = Depends(get_jev_client_factory),
 ):
+    """Validates everything that can fail cheaply and instantly BEFORE starting any background work -
+    ownership, column exists, Jev key check if requested, embedding/Claude key checks (via the `Depends`
+    providers above) - so those stay immediate HTTP errors exactly as before. Once validated, the real
+    pipeline (embed, cluster, label, score) runs in a background daemon thread; this route returns as soon
+    as the `Job` row exists, never blocking on the pipeline itself. See docs/DECISIONS.md for why this
+    returns 202, not 200."""
     ds = _own_dataset(db, user, dataset_id)
     clean_df, plan = _load_clean_df(ds, db)
     column = body.column
@@ -207,74 +258,39 @@ def build_themes(
     if not question:
         question = ((ds.profile or {}).get("question") or {}).get("text") or column
 
-    def _pipeline():
+    # The only check left that can still fail synchronously: a full slot is knowable instantly, with no
+    # thread started, so it stays an immediate 429 exactly like before - see app/jobs.py:start_job's
+    # docstring for why the slot is acquired here but released inside the thread once real work finishes.
+    if not _SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
+
+    dataset_id_ = ds.id
+    use_jev = body.use_jev_sentiment
+    job = create_job(db, dataset_id_, column, "themes")
+
+    def _work(step: Callable[[str], None]) -> None:
+        step("Turning answers into vectors")
         result = embed_and_cluster(clean_df, plan, column, embedding_client)
+        step("Naming each group")
         labels = label_clusters(result, question, claude_client)
-        if body.use_jev_sentiment:
+        step("Scoring tone")
+        if use_jev:
             scores = score_column_with_jev(clean_df, plan, column, jev_client)
         else:
             scores = score_column(clean_df, plan, column)
-        return result, labels, scores
+        with _db.SessionLocal() as job_db:
+            _write_theme_rows(job_db, dataset_id_, column, result, labels, scores)
 
-    with _Slot():
-        try:
-            result, labels, scores = _run_with_deadline(_pipeline)
-        except TooFewAnswers as e:
-            raise HTTPException(422, str(e)) from e
-        except CleaningError as e:
-            raise HTTPException(422, str(e)) from e
-        except LabelingError as e:
-            raise HTTPException(502, f"Theme labelling failed: {e}") from e
-        except JevError as e:
-            raise HTTPException(502, f"Jev sentiment scoring failed: {e}") from e
+    start_job(
+        job, _SLOTS, _work, _theme_build_error,
+        deadline_seconds=THEMES_DEADLINE_SECONDS,
+        deadline_message=(
+            f"Building themes took longer than {int(THEMES_DEADLINE_SECONDS)} seconds and did not finish "
+            "in time. Try again, or with a smaller file."
+        ),
+    )
 
-        scores_by_row = {s.row: s for s in scores if s is not None}
-
-        def _aggregate(rows: list[int]) -> tuple[dict, float]:
-            theme_scores = [scores_by_row[r] for r in rows if r in scores_by_row]
-            ts = tone_split(theme_scores)
-            sentiment = sum(s.polarity for s in theme_scores) / len(theme_scores) if theme_scores else 0.0
-            return {"neg": ts.neg, "neu": ts.neu, "pos": ts.pos}, sentiment
-
-        # `label_clusters` returns one entry per `result.clusters` (same order), plus at most one extra
-        # "Other" entry appended at the end iff `result.noise` is non-empty - see its docstring.
-        real_labels = labels[: len(result.clusters)]
-        other_labels = labels[len(result.clusters):]
-
-        column_row = db.scalar(select(Column).where(Column.dataset_id == ds.id, Column.name == column))
-        column_id = column_row.id if column_row else None
-
-        new_rows: list[Theme] = []
-        for cluster, label in zip(result.clusters, real_labels):
-            rows = [m.row for m in cluster.members]
-            tone, sentiment = _aggregate(rows)
-            new_rows.append(Theme(
-                dataset_id=ds.id, column_id=column_id, column_name=column,
-                label=label.label, description=label.description, size=label.size,
-                sentiment=sentiment, tone=tone, answer_refs=rows,
-            ))
-        for label in other_labels:
-            rows = [m.row for m in result.noise]
-            tone, sentiment = _aggregate(rows)
-            new_rows.append(Theme(
-                dataset_id=ds.id, column_id=column_id, column_name=column,
-                label=label.label, description=label.description, size=label.size,
-                sentiment=sentiment, tone=tone, answer_refs=rows,
-            ))
-
-        # Nothing above touched the database - a rebuild replaces old themes with new ones atomically:
-        # either every step above succeeded and this commits, or an exception was already raised and
-        # nothing here runs, leaving any previously-stored themes untouched.
-        for old in db.scalars(select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column)).all():
-            db.delete(old)
-        db.add_all(new_rows)
-        db.commit()
-
-    total = result.total_answers
-    return {
-        "dataset_id": ds.id, "column": column, "total_answers": total,
-        "themes": [_theme_dict(t, total) for t in new_rows],
-    }
+    return {"job_id": job.id, "status": "running"}
 
 
 @router.get("/datasets/{dataset_id}/themes")
