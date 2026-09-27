@@ -62,6 +62,14 @@ After Check columns the app proposes a cleaning plan that fits the data, shows w
 - Needs both `VOYAGE_API_KEY` and `ANTHROPIC_API_KEY` set; either missing gives a clear `503`, before any network call, never a generic error. `use_jev_sentiment: true` additionally needs `TYPESAFE_API_KEY` (same clear `503` if missing) and replaces the free lexicon with Jev's per-row tone classifier for that build.
 - This can be slow: a real build does an embedding call plus one batched Claude call over the whole column, so `THEMES_CONCURRENCY` (default 1) caps concurrent jobs and `THEMES_DEADLINE_SECONDS` (default 300) is a soft per-request deadline - see `docs/DECISIONS.md` (2026-09-25) for why it is soft, not a hard kill. The `/report` screen says up front that this can take a minute or two.
 
+## Build the report
+
+`app/findings.py` (already built and tested) turns stored themes into a short, scored set of findings; `app/api_report.py` wires it to storage and an owner-only API, and the `/report` screen shows the real thing once it exists: a header sentence, up to about five finding blocks (one sentence, one chart, a Solid/Tentative badge, "See answers"), and a quality footer - or "Also checked, nothing notable" when nothing clears the bar.
+
+- API (owner only, same sign-in and ownership check as themes): `POST /api/datasets/{id}/report/build` (`{"column": str}`) builds or rebuilds the report for that column (themes must already exist for it - build those first); `GET /api/datasets/{id}/report?column=...` returns the stored report with every block's chart freshly re-rendered from the current theme/finding rows (never cached HTML, so a theme rename/merge/split can never leave a stale chart behind). Both return the same shape: `question`, a `summary` line computed in code from already-stored numbers (never a second Claude call), `also_checked_nothing_notable`, and `blocks` (each with its chart, one sentence, a confidence badge, and the `theme_id` to open with the existing `GET .../themes/{id}/answers` "see answers" endpoint).
+- Needs `ANTHROPIC_API_KEY` (one batched Claude call for headline sentences only, numbers in, plain English out - never raw answers); missing key gives a clear `503`, same style as themes. No themes built yet for that column gives a `422` telling you to build themes first.
+- `REPORT_CONCURRENCY` (default 2) caps concurrent build jobs, then `429`. Lighter than `THEMES_CONCURRENCY`'s default of 1 - report building's only network cost is one small batched call, not a whole embed-and-cluster pipeline - but not left uncapped either, matching `CLEAN_CONCURRENCY`'s convention for "real but modest" load. See `docs/DECISIONS.md`.
+
 ## Set up Clerk
 
 Sign-in uses Clerk with our own screens (custom flow). The backend only needs Clerk's public key list; the Clerk **secret key is not used anywhere** and must never be added to this repo, the frontend or Railway variables for this app.
