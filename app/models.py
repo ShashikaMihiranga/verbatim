@@ -115,6 +115,27 @@ class CleanedFile(Base):
     created_at: Mapped[datetime] = _created()
 
 
+class Job(Base):
+    """A background build (themes or report) that runs in a daemon thread, not inside the request that
+    started it (see app/jobs.py and docs/DECISIONS.md, "async build jobs"). One row per build attempt for
+    a dataset+column+kind - a fresh build replaces the prior job row the same way `Theme` rows are already
+    replaced on rebuild, so `GET .../jobs/latest` always has at most one row to find.
+    """
+    __tablename__ = "jobs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    column_name: Mapped[str] = mapped_column(String(255), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # "themes" | "report"
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running | done | failed
+    # short plain-English phase, e.g. "Turning answers into vectors" - never jargon, never a raw percentage
+    step: Mapped[str] = mapped_column(String(255), default="Starting")
+    # the exact human-readable message a caller would previously have received as an HTTP error body -
+    # never a raw traceback (see app/jobs.py:_error_message_for)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class SigninVariantLog(Base):
     __tablename__ = "signin_variant_log"
     id: Mapped[int] = mapped_column(primary_key=True)
