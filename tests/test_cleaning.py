@@ -1,5 +1,6 @@
 """Adaptive cleaning (stream 5). All data is written inline; no network."""
 import hashlib
+import io
 import json
 import random
 import time
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -17,6 +18,7 @@ from app.cleaning import (CleaningError, apply_plan, model_safe_samples, plan_cl
                           redact_text)
 from app.db import Base, get_db
 from app.main import app
+from app.models import CleanedFile, Dataset, UploadedFile
 
 Q = "Why haven't you bought an EV?"
 
@@ -501,7 +503,6 @@ def test_fifty_thousand_rows_under_ten_seconds():
 # ---------------------------------------------------------------- API
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -512,7 +513,7 @@ def env(tmp_path, monkeypatch):
             yield s
 
     app.dependency_overrides[get_db] = override
-    yield SimpleNamespace(client=TestClient(app), Session=Session, uploads=tmp_path / "uploads")
+    yield SimpleNamespace(client=TestClient(app), Session=Session)
     app.dependency_overrides.clear()
 
 
@@ -554,7 +555,9 @@ def test_api_requires_sign_in(env, monkeypatch):
 
 def test_api_full_flow(env):
     did = upload(env)
-    original = next(env.uploads.iterdir()).read_bytes()
+    with env.Session() as s:
+        file_hash = s.get(Dataset, did).file_hash
+        original = s.get(UploadedFile, file_hash).content
     r = env.client.post(f"/api/datasets/{did}/clean/plan")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -574,15 +577,20 @@ def test_api_full_flow(env):
     out = r.json()
     rep = out["report"]
     assert rep["accounted_for"] and rep["rows_in"] - rep["rows_out"] == rep["removed_rows_total"]
-    files = sorted(p.name for p in env.uploads.iterdir())
-    assert len(files) == 2 and any(f.endswith(".clean.csv") for f in files)
-    cleaned = env.uploads / f"{out['clean_hash']}.clean.csv"
-    assert hashlib.sha256(cleaned.read_bytes()).hexdigest() == out["clean_hash"]  # named by its hash
-    assert not any(p.name.startswith(".tmp") for p in env.uploads.iterdir())
-    df = pd.read_csv(cleaned)
-    assert len(df) == rep["rows_out"] and "_verbatim_row" in df.columns
-    assert "@example.com" not in cleaned.read_text()
-    assert next(p for p in env.uploads.iterdir() if not p.name.endswith(".clean.csv")).read_bytes() == original
+    with env.Session() as s:
+        # the cleaned copy is stored in the database (CleanedFile), content-addressed by its own hash -
+        # not written anywhere on disk
+        cleaned_row = s.get(CleanedFile, out["clean_hash"])
+        assert cleaned_row is not None
+        assert hashlib.sha256(cleaned_row.content).hexdigest() == out["clean_hash"]  # named by its hash
+        df = pd.read_csv(io.BytesIO(cleaned_row.content))
+        assert len(df) == rep["rows_out"] and "_verbatim_row" in df.columns
+        assert "@example.com" not in cleaned_row.content.decode("utf-8")
+        # the original upload's bytes (UploadedFile) are untouched by cleaning
+        assert s.get(UploadedFile, file_hash).content == original
+        # exactly one blob of each kind exists - no duplicate rows written
+        assert len(s.scalars(select(UploadedFile)).all()) == 1
+        assert len(s.scalars(select(CleanedFile)).all()) == 1
 
     got = env.client.get(f"/api/datasets/{did}/clean/report")
     assert got.status_code == 200 and got.json()["report"] == rep and got.json()["clean_hash"] == out["clean_hash"]
@@ -647,8 +655,12 @@ def test_api_ownership(env):
 def test_api_missing_original_and_unknown_dataset(env):
     assert env.client.post("/api/datasets/999/clean/plan").status_code == 404
     did = upload(env)
-    for p in env.uploads.iterdir():
-        p.unlink()
+    # Simulate the underlying blob genuinely being gone (data corruption, not a redeploy - a redeploy no
+    # longer loses anything now that bytes live in Postgres, not on the container's disk).
+    with env.Session() as s:
+        file_hash = s.get(Dataset, did).file_hash
+        s.delete(s.get(UploadedFile, file_hash))
+        s.commit()
     assert env.client.post(f"/api/datasets/{did}/clean/plan").status_code == 404
 
 

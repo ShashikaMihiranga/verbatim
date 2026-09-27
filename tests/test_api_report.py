@@ -78,7 +78,6 @@ def install_fake_claude():
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -90,7 +89,7 @@ def env(tmp_path, monkeypatch):
             yield s
 
     app.dependency_overrides[get_db] = override
-    yield SimpleNamespace(client=TestClient(app), Session=Session, uploads=tmp_path / "uploads")
+    yield SimpleNamespace(client=TestClient(app), Session=Session)
     app.dependency_overrides.clear()
 
 

@@ -8,14 +8,13 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_db
 from app.main import app
-from app.models import Column, Dataset
+from app.models import Column, Dataset, UploadedFile
 
 FIX = Path(__file__).parent / "fixtures" / "messy_survey.csv"
 
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("MAX_UPLOAD_MB", "1")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # tests never touch the network
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -27,17 +26,21 @@ def env(tmp_path, monkeypatch):
             yield s
 
     app.dependency_overrides[get_db] = override
-    yield SimpleEnv(TestClient(app), Session, tmp_path / "uploads")
+    yield SimpleEnv(TestClient(app), Session)
     app.dependency_overrides.clear()
 
 
 class SimpleEnv:
-    def __init__(self, client, Session, uploads):
-        self.client, self.Session, self.uploads = client, Session, uploads
+    def __init__(self, client, Session):
+        self.client, self.Session = client, Session
 
     def post(self, name="s.csv", data=None, ctype="text/csv"):
         data = FIX.read_bytes() if data is None else data
         return self.client.post("/api/upload", files={"file": (name, data, ctype)})
+
+    def uploaded_files(self):
+        with self.Session() as s:
+            return s.scalars(select(UploadedFile)).all()
 
 
 def test_upload_success(env):
@@ -48,11 +51,14 @@ def test_upload_success(env):
     kinds = {c["name"]: c["kind"] for c in j["profile"]["columns"]}
     assert kinds["Survey date"] == "date" and kinds["Likelihood to buy"] == "score"
     assert j["profile"]["question"]["text"].startswith("Why haven't")
-    files = [p.name for p in env.uploads.iterdir()]
-    assert len(files) == 1 and files[0].endswith(".csv") and len(files[0]) == 64 + 4  # sha256 name, no temp left
     with env.Session() as s:
         ds = s.scalar(select(Dataset))
         assert len(ds.file_hash) == 64 and ds.profile["columns"]
+        # the raw bytes are stored in the database, content-addressed by hash - not on disk
+        rows = s.scalars(select(UploadedFile)).all()
+        assert len(rows) == 1
+        assert rows[0].file_hash == ds.file_hash
+        assert rows[0].content == FIX.read_bytes()
 
 
 def test_duplicate_hash_reuses_record(env):
@@ -61,6 +67,8 @@ def test_duplicate_hash_reuses_record(env):
     assert b["id"] == a["id"] and b["reused"] is True
     with env.Session() as s:
         assert len(s.scalars(select(Dataset)).all()) == 1
+        # the second, identical upload reused the existing blob row rather than duplicating it
+        assert len(s.scalars(select(UploadedFile)).all()) == 1
 
 
 def test_wrong_type_400(env):
@@ -72,20 +80,19 @@ def test_wrong_type_400(env):
 def test_oversize_413(env):
     r = env.post("big.csv", b"a,b\n" + b"1,2\n" * 400_000)  # about 1.6 MB, limit is 1 MB
     assert r.status_code == 413
-    assert not any(env.uploads.iterdir())  # partial file cleaned up
+    assert env.uploaded_files() == []  # nothing was ever stored: the size limit trips mid-stream
 
 
 def test_unreadable_file_400_and_not_kept(env):
     r = env.post("bad.xlsx", b"this is not a zip")
     assert r.status_code == 400 and "xlsx" in r.json()["detail"]
-    assert not any(env.uploads.iterdir())
+    assert env.uploaded_files() == []  # bytes for a file that never became a Dataset are not kept
 
 
 def test_filename_traversal_is_neutralised(env):
     r = env.post("../../etc/pass wd<>.csv")
     assert r.status_code == 200
     assert "/" not in r.json()["filename"] and ".." not in r.json()["filename"]
-    assert all(p.parent == env.uploads for p in env.uploads.iterdir())
 
 
 def test_profile_fetch(env):

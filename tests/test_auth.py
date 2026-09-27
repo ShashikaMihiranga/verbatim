@@ -70,7 +70,6 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setenv("CLERK_JWKS_URL", JWKS_URL)
     monkeypatch.setenv("CLERK_ISSUER", ISSUER)
     monkeypatch.setenv("CLERK_AUTHORIZED_PARTIES", "https://app.test")
-    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(auth, "_fetch_jwks", lambda url: {"keys": [JWK]})
     auth.jwks_cache.clear()

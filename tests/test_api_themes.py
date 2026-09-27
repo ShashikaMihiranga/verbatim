@@ -1,6 +1,8 @@
 """Stream 6: build-themes API. Fake embedding/Claude/Jev clients only, no network."""
 import json
 import random
+import shutil
+import tempfile
 from types import SimpleNamespace
 
 import pandas as pd
@@ -82,7 +84,6 @@ def install_fakes():
 # ---------------------------------------------------------------- fixtures
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
@@ -95,7 +96,7 @@ def env(tmp_path, monkeypatch):
             yield s
 
     app.dependency_overrides[get_db] = override
-    yield SimpleNamespace(client=TestClient(app), Session=Session, uploads=tmp_path / "uploads")
+    yield SimpleNamespace(client=TestClient(app), Session=Session)
     app.dependency_overrides.clear()
 
 
@@ -298,3 +299,49 @@ def test_ownership_isolation(env):
     assert env.client.post(f"/api/datasets/{did}/themes/build", json={"column": Q}).status_code == 404
     assert env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).status_code == 404
     assert env.client.get(f"/api/datasets/{did}/themes/{theme_id}/answers").status_code == 404
+
+
+# ---------------------------------------------------------------- the bug this stream fixes
+def test_themes_build_after_the_disk_is_wiped_between_steps(env, monkeypatch, tmp_path):
+    """The exact production bug this stream fixes: uploaded and cleaned file bytes used to live only on
+    the container's disk (`UPLOAD_DIR`), which does not survive a Railway redeploy. This drives the real
+    upload -> clean -> build-themes pipeline through the real HTTP API (as a real user would), and between
+    every step wipes a dedicated scratch "disk" standing in for the OS temp directory that
+    app.api_upload.scratch_file/app.api_cleaning._load_df use for library-compat-only temp files - proving
+    nothing persists there between requests, and that themes/build succeeds purely from what
+    app.models.UploadedFile/CleanedFile hold in the database.
+
+    `tempfile.tempdir` (not the shared system temp directory used by the rest of the suite) is overridden so
+    this test can safely rmtree it - deleting the real OS temp directory's contents would be unsafe to do in
+    a shared test run.
+    """
+    install_fakes()
+    scratch_disk = tmp_path / "scratch-disk"
+    scratch_disk.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch_disk))
+
+    did = upload_csv(env, theme_df())
+    assert list(scratch_disk.iterdir()) == []  # the upload's own temp file was already cleaned up
+
+    applied = clean_and_apply(env, did)
+    assert list(scratch_disk.iterdir()) == []  # so was cleaning's
+
+    # Simulate the disk disappearing entirely (a redeploy wiping the container filesystem, or the Railway
+    # volume permission failure that motivated this change in the first place).
+    shutil.rmtree(scratch_disk)
+    scratch_disk.mkdir()
+    assert list(scratch_disk.iterdir()) == []
+
+    r = env.client.post(f"/api/datasets/{did}/themes/build", json={"column": Q})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_answers"] == applied["report"]["rows_out"]
+    themes = body["themes"]
+    assert len(themes) >= 2 and sum(t["size"] for t in themes) == applied["report"]["rows_out"]
+
+    # the disk is STILL gone (never repopulated) and reading the themes/answers back still works
+    got = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q})
+    assert got.status_code == 200 and {t["id"] for t in got.json()["themes"]} == {t["id"] for t in themes}
+    ans = env.client.get(f"/api/datasets/{did}/themes/{themes[0]['id']}/answers", params={"limit": 5})
+    assert ans.status_code == 200 and ans.json()["answers"]
+    assert list(scratch_disk.iterdir()) == []  # building/reading themes never touched the scratch "disk" either
