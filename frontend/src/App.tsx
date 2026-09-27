@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Link, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import CheckColumns from './CheckColumns'
 import Cleaning from './Cleaning'
+import Projects from './Projects'
 import Themes from './Themes'
 import Upload from './Upload'
 import Landing from './home/Landing'
@@ -89,7 +90,7 @@ export default function App() {
         {authRoutes}
         <Route path="/" element={clerkConfigured ? <ClerkHome /> : <Landing />} />
         <Route element={<Shell />}>
-          <Route path="/projects" element={guard(<Placeholder title="Projects" />)} />
+          <Route path="/projects" element={guard(<Projects />)} />
           <Route path="/upload" element={guard(<Upload />)} />
           <Route path="/check-columns" element={guard(<CheckColumns />)} />
           <Route path="/cleaning" element={guard(<Cleaning />)} />
