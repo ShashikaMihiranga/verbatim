@@ -25,8 +25,12 @@ COPY entrypoint.sh ./entrypoint.sh
 COPY --from=web /web/dist ./frontend/dist
 RUN chmod +x /app/entrypoint.sh \
     && useradd --create-home --uid 10001 verbatim \
-    && mkdir -p /home/verbatim/.verbatim/uploads \
     && chown -R verbatim:verbatim /app /home/verbatim
+# Uploaded/cleaned file bytes live in Postgres now (app/models.py: UploadedFile, CleanedFile), not on
+# disk, so no persistent upload directory (and no volume) is needed - see docs/DECISIONS.md. Any scratch
+# file this app writes for library compatibility (profiling a spreadsheet needs a real path) goes under
+# the OS default temp directory (/tmp), which every container - and this non-root user - can always write
+# to without a mkdir or chown of its own.
 USER verbatim
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]

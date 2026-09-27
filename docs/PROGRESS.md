@@ -30,7 +30,7 @@ Variables still to set on the `web` service:
 - `DATABASE_URL=${{Postgres.DATABASE_URL}}` after adding a Postgres service.
 - In Clerk: allow the Railway origin and `/sso-callback`.
 - Never set `ALLOW_DEV_USER` in production. Never add the Clerk secret key (`sk_`) anywhere.
-- Uploaded files sit on the container disk and vanish on redeploy. Add a Railway volume and set `UPLOAD_DIR` before real use.
+- ~~Uploaded files sit on the container disk and vanish on redeploy. Add a Railway volume and set `UPLOAD_DIR` before real use.~~ Fixed (2026-09-27): uploaded/cleaned file bytes now live in Postgres (`uploaded_files`/`cleaned_files`), which already survives redeploys. No volume needed - see docs/DECISIONS.md.
 
 Until Clerk is configured, every data route answers 401 by design.
 
