@@ -227,7 +227,12 @@ def test_build_then_get_round_trip_renders_real_chart_html_with_real_theme_names
         assert b["finding"]["sentence"].startswith("Stub sentence about")
         assert b["finding"]["confidence"] in ("solid", "tentative")
         assert b["finding"]["theme_id"] is not None
-        assert "<!doctype html>" in b["chart_html"].lower()
+        # chart_html is now a raw body FRAGMENT (app.charts.render_parts's shape), meant to be embedded
+        # directly into the report page's own DOM - never a full standalone document any more.
+        assert "<!doctype html>" not in b["chart_html"].lower()
+        assert "<html" not in b["chart_html"].lower()
+        assert isinstance(b["chart_width"], int) and b["chart_width"] > 0
+        assert isinstance(b["chart_height"], int) and b["chart_height"] > 0
         assert b["chart_title"]  # a human title from app.charts.TITLES, not the bare chart_id
 
     solid = {b["finding"]["sentence"] for b in finding_blocks if b["finding"]["confidence"] == "solid"}

@@ -45,7 +45,7 @@ from sqlalchemy.orm import Session
 from . import db as _db
 from .api_themes import _load_clean_df, get_claude_client
 from .api_upload import _own_dataset, current_user
-from .charts import TITLES, render
+from .charts import TITLES, render_parts
 from .db import get_db
 from .findings import (
     FindingsClaudeNotConfigured,
@@ -111,7 +111,7 @@ def _latest_report_for_column(db: Session, dataset_id: int, column: str) -> Repo
 
 def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dict[str, Any]:
     """Builds the JSON body for both routes below: one `build_report_data` call, reused for every block's
-    `render()` (per app/findings.py's own instruction - never rebuilt per block)."""
+    `render_parts()` (per app/findings.py's own instruction - never rebuilt per block)."""
     content = report.content or {}
     themes = list(db.scalars(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
@@ -132,11 +132,19 @@ def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dic
     blocks_out: list[dict[str, Any]] = []
     for b in blocks_content:
         chart_id = b["chart_id"]
+        # `render_parts` returns the raw body fragment (no `<!doctype html>`/own background/own font load) -
+        # see app/charts.py's own docstring split between `render_parts` and `render`. The frontend embeds
+        # this fragment straight into the report page's DOM (never an iframe), so it inherits the page's own
+        # already-loaded `--bg --surface --ink ...` tokens instead of carrying a second copy of them - see
+        # docs/DECISIONS.md ("report page: fragments, not iframed documents").
+        chart_html, chart_width, chart_height = render_parts(chart_id, report_data)
         block: dict[str, Any] = {
             "kind": b["kind"],
             "chart_id": chart_id,
             "chart_title": TITLES.get(chart_id, chart_id),
-            "chart_html": render(chart_id, report_data),
+            "chart_html": chart_html,
+            "chart_width": chart_width,
+            "chart_height": chart_height,
             "priority": b["priority"],
             "finding_id": b.get("finding_id"),
             "finding": None,
