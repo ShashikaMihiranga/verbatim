@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from .api_cleaning import _stored as _cleaning_stored
 from .api_upload import _own_dataset, current_user
 from .db import get_db
-from .models import Column, Dataset, Finding, Project, Report, Theme, User
+from .models import Column, Dataset, Finding, Job, Project, Report, Theme, User
 
 router = APIRouter(prefix="/api")
 
@@ -78,7 +78,7 @@ def delete_dataset(dataset_id: int, db: Session = Depends(get_db), user: User = 
     # Explicit, ordered deletes - matching this codebase's existing convention (see api_upload.confirm_columns
     # and api_themes.build_themes, both of which delete old rows in a loop rather than relying on the
     # database to cascade) so this behaves the same on sqlite (tests) and Postgres (production) alike.
-    for model in (Finding, Report, Theme, Column):
+    for model in (Job, Finding, Report, Theme, Column):
         for row in db.scalars(select(model).where(model.dataset_id == ds.id)).all():
             db.delete(row)
     db.delete(ds)
