@@ -5,6 +5,7 @@
   --muted: #546b71;
   --line: #d3e0df;
   --accent: #0f6688;
+  --on-accent: #ffffff;
   --t1: #3f8a57;
   --t2: #2680c7;
   --t3: #26cbd8;
@@ -16,7 +17,11 @@
   --neg: #c8503f;
   --neu: #b3bfc1;
   --pos: #3f8a57;
+  --on-neg: #ffffff;
+  --on-neu: #12303a;
+  --on-pos: #ffffff;
   --ramp: #2680c7;
+  --on-ramp: #ffffff;
 }
 
 * { box-sizing: border-box; }
