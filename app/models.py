@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -87,6 +87,31 @@ class Report(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
     content: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = _created()
+
+
+class UploadedFile(Base):
+    """The raw bytes of an uploaded spreadsheet, content-addressed by sha256 (see app/api_upload.py).
+
+    Postgres, not disk: Railway's container filesystem does not survive a redeploy, and its attached
+    volume path is not reliably writable by this app's non-root user either - see docs/DECISIONS.md.
+    Pure blob store, deduplicated by hash exactly the way the old `UPLOAD_DIR/<hash><ext>` disk path was -
+    only the storage backend changed, not the addressing scheme. A row here is independent of any one
+    `Dataset`/user: the same bytes uploaded by two different users share one row.
+    """
+    __tablename__ = "uploaded_files"
+    file_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = _created()
+
+
+class CleanedFile(Base):
+    """The cleaned CSV bytes produced by `app/api_cleaning.py:apply_cleaning`, content-addressed by sha256
+    of those bytes - the same addressing `UPLOAD_DIR/<hash>.clean.csv` used on disk, now in Postgres. See
+    `UploadedFile`'s docstring for why disk storage was dropped."""
+    __tablename__ = "cleaned_files"
+    clean_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = _created()
 
 
