@@ -120,7 +120,7 @@ def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dic
     themes = list(db.scalars(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
     ).all())
-    clean_df, _plan = _load_clean_df(ds)
+    clean_df, _plan = _load_clean_df(ds, db)
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
     question = content.get("question") or column
     report_data = build_report_data(ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths)
@@ -189,7 +189,7 @@ def build_report(
     ).all())
     answer_lengths = None
     if themes:
-        clean_df, _plan = _load_clean_df(ds)
+        clean_df, _plan = _load_clean_df(ds, db)
         answer_lengths = _answer_lengths_for(clean_df, column, themes)
 
     with _Slot():

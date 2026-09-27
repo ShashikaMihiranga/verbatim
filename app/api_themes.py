@@ -20,6 +20,7 @@ own open-text answers).
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 import threading
@@ -33,10 +34,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .api_upload import _own_dataset, current_user, upload_dir
+from .api_upload import _own_dataset, current_user
 from .cleaning import CleaningError, CleaningPlan
 from .db import get_db
-from .models import Column, Dataset, Theme, User
+from .models import CleanedFile, Column, Dataset, Theme, User
 from .text_pipeline import (
     AnthropicClaudeClient,
     ClaudeClient,
@@ -109,7 +110,7 @@ def get_jev_client_factory() -> Callable[[], JevClient]:
 
 
 # ---------------------------------------------------------------- helpers
-def _load_clean_df(ds: Dataset) -> tuple[pd.DataFrame, CleaningPlan]:
+def _load_clean_df(ds: Dataset, db: Session) -> tuple[pd.DataFrame, CleaningPlan]:
     stored = dict((ds.profile or {}).get("cleaning") or {})
     if "plan" not in stored:
         raise HTTPException(409, "Clean this dataset (see /cleaning) before building themes.")
@@ -119,11 +120,12 @@ def _load_clean_df(ds: Dataset) -> tuple[pd.DataFrame, CleaningPlan]:
     clean_hash = stored.get("clean_hash") or ""
     if not _HEX64.fullmatch(clean_hash):
         raise HTTPException(404, "The cleaned file for this dataset is not available.")
-    path = upload_dir() / f"{clean_hash}.clean.csv"
-    if not path.is_file():
+    row = db.get(CleanedFile, clean_hash)
+    if row is None:
         raise HTTPException(404, "The cleaned file for this dataset is not available.")
     try:
-        df = pd.read_csv(path)
+        # No temp file needed here (unlike _load_df in app/api_cleaning.py): pandas reads BytesIO natively.
+        df = pd.read_csv(io.BytesIO(row.content))
     except Exception as e:  # pragma: no cover - a malformed internal file should never happen
         raise HTTPException(400, "We could not read the cleaned file for this dataset.") from e
     return df, plan
@@ -186,7 +188,7 @@ def build_themes(
     jev_factory: Callable[[], JevClient] = Depends(get_jev_client_factory),
 ):
     ds = _own_dataset(db, user, dataset_id)
-    clean_df, plan = _load_clean_df(ds)
+    clean_df, plan = _load_clean_df(ds, db)
     column = body.column
     if column not in plan.columns:
         raise HTTPException(422, "Unknown column.")
@@ -307,7 +309,7 @@ def theme_answers(
     if page:
         # Real, unmasked cleaned text: the dataset's owner is looking at their own answers, not sending
         # them to a model - `model_safe_column` is deliberately NOT used here (see module docstring).
-        clean_df, _plan = _load_clean_df(ds)
+        clean_df, _plan = _load_clean_df(ds, db)
         column = theme.column_name
         for row in page:
             try:
