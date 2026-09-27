@@ -15,3 +15,4 @@ PyJWT[crypto]==2.14.0
 cryptography==50.0.1
 scikit-learn==1.9.1
 voyageai==0.5.0
+anthropic==1.8.0
