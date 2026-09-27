@@ -4,8 +4,12 @@ import { getProfile } from './api'
 import type { DatasetView } from './api'
 import { buildThemes, getThemeAnswers, getThemes } from './themesApi'
 import type { ThemeAnswer, ThemeCard } from './themesApi'
+import { buildReport, getReport } from './reportApi'
+import type { ReportResponse } from './reportApi'
+import ReportView from './Report'
 import './upload.css'
 import './themes.css'
+import './report.css'
 
 const PAGE_SIZE = 20
 
@@ -23,7 +27,7 @@ function Progress() {
   )
 }
 
-function toneLabel(t: 'neg' | 'neu' | 'pos'): string {
+export function toneLabel(t: 'neg' | 'neu' | 'pos'): string {
   return t === 'neg' ? 'Negative' : t === 'pos' ? 'Positive' : 'Neutral'
 }
 
@@ -44,7 +48,7 @@ function ToneBar({ tone }: { tone: ThemeCard['tone'] }) {
   )
 }
 
-function AnswerList({ id, theme }: { id: number; theme: ThemeCard }) {
+export function AnswerList({ id, themeId }: { id: number; themeId: number }) {
   const [answers, setAnswers] = useState<ThemeAnswer[]>([])
   const [offset, setOffset] = useState(0)
   const [total, setTotal] = useState<number | null>(null)
@@ -55,7 +59,7 @@ function AnswerList({ id, theme }: { id: number; theme: ThemeCard }) {
     setLoading(true)
     setError('')
     try {
-      const r = await getThemeAnswers(id, theme.id, PAGE_SIZE, offset)
+      const r = await getThemeAnswers(id, themeId, PAGE_SIZE, offset)
       setAnswers((prev) => [...prev, ...r.answers])
       setTotal(r.total)
       setOffset(offset + r.answers.length)
@@ -106,7 +110,7 @@ function Card({ id, theme }: { id: number; theme: ThemeCard }) {
       <button type="button" className="th-see" onClick={() => setOpen(!open)}>
         {open ? 'Hide answers' : 'See answers'}
       </button>
-      {open && <AnswerList id={id} theme={theme} />}
+      {open && <AnswerList id={id} themeId={theme.id} />}
     </div>
   )
 }
@@ -119,6 +123,9 @@ export default function Themes() {
   const [useJev, setUseJev] = useState(false)
   const [themes, setThemes] = useState<ThemeCard[] | null>(null)
   const [building, setBuilding] = useState(false)
+  const [report, setReport] = useState<ReportResponse | null>(null)
+  const [reportBuilding, setReportBuilding] = useState(false)
+  const [manageThemes, setManageThemes] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -137,6 +144,11 @@ export default function Themes() {
             if (existing.themes.length > 0) setThemes(existing.themes)
           } catch {
             /* nothing built yet; show the build trigger */
+          }
+          try {
+            setReport(await getReport(id, col))
+          } catch {
+            /* no report built yet; show the build-report trigger once themes exist */
           }
         }
       })
@@ -184,10 +196,23 @@ export default function Themes() {
     try {
       const r = await buildThemes(id, column as string, useJev)
       setThemes(r.themes)
+      setReport(null)  // old report (if any) no longer matches the rebuilt themes - build it again below
     } catch (e) {
       setError((e as Error).message)
     }
     setBuilding(false)
+  }
+
+  async function buildTheReport() {
+    setReportBuilding(true)
+    setError('')
+    try {
+      setReport(await buildReport(id, column as string))
+      setManageThemes(false)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+    setReportBuilding(false)
   }
 
   return (
@@ -228,7 +253,21 @@ export default function Themes() {
         </div>
       )}
 
-      {!building && themes !== null && (
+      {!building && themes !== null && report && !manageThemes && (
+        <>
+          <ReportView report={report} datasetId={id} />
+          <div className="foot">
+            <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportBuilding}>
+              {reportBuilding ? 'Rebuilding report...' : 'Rebuild report'}
+            </button>
+            <button type="button" className="btn quiet" onClick={() => setManageThemes(true)}>
+              Manage themes
+            </button>
+          </div>
+        </>
+      )}
+
+      {!building && themes !== null && (!report || manageThemes) && (
         <>
           <div className="th-grid">
             {themes.map((t) => (
@@ -239,7 +278,34 @@ export default function Themes() {
             <button type="button" className="btn quiet" onClick={() => void build()}>
               Rebuild themes
             </button>
+            {report && (
+              <button type="button" className="btn quiet" onClick={() => setManageThemes(false)}>
+                Back to report
+              </button>
+            )}
           </div>
+
+          {!report && (
+            <div className="rp-build">
+              {reportBuilding ? (
+                <div className="th-progress">
+                  <div className="big">Building your report...</div>
+                  <div>This can take a little while for a large file. Please stay on this page.</div>
+                </div>
+              ) : (
+                <div className="th-build">
+                  <div className="big">Ready to build the report</div>
+                  <p className="small">
+                    We will pick the strongest, best-supported findings from these themes, write one plain
+                    sentence for each, and choose the chart that shows it best.
+                  </p>
+                  <button type="button" className="btn" onClick={() => void buildTheReport()}>
+                    Build report
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </>
