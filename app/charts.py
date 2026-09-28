@@ -56,6 +56,24 @@ DIM = 0.28  # opacity of unselected themes
 def rows(data):
     return [(t.name, t.share, t.sentiment, t.count, t.color) for t in data.themes]
 
+def treemap_rows(data):
+    """Like rows(data), but every entry with col == "other" is merged into one - so treemap_svg never
+    draws more than 8 rectangles (7 real + 1 merged Other) regardless of how many real themes exist
+    upstream (see _theme_color's rank-7+ fallback in app/findings.py). Used ONLY by treemap_svg - rows()
+    itself, and every other chart that reads data.themes, keep seeing every real theme individually;
+    this merge is a treemap-drawing concern, not a data concern."""
+    base = rows(data)  # [(name, share, sent, cnt, col), ...]
+    others = [r for r in base if r[4] == "other"]
+    if len(others) <= 1:
+        return base
+    real_other = next((r for r in others if r[0] == "Other"), None)  # the genuine noise bucket, if present
+    share = round(sum(r[1] for r in others), 1)
+    cnt = sum(r[3] for r in others)
+    sent = round(sum(r[2] * r[3] for r in others) / cnt, 3) if cnt else 0.0
+    name = real_other[0] if real_other else "Other"
+    merged = (name, share, sent, cnt, "other")
+    return [r for r in base if r[4] != "other"] + [merged]
+
 def subs_of(data, name):
     for t in data.themes:
         if t.name == name:
@@ -773,17 +791,25 @@ def treemap_svg(data: ReportData, w: int, h: int) -> str:
     `<g data-theme="...">` group, so a frontend click/hover handler can resolve any part of a theme's
     drawing - including a sub-theme rect - back to its parent theme with a single `closest('[data-theme]')`
     lookup (see `frontend/src/ThemeChart.tsx`)."""
-    rects = squarify([(n, s) for n, s, _, _, _ in rows(data)], 0, 0, w, h)
+    rects = squarify([(n, s) for n, s, _, _, _ in treemap_rows(data)], 0, 0, w, h)
     o = [f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" aria-label="Treemap of themes and sub-themes">']
-    for name, share, sent, cnt, col in rows(data):
+    for name, share, sent, cnt, col in treemap_rows(data):
         rx, ry, rw, rh = rects[name]
         rx += 1.5; ry += 1.5; rw -= 3; rh -= 3
         g = [f'<g data-theme="{esc(name)}">']
         g.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" rx="5" style="fill:var(--{col})"/>')
-        lines = wrap(f"{name} {share}%", rw - 18, 15) or [f"{share}%"]
-        hh = len(lines) * 18 + 14
-        for i, t in enumerate(lines):
-            g.append(T(rx + 10, ry + 16 + i * 18, t, 15, 600, TH_ON[col]))
+        lines = wrap(f"{name} {share}%", rw - 18, 15)
+        if lines is not None and len(lines) * 18 + 14 <= rh:
+            for i, t in enumerate(lines):
+                g.append(T(rx + 10, ry + 16 + i * 18, t, 15, 600, TH_ON[col]))
+            hh = len(lines) * 18 + 14
+        else:
+            pct_only = wrap(f"{share}%", rw - 18, 15) or []
+            if pct_only and len(pct_only) * 18 + 14 <= rh:
+                g.append(T(rx + 10, ry + 16, pct_only[0], 15, 600, TH_ON[col]))
+                hh = 18 + 14
+            else:
+                hh = 0  # nothing fits - draw no label at all, rather than overflow
         subs = subs_of(data, name)
         if subs and rh - hh - 5 > 20:
             sr = squarify(subs, rx + 5, ry + hh, rw - 10, rh - hh - 5)

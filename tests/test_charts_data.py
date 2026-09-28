@@ -1,4 +1,5 @@
 import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from app.chart_data import (
     QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode,
     ToneSplit, TrendData, TrendSeries,
 )
-from app.charts import FRAMES, render
+from app.charts import FRAMES, render, rows, treemap_rows, treemap_svg
 from app.main import app
 
 client = TestClient(app)
@@ -126,3 +127,82 @@ def test_treemap_theme_name_with_quote_cannot_break_out_of_data_theme_attribute(
 
     assert 'data-theme="Evil&quot; onmouseover=&quot;alert(1)">' in html
     assert 'onmouseover="alert(1)"' not in html
+
+
+def _other_colored_themes():
+    """3 themes coloured "other": two real 8th+-ranked themes (distinct names, no note) plus the genuine
+    noise bucket literally named "Other" with a `.note` set - the collision treemap_rows must resolve.
+    Shares are floats (not ints) so their sum keeps the round(x, 1) decimal - matching how real theme
+    shares (computed as round(t.size / total_answered * 100, 1) in app/findings.py) actually arrive."""
+    return [
+        ThemeNode("Theme A", 50.0, 0.5, 500, "t1", ToneSplit(10, 10, 80)),
+        ThemeNode("Theme B", 20.0, 0.1, 200, "t2", ToneSplit(20, 30, 50)),
+        ThemeNode("Theme X", 10.0, 0.2, 100, "other", ToneSplit(10, 10, 80)),
+        ThemeNode("Theme Y", 5.0, -0.1, 50, "other", ToneSplit(30, 30, 40)),
+        ThemeNode("Other", 15.0, -0.3, 150, "other", ToneSplit(50, 30, 20), note="Folded in: too rare"),
+    ]
+
+
+def test_treemap_rows_merges_all_other_colored_themes_into_one():
+    data = small_report()
+    data.themes = _other_colored_themes()
+
+    merged = treemap_rows(data)
+
+    assert len(merged) == 3  # Theme A, Theme B, one merged Other
+    other_row = next(r for r in merged if r[4] == "other")
+    assert other_row[0] == "Other"  # keeps the genuine bucket's name, not a synthesized one
+    assert other_row[1] == 30.0  # share: 10 + 5 + 15
+    assert other_row[3] == 300  # count: 100 + 50 + 150
+    assert other_row[2] == pytest.approx(-0.1)  # count-weighted sentiment: (0.2*100 - 0.1*50 - 0.3*150) / 300
+
+
+def test_treemap_svg_draws_exactly_one_other_group_for_merged_themes():
+    data = small_report()
+    data.themes = _other_colored_themes()
+
+    html = treemap_svg(data, 1084, 580)
+
+    assert html.count('data-theme="Other"') == 1
+    assert 'data-theme="Theme X"' not in html
+    assert 'data-theme="Theme Y"' not in html
+    assert "30.0%" in html  # merged share rendered in the label
+
+
+def test_treemap_rows_noop_with_zero_other_colored_themes():
+    data = small_report()
+    data.themes = [
+        ThemeNode("Theme A", 60, 0.1, 600, "t1", ToneSplit(10, 10, 80)),
+        ThemeNode("Theme B", 40, 0.2, 400, "t2", ToneSplit(10, 10, 80)),
+    ]
+    assert treemap_rows(data) == rows(data)
+
+
+def test_treemap_rows_noop_with_exactly_one_other_colored_theme():
+    data = small_report()
+    data.themes = [
+        ThemeNode("Theme A", 60, 0.1, 600, "t1", ToneSplit(10, 10, 80)),
+        ThemeNode("Other", 40, 0.2, 400, "other", ToneSplit(10, 10, 80), note="Folded in: too rare"),
+    ]
+    assert treemap_rows(data) == rows(data)
+
+
+def test_treemap_svg_label_never_overflows_cell_height():
+    """Regression pin for the label-overflow bug: a narrow/short canvas with a very long theme name must
+    not draw label text below the rect's own bottom edge - either the label fits and draws in full, or
+    nothing is drawn for that cell at all."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Tiny", 1, 0.0, 1, "t1", ToneSplit(0, 100, 0)),
+        ThemeNode("A Very Long Theme Name That Will Not Fit In A Small Cell At All", 4, 0.0, 4, "t2", ToneSplit(0, 100, 0)),
+        ThemeNode("Other", 95, 0.0, 95, "other", ToneSplit(0, 100, 0), note="Folded in: too rare"),
+    ]
+
+    html = treemap_svg(data, 300, 60)
+    assert "<text" in html  # sanity: the fix isn't just suppressing every label, the big cell still gets one
+
+    for group in re.findall(r'<g data-theme="[^"]*">(.*?)</g>', html, re.S):
+        rx, ry, rw, rh = (float(v) for v in re.search(
+            r'<rect x="(-?[\d.]+)" y="(-?[\d.]+)" width="(-?[\d.]+)" height="(-?[\d.]+)"', group).groups())
+        for tx, ty in re.findall(r'<text x="(-?[\d.]+)" y="(-?[\d.]+)"', group):
+            assert float(ty) <= ry + rh + 1  # +1: sub-pixel rounding tolerance, not a real overflow allowance
