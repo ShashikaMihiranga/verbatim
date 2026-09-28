@@ -100,3 +100,29 @@ def test_unregistered_frames_take_data_too():
     for fn, needle in [(charts.f_freq, "Zebra"), (charts.f_phrases, "zebra stripes"), (charts.f_quotes, "Stripes are confusing"),
                        (charts.f_quality, "Typical length 3 words")]:
         assert needle in fn(data)[0]
+
+
+def test_esc_escapes_quotes():
+    """esc() must be safe inside a double-quoted HTML attribute, not just inside text content - see
+    treemap_svg's `data-theme="{esc(name)}"` below, and docs/DECISIONS.md's stored-XSS fix entry."""
+    from app.charts import esc
+
+    assert esc('a"b') == "a&quot;b"
+    assert esc("a'b") == "a&#x27;b"
+
+
+def test_treemap_theme_name_with_quote_cannot_break_out_of_data_theme_attribute():
+    """A theme name is a label Claude writes from raw, attacker-influenced survey-answer text
+    (app/text_pipeline/labeling.py) - it must never be trusted to contain no double quote. Regression test
+    for the stored-XSS fix: a `"` in a theme name used to terminate the `data-theme="..."` attribute early,
+    letting the rest of the name inject a new HTML attribute (e.g. an event handler) into the fragment that
+    frontend/src/ThemeChart.tsx renders via dangerouslySetInnerHTML."""
+    from app.chart_data import ToneSplit
+    from app.charts import treemap_svg
+
+    data = small_report()
+    data.themes = [ThemeNode('Evil" onmouseover="alert(1)', 100, 0.0, 100, "t1", ToneSplit(0, 100, 0))]
+    html = treemap_svg(data, 400, 300)
+
+    assert 'data-theme="Evil&quot; onmouseover=&quot;alert(1)">' in html
+    assert 'onmouseover="alert(1)"' not in html

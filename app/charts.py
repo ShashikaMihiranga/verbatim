@@ -3,7 +3,7 @@ import html, math, random
 from .chart_data import ReportData
 
 
-def esc(s): return html.escape(str(s), quote=False)
+def esc(s): return html.escape(str(s))
 def fmt(n): return f"{n:,}"
 
 CSS = """
