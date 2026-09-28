@@ -44,6 +44,7 @@ from .chart_data import (
     ScoreData, SegmentData, ThemeNode, ToneSplit, TrendData,
 )
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
+from .findings_structured import StructuredContext
 from .models import Dataset, Finding, Report, Theme
 from .text_pipeline import AnthropicClaudeClient, ClaudeClient
 from .text_pipeline import LabelingClaudeNotConfigured as FindingsClaudeNotConfigured
@@ -264,6 +265,7 @@ def build_report_data(
     question: str,
     *,
     answer_lengths: list[int] | None = None,
+    structured: StructuredContext | None = None,
 ) -> ReportData:
     """Converts stored `Theme` rows for one dataset + column into the `ReportData` shape
     `app/charts.py`'s renderers already understand.
@@ -281,10 +283,16 @@ def build_report_data(
     Claude, per SPEC.md section 2's rule that headline generation gets numbers only, applied the same way
     to this block), `themes` (real themes largest-first, "Other" last, colours "t1".."t7" then "other",
     `children=[]` always - see module docstring), `quality` (from `cleaning_report`'s real counts),
-    `context` (honest generic defaults - see module docstring). `score`/`segment`/`trend`/`cooccurrence`
-    are empty/neutral placeholders: SPEC.md build-order step 3 (score/segment/date columns) is out of
-    scope for this stream, and `pick_chart` never selects a chart that would read them, so their content
-    never reaches a report - only their shape needs to be valid so `ReportData` constructs at all.
+    `context` (honest generic defaults - see module docstring).
+
+    `structured` is an optional `app.findings_structured.StructuredContext` (built by
+    `app.findings_structured.build_structured_context`): when given and it has real score/segment/trend
+    data, that data fills `score`/`segment`/`trend` below; otherwise (the default, `None`) they stay
+    today's empty/neutral placeholders - only their shape needs to be valid so `ReportData` constructs at
+    all. `cooccurrence` is always an empty placeholder regardless (only `f_arc` reads it, out of scope
+    here). `pick_chart` does not yet select a chart kind that reads `score`/`segment`/`trend` (that is a
+    separate, later stream), so populating them here has no visible effect on `build_findings`'s own output
+    until that wiring lands.
     `answer_map`/`frequency`/`phrases`/`quotes` are placeholders for the same reason: none of this
     stream's chosen chart ids (`overview`, `treemap`/`rank`/`sentsun`, `quality`) read them.
     """
@@ -311,13 +319,19 @@ def build_report_data(
         columns_note="Score, segment and date cross-cuts are not wired into this report yet.",
     )
 
+    score = structured.score if structured and structured.score else ScoreData(name="", bands=[])
+    segment = structured.segment if structured and structured.segment else SegmentData(name="", groups=[], rows=[])
+    trend = structured.trend if structured and structured.trend else TrendData(
+        labels=[], series=[], sentiment=[], hover_index=0, note="",
+    )
+
     return ReportData(
         question=question, total=total_rows, answered=total_answered, overall_sentiment=round(overall, 3),
         themes=nodes, selected_theme=selected_theme, hover_theme=hover_theme,
         overview=overview,
-        score=ScoreData(name="", bands=[]),
-        segment=SegmentData(name="", groups=[], rows=[]),
-        trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
+        score=score,
+        segment=segment,
+        trend=trend,
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),

@@ -1,12 +1,39 @@
-"""app/findings_structured.py (Part B1 - banding foundation only). Plain-assert, no-mocking style matching
-tests/test_findings.py - these functions are pure (no DB, no pandas input), so there is nothing to fake."""
+"""app/findings_structured.py: Part B1 (banding foundation, pure functions - see the top half of this file)
+plus Part B2 (cross-tab + data plumbing - the bottom half, below). B1's tests need no mocking (no DB, no
+pandas input). B2's cross-tab functions take plain dicts/lists so most of them stay just as mock-free; only
+`pick_structured_columns` needs a real (in-memory sqlite) DB session, matching tests/test_findings.py's own
+`session` fixture pattern."""
 from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pandas as pd
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from app.findings_structured import Band, apply_bands, band_age, band_dates, band_quartiles, band_score
+from app.chart_data import ScoreData, SegmentData, TrendData
+from app.charts import render_parts
+from app.cleaning.models import CleaningPlan, Step
+from app.db import Base
+from app.findings import build_report_data, theme_nodes
+from app.findings_structured import (
+    Band,
+    StructuredContext,
+    apply_bands,
+    band_age,
+    band_dates,
+    band_quartiles,
+    band_score,
+    build_score_data,
+    build_segment_data,
+    build_structured_context,
+    build_trend_data,
+    pick_structured_columns,
+    theme_answer_rows,
+)
+from app.models import Column, Dataset, Theme
 
 
 # ==================================================================== band_score
@@ -191,3 +218,432 @@ def test_apply_bands_open_ended_band_matches_unbounded_side():
     result = apply_bands({1: 90, 2: 65}, bands)
     assert result[1] == "65+"
     assert result[2] == "65+"
+
+
+# ==================================================================== B2 - cross-tab + data plumbing
+
+def make_theme(label, size, sentiment, answer_refs, column_name="Why", dataset_id=1):
+    return Theme(
+        dataset_id=dataset_id, column_name=column_name, label=label, description=None,
+        size=size, sentiment=sentiment, tone={"neg": 34.0, "neu": 33.0, "pos": 33.0}, answer_refs=answer_refs,
+    )
+
+
+def abc_themes():
+    """Three themes (two real, one "Other") whose `answer_refs` cover rows 0-9 with no overlaps and no
+    gaps - the shared fixture every B2 cross-tab test below builds its raw column values against."""
+    return [
+        make_theme("A", 4, 0.5, [0, 1, 2, 3]),
+        make_theme("B", 4, -0.5, [4, 5, 6, 7]),
+        make_theme("Other", 2, 0.0, [8, 9]),
+    ]
+
+
+# -------------------------------------------------------------------- theme_answer_rows
+
+def test_theme_answer_rows_unions_and_sorts_every_themes_refs():
+    themes = abc_themes()
+    assert theme_answer_rows(themes) == list(range(10))
+
+
+def test_theme_answer_rows_deduplicates_and_ignores_none():
+    t1 = make_theme("A", 2, 0.0, [3, 1])
+    t2 = make_theme("B", 1, 0.0, [1, 2])
+    t3 = make_theme("Other", 0, 0.0, None)
+    assert theme_answer_rows([t1, t2, t3]) == [1, 2, 3]
+
+
+# -------------------------------------------------------------------- build_score_data
+
+def test_build_score_data_hand_computable_mix_sentiment_and_answers():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    assert [n.name for n in nodes] == ["A", "B", "Other"]
+
+    # scale (0, 10) -> Low(0-6)/Middle(7-8)/High(9-10). Row->raw score value:
+    raw_by_row = {
+        0: 3, 1: 4, 2: 9, 3: 9,   # A: Low, Low, High, High
+        4: 2, 5: 7, 6: 8, 7: 9,   # B: Low, Middle, Middle, High
+        8: 5, 9: 10,              # Other: Low, High
+    }
+    data = build_score_data("Score", (0, 10), raw_by_row, themes, nodes, floor=2)
+    assert data is not None
+    assert data.name == "Score"
+    by_label = {b.label: b for b in data.bands}
+    assert set(by_label) == {"Low (0-6)", "Middle (7-8)", "High (9-10)"}
+
+    low = by_label["Low (0-6)"]
+    assert low.answers == 4  # rows 0, 1, 4, 8
+    assert low.mix == [50.0, 25.0, 25.0]  # A=2/4, B=1/4, Other=1/4
+    assert low.sentiment == pytest.approx((0.5 * 2 + -0.5 * 1 + 0.0 * 1) / 4, abs=1e-6)
+
+    mid = by_label["Middle (7-8)"]
+    assert mid.answers == 2  # rows 5, 6
+    assert mid.mix == [0.0, 100.0, 0.0]
+    assert mid.sentiment == pytest.approx(-0.5, abs=1e-6)
+
+    high = by_label["High (9-10)"]
+    assert high.answers == 4  # rows 2, 3, 7, 9
+    assert high.mix == [50.0, 25.0, 25.0]
+    assert high.sentiment == pytest.approx((0.5 * 2 + -0.5 * 1 + 0.0 * 1) / 4, abs=1e-6)
+
+
+def test_build_score_data_drops_bands_below_floor_but_keeps_the_rest():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    raw_by_row = {
+        0: 3, 1: 4, 2: 9, 3: 9, 4: 2, 5: 7, 6: 8, 7: 9, 8: 5, 9: 10,
+    }
+    # Middle only has 2 answers (rows 5, 6) - below floor=3, dropped; Low (4) and High (4) survive.
+    data = build_score_data("Score", (0, 10), raw_by_row, themes, nodes, floor=3)
+    assert data is not None
+    assert {b.label for b in data.bands} == {"Low (0-6)", "High (9-10)"}
+
+
+def test_build_score_data_returns_none_when_fewer_than_two_bands_survive():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    raw_by_row = {
+        0: 3, 1: 4, 2: 9, 3: 9, 4: 2, 5: 7, 6: 8, 7: 9, 8: 5, 9: 10,
+    }
+    # floor=5 - every band (4, 2, 4 answers) falls below it, so 0 survive.
+    assert build_score_data("Score", (0, 10), raw_by_row, themes, nodes, floor=5) is None
+
+
+def test_build_score_data_returns_none_when_no_row_has_a_valid_score():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    assert build_score_data("Score", (0, 10), {}, themes, nodes, floor=2) is None
+
+
+# -------------------------------------------------------------------- build_segment_data
+
+def test_build_segment_data_hand_computable_values_overall_and_highlight():
+    themes = [
+        make_theme("A", 5, 0.0, [0, 1, 2, 3, 4]),
+        make_theme("B", 5, 0.0, [5, 6, 7, 8, 9]),
+        make_theme("Other", 5, 0.0, [10, 11, 12, 13, 14]),
+    ]
+    nodes = theme_nodes(themes, total_answered=15)
+    assert [n.name for n in nodes] == ["A", "B", "Other"]
+    assert [n.share for n in nodes] == [pytest.approx(33.3)] * 3
+
+    # G1 (5 rows): A=2, B=2, Other=1. G2 (10 rows): A=3, B=3, Other=4.
+    raw_by_row = {
+        0: "G1", 1: "G1", 2: "G2", 3: "G2", 4: "G2",           # A: G1, G1, G2, G2, G2
+        5: "G1", 6: "G1", 7: "G2", 8: "G2", 9: "G2",           # B: G1, G1, G2, G2, G2
+        10: "G1", 11: "G2", 12: "G2", 13: "G2", 14: "G2",      # Other: G1, G2, G2, G2, G2
+    }
+    data = build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=2)
+    assert data is not None
+    assert data.name == "Segment"
+    # G2 (10) is larger than G1 (5), so groups sort largest-first: G2 then G1.
+    assert [(g.label, g.n) for g in data.groups] == [("G2", 10), ("G1", 5)]
+
+    by_theme = {r.theme: r for r in data.rows}
+    assert by_theme["A"].overall == pytest.approx(33.3)
+    assert by_theme["A"].values == [30.0, 40.0]  # [G2, G1]
+    assert by_theme["B"].values == [30.0, 40.0]
+    assert by_theme["Other"].values == [40.0, 20.0]
+
+    # Ratios (value / overall): A/B G1 = 40/33.3 = 1.201 (score 1.201), A/B G2 = 30/33.3 = 0.901 (score
+    # 1.110), Other G2 = 40/33.3 = 1.201 (score 1.201), Other G1 = 20/33.3 = 0.601 (score 1.665, the max) -
+    # so Other/G1 is the most extreme cell, even though its raw ratio is < 1.
+    assert data.highlight == (2, 1)  # row 2 = "Other", group 1 = "G1"
+    assert data.highlight_text == "G1 mentions Other 0.6 times as often as the average respondent."
+
+
+def test_build_segment_data_drops_groups_below_heatmap_floor():
+    themes = [
+        make_theme("A", 6, 0.0, list(range(6))),
+        make_theme("Other", 4, 0.0, list(range(6, 10))),
+    ]
+    nodes = theme_nodes(themes, total_answered=10)
+    raw_by_row = {i: "Big" for i in range(8)}
+    raw_by_row.update({8: "Tiny", 9: "Tiny"})
+    # "Big" has 8 rows, "Tiny" has 2 - below heatmap_group_floor=5, dropped.
+    data = build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=5)
+    assert data is None  # only 1 group survives
+
+
+def test_build_segment_data_returns_none_when_fewer_than_two_groups_survive():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    raw_by_row = {i: "OnlyGroup" for i in range(10)}
+    assert build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=5) is None
+
+
+def test_build_segment_data_skips_rows_whose_overall_share_is_zero():
+    """A theme with 0 overall share (e.g. total_answered mismatched, or a pathological 0-size theme) must
+    never be picked as the highlight cell - dividing by its overall would raise ZeroDivisionError."""
+    themes = [
+        make_theme("A", 0, 0.0, []),
+        make_theme("B", 10, 0.0, list(range(10))),
+    ]
+    nodes = theme_nodes(themes, total_answered=10)
+    raw_by_row = {i: ("G1" if i < 5 else "G2") for i in range(10)}
+    data = build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=2)
+    assert data is not None
+    a_row = next(r for r in data.rows if r.theme == "A")
+    assert a_row.overall == 0.0
+    # The highlight, if any, must not reference row 0 ("A") since its overall is 0.
+    if data.highlight is not None:
+        assert data.rows[data.highlight[0]].theme != "A"
+
+
+# -------------------------------------------------------------------- build_trend_data
+
+def _period_row_ids(period_sizes: dict[str, int]) -> dict[str, list[int]]:
+    ids: dict[str, list[int]] = {}
+    n = 0
+    for label, size in period_sizes.items():
+        ids[label] = list(range(n, n + size))
+        n += size
+    return ids
+
+
+def test_build_trend_data_hand_computable_shares_sentiment_and_hover_index():
+    # Three periods, each with exactly 30 rows (the trend-specific floor, boundary-inclusive) laid out as
+    # contiguous row-index blocks so date_bands (lo/hi over row index itself) map 1:1 to periods.
+    period_rows = _period_row_ids({"P1": 30, "P2": 30, "P3": 30})
+    date_bands = [
+        Band("P1", 0, 29), Band("P2", 30, 59), Band("P3", 60, 89),
+    ]
+    raw_by_row = {r: float(r) for r in range(90)}
+
+    p1_a, p1_b, p1_o = period_rows["P1"][:15], period_rows["P1"][15:25], period_rows["P1"][25:30]
+    p2_a, p2_b, p2_o = period_rows["P2"][:10], period_rows["P2"][10:25], period_rows["P2"][25:30]
+    p3_a, p3_b, p3_o = period_rows["P3"][:5], period_rows["P3"][5:10], period_rows["P3"][10:30]
+
+    a_refs = p1_a + p2_a + p3_a
+    b_refs = p1_b + p2_b + p3_b
+    o_refs = p1_o + p2_o + p3_o
+    assert len(a_refs) == len(b_refs) == len(o_refs) == 30
+
+    themes = [
+        make_theme("A", 30, 0.4, a_refs),
+        make_theme("B", 30, -0.2, b_refs),
+        make_theme("Other", 30, 0.0, o_refs),
+    ]
+    nodes = theme_nodes(themes, total_answered=90)
+    assert [n.name for n in nodes] == ["A", "B", "Other"]
+
+    data = build_trend_data("Date", raw_by_row, themes, nodes, date_bands, "Monthly, P1 to P3.", floor=30)
+    assert data is not None
+    assert data.labels == ["P1", "P2", "P3"]
+    assert data.note == "Monthly, P1 to P3."
+    assert data.hover_index == 2
+
+    by_theme = {s.theme: s for s in data.series}
+    assert by_theme["A"].values == [50.0, pytest.approx(33.3), pytest.approx(16.7)]
+    assert by_theme["B"].values == [pytest.approx(33.3), 50.0, pytest.approx(16.7)]
+    assert by_theme["Other"].values == [pytest.approx(16.7), pytest.approx(16.7), pytest.approx(66.7)]
+
+    # sentiment[i] = weighted avg of Theme.sentiment across ALL themes, per period (rounded to 3 decimals
+    # by build_trend_data, matching build_report_data's own overall_sentiment rounding convention).
+    assert data.sentiment[0] == pytest.approx((0.4 * 15 + -0.2 * 10 + 0.0 * 5) / 30, abs=1e-3)
+    assert data.sentiment[1] == pytest.approx((0.4 * 10 + -0.2 * 15 + 0.0 * 5) / 30, abs=1e-3)
+    assert data.sentiment[2] == pytest.approx((0.4 * 5 + -0.2 * 5 + 0.0 * 20) / 30, abs=1e-3)
+
+
+def test_build_trend_data_drops_periods_under_thirty_and_needs_at_least_three():
+    themes = [make_theme("A", 60, 0.0, list(range(60)))]
+    nodes = theme_nodes(themes, total_answered=60)
+    date_bands = [Band("P1", 0, 29), Band("P2", 30, 59)]
+    raw_by_row = {r: float(r) for r in range(60)}
+    # Both periods individually have 30 answers (>= 30), but only 2 periods total exist - below the
+    # "need at least 3 periods" floor, so this must return None regardless of per-period counts.
+    assert build_trend_data("Date", raw_by_row, themes, nodes, date_bands, "note", floor=30) is None
+
+
+def test_build_trend_data_returns_none_when_a_period_is_too_small():
+    themes = [make_theme("A", 89, 0.0, list(range(89)))]
+    nodes = theme_nodes(themes, total_answered=89)
+    date_bands = [Band("P1", 0, 29), Band("P2", 30, 59), Band("P3", 60, 88)]  # P3 has only 29 rows
+    raw_by_row = {r: float(r) for r in range(89)}
+    data = build_trend_data("Date", raw_by_row, themes, nodes, date_bands, "note", floor=30)
+    assert data is None  # only P1 and P2 survive - below the "at least 3" floor
+
+
+# -------------------------------------------------------------------- pick_structured_columns
+
+@pytest.fixture()
+def session():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    with SessionLocal() as s:
+        yield s
+
+
+def _make_dataset(s):
+    ds = Dataset(project_id=1, filename="survey.csv", file_hash="0" * 64, row_count=100, profile={})
+    s.add(ds)
+    s.flush()
+    return ds
+
+
+def test_pick_structured_columns_respects_position_order(session):
+    ds = _make_dataset(session)
+    session.add_all([
+        Column(dataset_id=ds.id, name="Score2", position=1, kind="score", stats={}),
+        Column(dataset_id=ds.id, name="Score1", position=0, kind="score", stats={}),
+        Column(dataset_id=ds.id, name="Segment1", position=2, kind="segment", stats={}),
+        Column(dataset_id=ds.id, name="Date1", position=3, kind="date", stats={}),
+    ])
+    session.commit()
+
+    picked = pick_structured_columns(ds.id, session)
+    assert picked == {"score": "Score1", "segment": "Segment1", "date": "Date1"}
+
+
+def test_pick_structured_columns_skips_switched_off_columns(session):
+    ds = _make_dataset(session)
+    session.add_all([
+        Column(dataset_id=ds.id, name="Score1", position=0, kind="score", stats={"off": True}),
+        Column(dataset_id=ds.id, name="Score2", position=1, kind="score", stats={"off": False}),
+    ])
+    session.commit()
+
+    picked = pick_structured_columns(ds.id, session)
+    assert picked["score"] == "Score2"
+
+
+def test_pick_structured_columns_none_when_no_matching_kind(session):
+    ds = _make_dataset(session)
+    session.add(Column(dataset_id=ds.id, name="Open", position=0, kind="open_text", stats={}))
+    session.commit()
+
+    picked = pick_structured_columns(ds.id, session)
+    assert picked == {"score": None, "segment": None, "date": None}
+
+
+# -------------------------------------------------------------------- build_structured_context
+
+def _plan_with_score_step(column: str, scale: list[int]) -> CleaningPlan:
+    step = Step(
+        id="s1", key="check_score_range", column=column, title="", description="",
+        enabled=True, params={"scale": scale},
+    )
+    return CleaningPlan(steps=[step], settings={}, columns={})
+
+
+def test_build_structured_context_returns_none_score_when_scale_step_missing():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    clean_df = pd.DataFrame({"Score": [3, 4, 9, 9, 2, 7, 8, 9, 5, 10]})
+    plan = CleaningPlan(steps=[], settings={}, columns={})  # no check_score_range step at all
+
+    context = build_structured_context(
+        clean_df, plan, themes, nodes, {"score": "Score"}, floor=2,
+    )
+    assert context.score is None
+    assert context.score_column_name == ""
+
+
+def test_build_structured_context_builds_score_from_confirmed_scale():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    clean_df = pd.DataFrame({"Score": [3, 4, 9, 9, 2, 7, 8, 9, 5, 10]})
+    plan = _plan_with_score_step("Score", [0, 10])
+
+    context = build_structured_context(clean_df, plan, themes, nodes, {"score": "Score"}, floor=2)
+    assert context.score is not None
+    assert context.score_column_name == "Score"
+    assert context.score.name == "Score"
+    assert {b.label for b in context.score.bands} == {"Low (0-6)", "Middle (7-8)", "High (9-10)"}
+
+
+def test_build_structured_context_ignores_absent_columns():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    clean_df = pd.DataFrame({"Score": [3, 4, 9, 9, 2, 7, 8, 9, 5, 10]})
+    plan = _plan_with_score_step("Score", [0, 10])
+
+    context = build_structured_context(clean_df, plan, themes, nodes, {}, floor=2)
+    assert context == StructuredContext()
+
+
+# -------------------------------------------------------------------- integration: full build_report_data
+# through the real charts module, plus the backward-compat pin
+
+def _big_dataset():
+    """300 rows, all three of score/segment/date well clear of every suppression floor: 3 score bands of
+    100 each, 2 segment groups (170/130), 3 monthly date periods of 100 each. Three themes (A=150, B=100,
+    Other=50)."""
+    n = 300
+    rows = range(n)
+    score = [[3, 7, 9][i % 3] for i in rows]  # even 100/100/100 split across Low/Middle/High
+    segment = ["North" if i < 170 else "South" for i in rows]  # 170 / 130, no tie
+    month = ["2026-01-15" if i < 100 else "2026-02-15" if i < 200 else "2026-03-15" for i in rows]
+    clean_df = pd.DataFrame({"Score": score, "Segment": segment, "Date": month})
+
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 100, -0.1, list(range(150, 250))),
+        make_theme("Other", 50, 0.0, list(range(250, 300))),
+    ]
+    plan = _plan_with_score_step("Score", [0, 10])
+    return clean_df, themes, plan
+
+
+def test_build_structured_context_builds_all_three_from_realistic_data():
+    clean_df, themes, plan = _big_dataset()
+    nodes = theme_nodes(themes, total_answered=300)
+    columns = {"score": "Score", "segment": "Segment", "date": "Date"}
+
+    context = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
+
+    assert context.score is not None
+    assert {b.answers for b in context.score.bands} == {100}
+
+    assert context.segment is not None
+    groups_by_label = {g.label: g.n for g in context.segment.groups}
+    assert groups_by_label == {"North": 170, "South": 130}
+
+    assert context.trend is not None
+    assert context.trend.labels == ["Jan", "Feb", "Mar"]
+    assert all(s.values for s in context.trend.series)
+
+
+def test_build_report_data_with_structured_renders_through_real_charts_module():
+    """The most important B2 test: proves build_report_data's structured score/segment/trend output is
+    actually consumable by app/charts.py's render_parts, not just internally self-consistent - mirrors
+    tests/test_findings.py::test_build_report_data_renders_through_real_charts_module's rigor for the
+    3 new chart ids this stream wires up (byScore, heatmap, trend)."""
+    clean_df, themes, plan = _big_dataset()
+    nodes = theme_nodes(themes, total_answered=300)
+    columns = {"score": "Score", "segment": "Segment", "date": "Date"}
+    structured = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
+
+    dataset = Dataset(project_id=1, filename="survey.csv", file_hash="0" * 64, row_count=300, profile={})
+    data = build_report_data(dataset, themes, {}, "Why?", structured=structured)
+
+    assert data.score.bands and data.segment.rows and data.trend.labels
+
+    byscore_html, _, _ = render_parts("byScore", data)
+    assert "A" in byscore_html and "B" in byscore_html and "Other" in byscore_html
+
+    heatmap_html, _, _ = render_parts("heatmap", data)
+    assert "North" in heatmap_html and "South" in heatmap_html
+
+    trend_html, _, _ = render_parts("trend", data)
+    assert "Jan" in trend_html and "Feb" in trend_html and "Mar" in trend_html
+
+
+def test_build_report_data_structured_none_is_byte_identical_to_omitting_it():
+    """Backward-compat pin: build_report_data's new `structured` keyword defaults to `None`, and passing
+    it explicitly as `None` must produce identical score/segment/trend output to omitting it entirely -
+    this is what proves existing callers (tests/test_findings.py, tests/test_api_report.py) keep working
+    unmodified."""
+    themes = abc_themes()
+    dataset = Dataset(project_id=1, filename="survey.csv", file_hash="0" * 64, row_count=10, profile={})
+
+    omitted = build_report_data(dataset, themes, {}, "Why?")
+    explicit_none = build_report_data(dataset, themes, {}, "Why?", structured=None)
+
+    assert omitted.score == explicit_none.score == ScoreData(name="", bands=[])
+    assert omitted.segment == explicit_none.segment == SegmentData(name="", groups=[], rows=[])
+    assert omitted.trend == explicit_none.trend == TrendData(
+        labels=[], series=[], sentiment=[], hover_index=0, note="",
+    )

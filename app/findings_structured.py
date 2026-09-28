@@ -34,8 +34,17 @@ from datetime import date, timedelta
 from typing import Sequence
 
 import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-__all__ = ["Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands"]
+from .chart_data import ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries
+from .models import Column, Theme
+
+__all__ = [
+    "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
+    "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
+    "pick_structured_columns", "build_structured_context",
+]
 
 
 @dataclass
@@ -345,3 +354,378 @@ def apply_bands(raw_by_row: dict[int, float], bands: list[Band]) -> dict[int, st
                 result[row] = band.label
                 break
     return result
+
+
+# ==================================================================== B2 - cross-tab + data plumbing
+#
+# Everything below joins B1's bands (and raw segment/date columns) back to real cleaned-dataframe rows and
+# `Theme` rows, producing the exact `ScoreData`/`SegmentData`/`TrendData` shapes `app/chart_data.py` and
+# `app/charts.py`'s `f_byscore`/`f_heatmap`/`f_trend` already render. No new banding math lives here - only
+# tallying, suppression, and formatting into those dataclasses.
+#
+# Sentiment approximation (documented once, here, rather than repeated per function below): no per-row
+# sentiment is persisted anywhere in this codebase (only each `Theme.sentiment`, one aggregate float per
+# theme, exists - see docs/DECISIONS.md's 2026-09-25 entry, "Per-answer sentiment storage: NOT persisted").
+# So every per-band/per-period sentiment value this module computes is necessarily a count-weighted average
+# of each theme's *aggregate* `Theme.sentiment` over the rows landing in that band/period - the same
+# approximation `app/findings.py::_overall_sentiment` already makes globally, just re-weighted per cell -
+# never a true per-row recomputation.
+
+
+@dataclass
+class StructuredContext:
+    """Everything `build_report_data` needs to fill in the score/segment/trend charts for one report,
+    assembled once by `build_structured_context` below. A field stays at its default (`None`/`""`) when
+    that column was absent, failed to resolve a scale/date spread, or produced no chart-worthy data after
+    suppression - `build_report_data` falls back to today's empty placeholders in exactly that case, so a
+    dataset with no usable score/segment/date column behaves byte-for-byte like it did before this module
+    existed."""
+
+    score: ScoreData | None = None
+    score_column_name: str = ""
+    segment: SegmentData | None = None
+    segment_column_name: str = ""
+    trend: TrendData | None = None
+    trend_column_name: str = ""
+
+
+def theme_answer_rows(themes: list["Theme"]) -> list[int]:
+    """Every cleaned-dataframe row index that belongs to ANY theme (i.e. every open-ended answer that got
+    clustered into a theme at all, including "Other"). Extracted so this exact set - `sorted({r for t in
+    themes for r in (t.answer_refs or [])})` - is computed once, in one place, rather than duplicated per
+    caller (see `app/api_report.py::_answer_lengths_for`'s identical inline pattern, which this generalizes
+    for the score/segment/date cross-tabs below)."""
+    return sorted({r for t in themes for r in (t.answer_refs or [])})
+
+
+def _themes_by_label(themes: list["Theme"]) -> dict[str, "Theme"]:
+    """`ThemeNode.name` (from `app.findings.theme_nodes`) always equals the source `Theme.label` it was
+    built from - this is how every function below re-associates a `ThemeNode` (colour-assigned, correctly
+    ordered) with the real `Theme` row (answer_refs, aggregate sentiment) it came from, without threading a
+    second parallel list through every call."""
+    return {t.label: t for t in themes}
+
+
+# -------------------------------------------------------------------- build_score_data
+
+def build_score_data(
+    column: str, scale: tuple[int, int], raw_by_row: dict[int, float],
+    themes: list["Theme"], nodes: list["ThemeNode"], floor: int,
+) -> "ScoreData | None":
+    """Cross-tabs a score column against themes: for each surviving band (per `band_score(scale)`), what
+    % of that band's answers came from each theme (`ScoreBand.mix`, in `nodes` order so it lines up
+    positionally with `ReportData.themes`), plus a count-weighted-average sentiment and the band's total
+    answer count. A band whose total answer count is below `floor` is dropped entirely (not shown as a
+    degenerate near-empty band); if fewer than 2 bands survive, returns `None` - nothing meaningful to
+    show, mirroring SPEC.md's chart skip-condition philosophy. See the module-level note above for the
+    sentiment approximation this uses."""
+    bands = band_score(scale)
+    band_by_row = apply_bands(raw_by_row, bands)
+    if not band_by_row:
+        return None
+
+    by_label = _themes_by_label(themes)
+
+    band_totals: dict[str, int] = {b.label: 0 for b in bands}
+    for label in band_by_row.values():
+        band_totals[label] += 1
+
+    # theme_name -> band_label -> count-of-that-theme's-rows-in-that-band
+    per_theme: dict[str, dict[str, int]] = {}
+    for node in nodes:
+        t = by_label.get(node.name)
+        counts = {b.label: 0 for b in bands}
+        if t is not None:
+            for r in (t.answer_refs or []):
+                label = band_by_row.get(r)
+                if label is not None:
+                    counts[label] += 1
+        per_theme[node.name] = counts
+
+    surviving = [b for b in bands if band_totals[b.label] >= floor]
+    if len(surviving) < 2:
+        return None
+
+    result_bands: list[ScoreBand] = []
+    for b in surviving:
+        total = band_totals[b.label]
+        mix = [round(100 * per_theme[node.name][b.label] / total, 1) for node in nodes]
+        weighted_sentiment = 0.0
+        for node in nodes:
+            t = by_label.get(node.name)
+            sentiment = t.sentiment if (t is not None and t.sentiment is not None) else 0.0
+            weighted_sentiment += sentiment * per_theme[node.name][b.label]
+        result_bands.append(ScoreBand(
+            label=b.label, mix=mix, sentiment=round(weighted_sentiment / total, 3), answers=total,
+        ))
+
+    return ScoreData(name=column, bands=result_bands)
+
+
+# -------------------------------------------------------------------- build_segment_data
+
+def _ratio_phrase(theme_name: str, group_label: str, ratio: float) -> str:
+    """Plain-English cell tooltip, matching SPEC.md's own example style and `app/fixtures/ev_sample.py`'s
+    `SegmentData.highlight_text` verbatim for the ratio > 1 case. Below 1, a clean "half as often" reads
+    better than a decimal for ratios near 0.5; anything else below 1 just states the decimal ratio rather
+    than reaching for a fraction word that would not fit every value cleanly."""
+    if 0.45 <= ratio <= 0.55:
+        return f"{group_label} mentions {theme_name} about half as often as the average respondent."
+    return f"{group_label} mentions {theme_name} {ratio:.1f} times as often as the average respondent."
+
+
+def build_segment_data(
+    column: str, raw_by_row: dict[int, str], themes: list["Theme"], nodes: list["ThemeNode"], floor: int,
+    heatmap_group_floor: int = 100, max_rows: int = 7, max_groups: int = 8,
+) -> "SegmentData | None":
+    """Cross-tabs an already-capped set of segment/category groups (`raw_by_row`'s values - capping to the
+    `max_groups` largest groups is the caller's job, see `build_structured_context`, not this function's:
+    it uses whatever groups are already present in `raw_by_row`) against themes, for the segment/age
+    heatmap.
+
+    `floor` is accepted (kept in this function's signature only for a uniform call shape with
+    `build_score_data`/`build_trend_data`) but NOT what gates a group here: SPEC.md's heatmap-specific skip
+    condition ("any segment under 100 answers") is stricter than the general suppression floor, so
+    `heatmap_group_floor` (default 100) is what actually drops a group. `max_groups` is likewise accepted
+    for the same signature-uniformity reason; the real capping to the largest groups already happened
+    before this function was called.
+
+    Groups under `heatmap_group_floor` are dropped; if fewer than 2 groups survive, returns `None`. Rows
+    are the `max_rows` largest themes from `nodes` (all of them if fewer exist). `SegmentRow.overall` is
+    the theme's real overall share (`ThemeNode.share`), never a value recomputed from this subset.
+    `highlight` is the single (row, group) cell with the largest deviation from that row's overall share,
+    scored as `max(ratio, 1/ratio)` where `ratio = cell_value / overall` (a cell whose value is exactly 0
+    is treated as the most extreme possible deviation, since "never mentioned in this group at all" is
+    itself a strong signal); rows whose `overall` is 0 are skipped entirely to avoid dividing by zero.
+    """
+    by_label = _themes_by_label(themes)
+
+    group_totals: dict[str, int] = {}
+    for v in raw_by_row.values():
+        group_totals[v] = group_totals.get(v, 0) + 1
+
+    surviving_groups = sorted(
+        (g for g, n in group_totals.items() if n >= heatmap_group_floor),
+        key=lambda g: group_totals[g], reverse=True,
+    )
+    if len(surviving_groups) < 2:
+        return None
+
+    picked_nodes = nodes[:max_rows]
+
+    counts: dict[str, dict[str, int]] = {}
+    for node in picked_nodes:
+        t = by_label.get(node.name)
+        c = {g: 0 for g in surviving_groups}
+        if t is not None:
+            for r in (t.answer_refs or []):
+                g = raw_by_row.get(r)
+                if g in c:
+                    c[g] += 1
+        counts[node.name] = c
+
+    rows: list[SegmentRow] = []
+    for node in picked_nodes:
+        values = [round(100 * counts[node.name][g] / group_totals[g], 1) for g in surviving_groups]
+        rows.append(SegmentRow(theme=node.name, overall=node.share, values=values))
+
+    best: tuple[int, int] | None = None
+    best_score = -1.0
+    best_ratio = 0.0
+    for ri, row in enumerate(rows):
+        if row.overall == 0:
+            continue
+        for gi, v in enumerate(row.values):
+            ratio = v / row.overall
+            score = float("inf") if ratio == 0 else max(ratio, 1 / ratio)
+            if score > best_score:
+                best_score = score
+                best = (ri, gi)
+                best_ratio = ratio
+
+    highlight_text = ""
+    if best is not None:
+        ri, gi = best
+        highlight_text = _ratio_phrase(rows[ri].theme, surviving_groups[gi], best_ratio)
+
+    return SegmentData(
+        name=column,
+        groups=[SegmentGroup(label=g, n=group_totals[g]) for g in surviving_groups],
+        rows=rows,
+        highlight=best,
+        highlight_text=highlight_text,
+    )
+
+
+# -------------------------------------------------------------------- build_trend_data
+
+def build_trend_data(
+    column: str, raw_by_row: dict[int, float], themes: list["Theme"], nodes: list["ThemeNode"],
+    date_bands: list["Band"], date_note: str, floor: int, max_series: int = 5,
+) -> "TrendData | None":
+    """Cross-tabs a date column (already converted to `.toordinal()` floats by the caller, see
+    `build_structured_context`) against themes, for the trend line chart. `date_bands`/`date_note` are
+    `band_dates(...)`'s own output - this function only applies them (`apply_bands`) and tallies, it does
+    not re-derive granularity.
+
+    A period whose total row count is below 30 (SPEC.md's trend-specific skip condition) is dropped; if
+    fewer than 3 periods survive, returns `None`. `series` covers the `max_series` largest themes from
+    `nodes` (all of them if fewer exist); each `TrendSeries.values[i]` is that theme's share (%) of period
+    `i`'s surviving answers. `sentiment[i]` is the same count-weighted-average-of-`Theme.sentiment`
+    approximation `build_score_data` uses for bands, computed per period across ALL themes (not just the
+    picked series) - matching how `app/findings.py::_overall_sentiment` already blends sentiment globally,
+    just re-weighted per period. `hover_index` is always the last surviving period's index."""
+    by_label = _themes_by_label(themes)
+    period_by_row = apply_bands(raw_by_row, date_bands)
+    if not period_by_row:
+        return None
+
+    period_totals: dict[str, int] = {b.label: 0 for b in date_bands}
+    for label in period_by_row.values():
+        period_totals[label] += 1
+
+    surviving_periods = [b.label for b in date_bands if period_totals[b.label] >= 30]
+    if len(surviving_periods) < 3:
+        return None
+
+    # tallied across ALL themes (not just the picked series) - sentiment[i] needs the full picture even
+    # though only the top max_series themes are plotted as lines.
+    counts: dict[str, dict[str, int]] = {}
+    for node in nodes:
+        t = by_label.get(node.name)
+        c = {p: 0 for p in surviving_periods}
+        if t is not None:
+            for r in (t.answer_refs or []):
+                p = period_by_row.get(r)
+                if p in c:
+                    c[p] += 1
+        counts[node.name] = c
+
+    picked_nodes = nodes[:max_series]
+    series: list[TrendSeries] = []
+    for node in picked_nodes:
+        values = []
+        for p in surviving_periods:
+            total = period_totals[p]
+            values.append(round(100 * counts[node.name][p] / total, 1) if total else 0.0)
+        series.append(TrendSeries(theme=node.name, color=node.color, values=values))
+
+    sentiment: list[float] = []
+    for p in surviving_periods:
+        total = period_totals[p]
+        weighted = 0.0
+        for node in nodes:
+            t = by_label.get(node.name)
+            s = t.sentiment if (t is not None and t.sentiment is not None) else 0.0
+            weighted += s * counts[node.name][p]
+        sentiment.append(round(weighted / total, 3) if total else 0.0)
+
+    return TrendData(
+        labels=surviving_periods, series=series, sentiment=sentiment,
+        hover_index=len(surviving_periods) - 1, note=date_note,
+    )
+
+
+# -------------------------------------------------------------------- pick_structured_columns
+
+def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, str | None]:
+    """First confirmed, not-switched-off `Column` of each kind ("score", "segment", "date"), in
+    `Column.position` order. Simple, documented first-pass rule - a future "let the user pick" UI can
+    override it."""
+    cols = list(db.scalars(
+        select(Column).where(Column.dataset_id == dataset_id).order_by(Column.position)
+    ).all())
+    result: dict[str, str | None] = {"score": None, "segment": None, "date": None}
+    for kind in ("score", "segment", "date"):
+        for c in cols:
+            if c.kind == kind and not (c.stats or {}).get("off"):
+                result[kind] = c.name
+                break
+    return result
+
+
+# -------------------------------------------------------------------- build_structured_context
+
+def build_structured_context(
+    clean_df, plan: "CleaningPlan", themes: list["Theme"], nodes: list["ThemeNode"],
+    columns: dict[str, str | None], floor: int,
+) -> StructuredContext:
+    """Top-level B2 assembly: resolves each of "score"/"segment"/"date" (when present in `columns`) into
+    real cleaned-dataframe values keyed by `theme_answer_rows(themes)`, then calls the matching
+    `build_*_data` function above. Any column that is absent, fails to resolve a scale/date spread, or
+    produces no chart-worthy data after suppression is simply left out of the returned `StructuredContext`
+    (fields stay at their `None`/`""` defaults) - never raises."""
+    context = StructuredContext()
+    rows = theme_answer_rows(themes)
+
+    score_col = columns.get("score")
+    if score_col:
+        step = next(
+            (s for s in plan.steps if s.key == "check_score_range" and s.column == score_col), None,
+        )
+        if step is not None:
+            scale = tuple(step.params["scale"])
+            raw_by_row: dict[int, float] = {}
+            for r in rows:
+                try:
+                    raw_by_row[r] = clean_df.at[r, score_col]
+                except KeyError:
+                    continue
+            score_data = build_score_data(score_col, scale, raw_by_row, themes, nodes, floor)
+            if score_data is not None:
+                context.score = score_data
+                context.score_column_name = score_col
+        # No `check_score_range` step for this column: do not guess a scale from observed data (explicitly
+        # out of scope) - the score column is simply left unset on the context.
+
+    segment_col = columns.get("segment")
+    if segment_col:
+        raw_seg: dict[int, str] = {}
+        for r in rows:
+            try:
+                raw_seg[r] = clean_df.at[r, segment_col]
+            except KeyError:
+                continue
+        # Cap to the 8 largest groups by row count before ever calling build_segment_data - a cosmetic cap
+        # for heatmap grid readability, not a suppression rule (see B1's module docstring).
+        counts: dict[str, int] = {}
+        for v in raw_seg.values():
+            counts[v] = counts.get(v, 0) + 1
+        top_groups = {g for g, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:8]}
+        raw_seg_capped = {r: v for r, v in raw_seg.items() if v in top_groups}
+        segment_data = build_segment_data(segment_col, raw_seg_capped, themes, nodes, floor)
+        if segment_data is not None:
+            context.segment = segment_data
+            context.segment_column_name = segment_col
+
+    date_col = columns.get("date")
+    if date_col:
+        parsed_by_row: dict[int, date] = {}
+        for r in rows:
+            try:
+                v = clean_df.at[r, date_col]
+            except KeyError:
+                continue
+            if isinstance(v, str):
+                ts = pd.to_datetime(v, errors="coerce")
+            elif isinstance(v, date):
+                ts = pd.Timestamp(v)
+            else:
+                ts = pd.to_datetime(v, errors="coerce")
+            if ts is None or pd.isna(ts):
+                continue
+            parsed_by_row[r] = ts.date()
+
+        try:
+            date_bands, date_note = band_dates(list(parsed_by_row.values()))
+        except ValueError:
+            date_bands, date_note = None, None
+
+        if date_bands is not None:
+            raw_ordinals = {r: float(d.toordinal()) for r, d in parsed_by_row.items()}
+            trend_data = build_trend_data(date_col, raw_ordinals, themes, nodes, date_bands, date_note, floor)
+            if trend_data is not None:
+                context.trend = trend_data
+                context.trend_column_name = date_col
+
+    return context
