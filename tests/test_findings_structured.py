@@ -13,11 +13,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.chart_data import ScoreData, SegmentData, TrendData
+from app.chart_data import ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries
 from app.charts import render_parts
 from app.cleaning.models import CleaningPlan, Step
 from app.db import Base
-from app.findings import build_report_data, theme_nodes
+from app.findings import MAX_CANDIDATES, Candidate, build_report_data, candidate_findings, label_confidence, theme_nodes
 from app.findings_structured import (
     Band,
     StructuredContext,
@@ -31,7 +31,10 @@ from app.findings_structured import (
     build_structured_context,
     build_trend_data,
     pick_structured_columns,
+    score_correlation_candidates,
+    segment_skew_candidates,
     theme_answer_rows,
+    trend_shift_candidates,
 )
 from app.models import Column, Dataset, Theme
 
@@ -647,3 +650,290 @@ def test_build_report_data_structured_none_is_byte_identical_to_omitting_it():
     assert omitted.trend == explicit_none.trend == TrendData(
         labels=[], series=[], sentiment=[], hover_index=0, note="",
     )
+
+
+# ==================================================================== B3 - new candidate-finding kinds
+
+# ---------------------------------------------------------------- segment_skew_candidates
+
+def test_segment_skew_candidates_at_gate_and_just_below_gate():
+    themes = [make_theme("A", 40, 0.0, list(range(40)))]
+    at_gate = SegmentData(
+        name="Segment", groups=[SegmentGroup("G1", 100)],
+        rows=[SegmentRow(theme="A", overall=40.0, values=[60.0])],  # ratio exactly 1.5
+    )
+    candidates = segment_skew_candidates(at_gate, themes, floor=30)
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.kind == "segment_skew"
+    assert c.theme_name == "A" and c.count == 100
+    assert c.numbers == {
+        "column": "Segment", "group": "G1", "theme": "A",
+        "group_share_pct": 60.0, "overall_share_pct": 40.0, "ratio": 1.5, "group_n": 100,
+    }
+
+    just_below = SegmentData(
+        name="Segment", groups=[SegmentGroup("G1", 100)],
+        rows=[SegmentRow(theme="A", overall=40.0, values=[59.0])],  # ratio 1.475
+    )
+    assert segment_skew_candidates(just_below, themes, floor=30) == []
+
+
+def test_segment_skew_candidates_gate_fires_in_the_below_one_direction_too():
+    themes = [make_theme("A", 40, 0.0, list(range(40)))]
+    segment = SegmentData(
+        name="Segment", groups=[SegmentGroup("G1", 100)],
+        rows=[SegmentRow(theme="A", overall=60.0, values=[40.0])],  # ratio = 40/60 = 0.667 = 1/1.5
+    )
+    candidates = segment_skew_candidates(segment, themes, floor=30)
+    assert len(candidates) == 1
+    assert candidates[0].numbers["ratio"] == pytest.approx(2 / 3, abs=1e-3)
+
+
+def test_segment_skew_candidates_skips_zero_overall_rows_and_one_candidate_per_cell():
+    themes = [make_theme("A", 0, 0.0, []), make_theme("B", 100, 0.0, list(range(100)))]
+    segment = SegmentData(
+        name="Segment", groups=[SegmentGroup("G1", 100), SegmentGroup("G2", 100)],
+        rows=[
+            SegmentRow(theme="A", overall=0.0, values=[90.0, 10.0]),  # overall 0 - skipped, never a ZeroDivision
+            SegmentRow(theme="B", overall=50.0, values=[80.0, 20.0]),  # G1 ratio 1.6 (gate), G2 ratio 0.4 (gate)
+        ],
+    )
+    candidates = segment_skew_candidates(segment, themes, floor=30)
+    assert len(candidates) == 2  # exactly one per qualifying (row, group) cell - both of B's cells here
+    assert all(c.theme_name == "B" for c in candidates)
+
+
+def test_label_confidence_segment_skew_thresholds():
+    at_solid = Candidate("segment_skew", "x", 1, "X", count=100, score=1.0, numbers={"ratio": 2.0})
+    assert label_confidence(at_solid) == "solid"
+    at_solid_low_side = Candidate("segment_skew", "x", 1, "X", count=100, score=1.0, numbers={"ratio": 0.5})
+    assert label_confidence(at_solid_low_side) == "solid"
+
+    just_below_solid_ratio = Candidate("segment_skew", "x", 1, "X", count=100, score=1.0, numbers={"ratio": 1.9})
+    assert label_confidence(just_below_solid_ratio) == "tentative"
+
+    small_group = Candidate("segment_skew", "x", 1, "X", count=40, score=1.0, numbers={"ratio": 3.0})
+    assert label_confidence(small_group) == "tentative"  # ratio is huge, but count is below the solid floor
+
+
+# ---------------------------------------------------------------- score_correlation_candidates
+
+def test_score_correlation_candidates_at_gate_and_just_below_gate():
+    themes = [make_theme("A", 100, 0.0, list(range(100)))]
+
+    at_gate = ScoreData(name="Score", bands=[
+        ScoreBand(label="Low", mix=[10.0], sentiment=0.0, answers=50),
+        ScoreBand(label="High", mix=[18.0], sentiment=0.0, answers=50),  # spread exactly 8.0
+    ])
+    candidates = score_correlation_candidates(at_gate, themes, floor=30)
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.kind == "score_correlation" and c.theme_name == "A"
+    assert c.numbers == {
+        "column": "Score", "theme": "A", "low_band": "Low", "low_pct": 10.0,
+        "high_band": "High", "high_pct": 18.0, "spread_pct": 8.0,
+    }
+
+    just_below = ScoreData(name="Score", bands=[
+        ScoreBand(label="Low", mix=[10.0], sentiment=0.0, answers=50),
+        ScoreBand(label="High", mix=[17.9], sentiment=0.0, answers=50),  # spread 7.9
+    ])
+    assert score_correlation_candidates(just_below, themes, floor=30) == []
+
+
+def test_score_correlation_candidates_names_the_real_peak_band_even_if_its_the_middle_one():
+    themes = [make_theme("A", 100, 0.0, list(range(100)))]
+    score = ScoreData(name="Score", bands=[
+        ScoreBand(label="Low", mix=[20.0], sentiment=0.0, answers=50),
+        ScoreBand(label="Middle", mix=[40.0], sentiment=0.0, answers=50),  # the real peak
+        ScoreBand(label="High", mix=[15.0], sentiment=0.0, answers=50),
+    ])
+    candidates = score_correlation_candidates(score, themes, floor=30)
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.numbers["high_band"] == "Middle" and c.numbers["high_pct"] == 40.0
+    assert c.numbers["low_band"] == "High" and c.numbers["low_pct"] == 15.0
+    assert c.numbers["spread_pct"] == 25.0
+
+
+def test_score_correlation_candidates_drops_bands_under_floor():
+    themes = [make_theme("A", 100, 0.0, list(range(100)))]
+    score = ScoreData(name="Score", bands=[
+        ScoreBand(label="Low", mix=[10.0], sentiment=0.0, answers=20),  # below floor=30
+        ScoreBand(label="High", mix=[40.0], sentiment=0.0, answers=50),
+    ])
+    assert score_correlation_candidates(score, themes, floor=30) == []
+
+
+def test_label_confidence_score_correlation_thresholds():
+    at_solid = Candidate("score_correlation", "x", 1, "X", count=100, score=1.0, numbers={"spread_pct": 15.0})
+    assert label_confidence(at_solid) == "solid"
+    just_below_solid = Candidate("score_correlation", "x", 1, "X", count=100, score=1.0, numbers={"spread_pct": 14.9})
+    assert label_confidence(just_below_solid) == "tentative"
+    small_group = Candidate("score_correlation", "x", 1, "X", count=40, score=1.0, numbers={"spread_pct": 25.0})
+    assert label_confidence(small_group) == "tentative"
+
+
+# ---------------------------------------------------------------- trend_shift_candidates
+
+def test_trend_shift_candidates_at_gate_and_just_below_gate():
+    themes = [make_theme("A", 100, 0.0, list(range(100)))]
+    at_gate = TrendData(
+        labels=["P1", "P2", "P3"],
+        series=[TrendSeries(theme="A", color="t1", values=[10.0, 10.0, 16.0])],  # change exactly +6.0
+        sentiment=[0.0, 0.0, 0.0], hover_index=2, note="note",
+    )
+    candidates = trend_shift_candidates(at_gate, themes, floor=30, column="Date")
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.kind == "trend_shift" and c.theme_name == "A" and c.count == 100
+    assert c.numbers == {
+        "column": "Date", "theme": "A", "first_period": "P1", "first_pct": 10.0,
+        "last_period": "P3", "last_pct": 16.0, "change_pct": 6.0, "direction": "rising",
+    }
+
+    just_below = TrendData(
+        labels=["P1", "P2", "P3"],
+        series=[TrendSeries(theme="A", color="t1", values=[10.0, 10.0, 15.9])],  # change 5.9
+        sentiment=[0.0, 0.0, 0.0], hover_index=2, note="note",
+    )
+    assert trend_shift_candidates(just_below, themes, floor=30) == []
+
+
+def test_trend_shift_candidates_fading_direction_and_default_column():
+    themes = [make_theme("A", 100, 0.0, list(range(100)))]
+    trend = TrendData(
+        labels=["P1", "P2", "P3"],
+        series=[TrendSeries(theme="A", color="t1", values=[20.0, 10.0, 5.0])],  # change -15.0
+        sentiment=[0.0, 0.0, 0.0], hover_index=2, note="note",
+    )
+    candidates = trend_shift_candidates(trend, themes, floor=30)  # column omitted - defaults to ""
+    assert len(candidates) == 1
+    assert candidates[0].numbers["direction"] == "fading"
+    assert candidates[0].numbers["change_pct"] == -15.0
+    assert candidates[0].numbers["column"] == ""
+
+
+def test_trend_shift_candidates_theme_size_below_floor_is_excluded():
+    themes = [make_theme("A", 10, 0.0, list(range(10)))]  # size 10 < floor 30
+    trend = TrendData(
+        labels=["P1", "P2", "P3"],
+        series=[TrendSeries(theme="A", color="t1", values=[10.0, 10.0, 40.0])],  # change +30.0, huge
+        sentiment=[0.0, 0.0, 0.0], hover_index=2, note="note",
+    )
+    assert trend_shift_candidates(trend, themes, floor=30) == []
+
+
+def test_label_confidence_trend_shift_thresholds():
+    at_solid = Candidate("trend_shift", "x", 1, "X", count=100, score=1.0, numbers={"change_pct": 12.0})
+    assert label_confidence(at_solid) == "solid"
+    at_solid_falling = Candidate("trend_shift", "x", 1, "X", count=100, score=1.0, numbers={"change_pct": -12.0})
+    assert label_confidence(at_solid_falling) == "solid"
+    just_below_solid = Candidate("trend_shift", "x", 1, "X", count=100, score=1.0, numbers={"change_pct": 11.9})
+    assert label_confidence(just_below_solid) == "tentative"
+    small_group = Candidate("trend_shift", "x", 1, "X", count=40, score=1.0, numbers={"change_pct": 20.0})
+    assert label_confidence(small_group) == "tentative"
+
+
+# ---------------------------------------------------------------- candidate_findings backward-compat pin
+
+def _dominant_and_longtail_themes_for_pin():
+    return [
+        make_theme("Cost", 600, -0.05, list(range(600))),
+        make_theme("Charging", 150, -0.05, list(range(600, 750))),
+        make_theme("Range", 100, -0.05, list(range(750, 850))),
+        make_theme("Other", 150, -0.05, list(range(850, 1000))),
+    ]
+
+
+def test_candidate_findings_structured_none_is_byte_identical_to_omitting_it():
+    """Backward-compat pin, mirroring test_build_report_data_structured_none_is_byte_identical_to_omitting_it
+    above: candidate_findings's new `structured` keyword defaults to `None`, and passing it explicitly as
+    `None` must produce identical output to omitting it entirely."""
+    themes = _dominant_and_longtail_themes_for_pin()
+    omitted = candidate_findings(themes)
+    explicit_none = candidate_findings(themes, structured=None)
+    assert omitted == explicit_none
+    assert {c.kind for c in omitted} == {"dominant_theme", "long_tail"}
+
+
+# ---------------------------------------------------------------- integration: all 5 kinds at once
+
+def _all_five_kinds_dataset():
+    """1000 rows across 4 themes (A/B/C/Other), engineered so the 2 pre-existing kinds (tone_contrast x3,
+    dominant_theme, long_tail - 5 candidates, already filling MAX_CANDIDATES on their own) AND the 3 new
+    kinds (segment_skew, score_correlation, trend_shift, via theme A's deliberately huge, easily-solid
+    score/segment/date skews) all clear their gates at once. The new kinds' real-world effect sizes here
+    are engineered far larger than the old tone_contrast candidates' tiny -1..+1-scale gaps (~0.2-0.4), so
+    this is the scenario that would have caught the pre-existing cross-kind scale mismatch: an un-normalised
+    score would always keep the 5 old candidates and never let a new one in, since they alone already fill
+    the cap."""
+    themes = [
+        make_theme("A", 400, 0.30, list(range(0, 400))),
+        make_theme("B", 250, -0.05, list(range(400, 650))),
+        make_theme("C", 150, -0.05, list(range(650, 800))),
+        make_theme("Other", 200, -0.05, list(range(800, 1000))),
+    ]
+
+    score = (
+        [9] * 300 + [3] * 100  # A: mostly High - a big, solid score_correlation skew
+        + [3] * 84 + [7] * 83 + [9] * 83  # B: roughly even across bands - no skew
+        + [3] * 50 + [7] * 50 + [9] * 50  # C: roughly even - no skew
+        + [3] * 67 + [7] * 67 + [9] * 66  # Other: roughly even - no skew
+    )
+    segment = (
+        ["South"] * 350 + ["North"] * 50  # A: mostly South
+        + ["North"] * 250  # B: entirely North - a big, solid segment_skew cell
+        + ["South"] * 150  # C: entirely South
+        + ["South"] * 200  # Other: entirely South
+    )
+    date = (
+        ["2026-01-15"] * 50 + ["2026-02-15"] * 100 + ["2026-03-15"] * 250  # A: rises sharply Jan -> Mar
+        + ["2026-01-15"] * 84 + ["2026-02-15"] * 83 + ["2026-03-15"] * 83  # B: flat
+        + ["2026-01-15"] * 50 + ["2026-02-15"] * 50 + ["2026-03-15"] * 50  # C: flat
+        + ["2026-01-15"] * 67 + ["2026-02-15"] * 67 + ["2026-03-15"] * 66  # Other: flat
+    )
+    assert len(score) == len(segment) == len(date) == 1000
+
+    clean_df = pd.DataFrame({"Score": score, "Segment": segment, "Date": date})
+    plan = _plan_with_score_step("Score", [0, 10])
+    return clean_df, themes, plan
+
+
+def test_candidate_findings_all_five_kinds_qualify_and_new_kinds_are_not_crowded_out():
+    """The single most important new test in this whole stream: proves the score-scale-matching in
+    app/findings_structured.py's B3 section actually worked, by constructing a pool where the 3 new kinds
+    must compete directly against a pre-existing pool that already fills MAX_CANDIDATES on its own."""
+    clean_df, themes, plan = _all_five_kinds_dataset()
+    total = sum(t.size for t in themes)
+    nodes = theme_nodes(themes, total)
+    columns = {"score": "Score", "segment": "Segment", "date": "Date"}
+    structured = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
+    assert structured.score is not None
+    assert structured.segment is not None
+    assert structured.trend is not None
+
+    without_structured = candidate_findings(themes)
+    assert len(without_structured) == MAX_CANDIDATES  # the old pool alone already fills the cap
+    assert {c.kind for c in without_structured} == {"tone_contrast", "dominant_theme", "long_tail"}
+
+    with_structured = candidate_findings(themes, structured=structured)
+    assert len(with_structured) == MAX_CANDIDATES
+
+    new_kinds = {"segment_skew", "score_correlation", "trend_shift"}
+    kinds_present = {c.kind for c in with_structured}
+    assert kinds_present & new_kinds, (
+        "at least one new kind must have broken into the top MAX_CANDIDATES once structured data is given"
+    )
+    # a wrong (un-normalised, tone_contrast-like) scale would leave the ranked pool unchanged from the
+    # old-only case, since 5 old candidates alone already fill the cap - so a real change here is the point.
+    assert kinds_present != {"tone_contrast", "dominant_theme", "long_tail"}
+
+    for c in with_structured:
+        if c.kind == "score_correlation":
+            assert c.numbers["spread_pct"] >= 8.0
+        if c.kind == "segment_skew":
+            assert c.numbers["ratio"] >= 1.5 or c.numbers["ratio"] <= 1 / 1.5
+        if c.kind == "trend_shift":
+            assert abs(c.numbers["change_pct"]) >= 6.0

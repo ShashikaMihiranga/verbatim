@@ -46,13 +46,16 @@ from . import db as _db
 from .api_themes import _load_clean_df, get_claude_client
 from .api_upload import _own_dataset, current_user
 from .charts import TITLES, render_parts
+from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .db import get_db
 from .findings import (
     FindingsClaudeNotConfigured,
     NoThemesForColumn,
     build_findings,
     build_report_data,
+    theme_nodes,
 )
+from .findings_structured import StructuredContext, build_structured_context, pick_structured_columns
 from .jobs import create_job, start_job
 from .models import Dataset, Finding, Report, Theme, User
 from .text_pipeline import ClaudeClient
@@ -99,6 +102,22 @@ def _answer_lengths_for(clean_df, column: str, themes: list[Theme]) -> list[int]
     return lengths
 
 
+def _structured_context_for(
+    db: Session, ds: Dataset, clean_df, plan, themes: list[Theme],
+) -> StructuredContext:
+    """B3 wiring: resolves this dataset's first confirmed score/segment/date column (`pick_structured_columns`)
+    against the cleaned dataframe and the cleaning plan actually applied (`plan` - previously discarded as
+    `_plan` by both call sites below, see docs/DECISIONS.md), producing the `StructuredContext` both
+    `app.findings.candidate_findings` (the 3 new finding kinds) and `app.findings.build_report_data` (the
+    `byScore`/`heatmap`/`trend` chart data) need. Never raises: a dataset with no usable score/segment/date
+    column simply gets a `StructuredContext` with every field at its `None`/`""` default (see that
+    dataclass's own docstring)."""
+    total = sum(t.size for t in themes)
+    nodes = theme_nodes(themes, total)
+    cols = pick_structured_columns(ds.id, db)
+    return build_structured_context(clean_df, plan, themes, nodes, cols, _suppression_min_group_size())
+
+
 def _latest_report_for_column(db: Session, dataset_id: int, column: str) -> Report | None:
     # `build_findings` deletes any prior report for this dataset+column before writing a new one (see its
     # docstring), so at most one row should ever match - `order_by(id.desc())` is defensive, not load-bearing.
@@ -116,10 +135,13 @@ def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dic
     themes = list(db.scalars(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
     ).all())
-    clean_df, _plan = _load_clean_df(ds, db)
+    clean_df, plan = _load_clean_df(ds, db)
+    structured = _structured_context_for(db, ds, clean_df, plan, themes)
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
     question = content.get("question") or column
-    report_data = build_report_data(ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths)
+    report_data = build_report_data(
+        ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths, structured=structured,
+    )
 
     blocks_content = content.get("blocks") or []
     finding_ids = [b["finding_id"] for b in blocks_content if b.get("finding_id") is not None]
@@ -165,6 +187,17 @@ def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dic
     plural = "" if real_theme_count == 1 else "s"
     summary = f"{real_theme_count} theme{plural} found, overall tone {tone_word} ({overall:+.2f})."
 
+    # "Columns used": the report's own open-text column first, then only the structured columns that
+    # actually survived suppression and produced real chart data (never one merely confirmed but unused) -
+    # matching docs/DECISIONS.md's 2026-09-28 "honest 'Columns used' chip row" entry's own stated philosophy.
+    columns_used: list[dict[str, str]] = [{"name": column, "role": "open-ended text"}]
+    if structured.score is not None:
+        columns_used.append({"name": structured.score_column_name, "role": "score"})
+    if structured.segment is not None:
+        columns_used.append({"name": structured.segment_column_name, "role": "segment"})
+    if structured.trend is not None:
+        columns_used.append({"name": structured.trend_column_name, "role": "date"})
+
     return {
         "dataset_id": ds.id,
         "column": column,
@@ -172,6 +205,7 @@ def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dic
         "summary": summary,
         "also_checked_nothing_notable": bool(content.get("also_checked_nothing_notable")),
         "blocks": blocks_out,
+        "columns_used": columns_used,
     }
 
 
@@ -212,9 +246,15 @@ def build_report(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
     ).all())
     answer_lengths = None
+    structured = None
     if themes:
-        clean_df, _plan = _load_clean_df(ds, db)
+        clean_df, plan = _load_clean_df(ds, db)
         answer_lengths = _answer_lengths_for(clean_df, column, themes)
+        # Built here (synchronously, alongside answer_lengths above) rather than re-queried inside `_work`'s
+        # own job-thread session: `StructuredContext` is plain data once built (no lingering ORM references),
+        # so it crosses into the closure below exactly like `answer_lengths` already does - one fewer
+        # DataFrame reload/DB round-trip in the background job for the same result.
+        structured = _structured_context_for(db, ds, clean_df, plan, themes)
 
     # The only check left that can still fail synchronously: a full slot is knowable instantly, with no
     # thread started, so it stays an immediate 429 exactly like before.
@@ -236,7 +276,7 @@ def build_report(
             step("Deciding what's worth telling")
             report = build_findings(
                 job_ds, column, job_db, claude_client,
-                cleaning_report=cleaning_report, answer_lengths=answer_lengths,
+                cleaning_report=cleaning_report, answer_lengths=answer_lengths, structured=structured,
             )
             step("Drawing charts")
             # Rendered here too (and discarded) purely so a rendering bug fails the job with a plain

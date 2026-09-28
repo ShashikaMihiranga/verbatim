@@ -44,7 +44,15 @@ from .chart_data import (
     ScoreData, SegmentData, ThemeNode, ToneSplit, TrendData,
 )
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
-from .findings_structured import StructuredContext
+from .findings_structured import (
+    SCORE_SPREAD_SOLID,
+    SEGMENT_SKEW_RATIO_SOLID,
+    TREND_SHIFT_SOLID,
+    StructuredContext,
+    score_correlation_candidates,
+    segment_skew_candidates,
+    trend_shift_candidates,
+)
 from .models import Dataset, Finding, Report, Theme
 from .text_pipeline import AnthropicClaudeClient, ClaudeClient
 from .text_pipeline import LabelingClaudeNotConfigured as FindingsClaudeNotConfigured
@@ -93,8 +101,18 @@ CHART_BY_KIND = {
                                # theme clearly leads" (shows share, count and sentiment tint together)
     "long_tail": "treemap",  # table: "Treemap", priority 2, replaces sunburst - block area makes an
                              # oversized "Other" block legible at a glance
+    "segment_skew": "heatmap",  # table: "Heatmap", priority 5 - matches SPEC.md section 4's row exactly
+    "score_correlation": "byScore",  # table's own analogue is "Sankey" (priority 5), explicitly out of
+                                      # scope this pass (no Sankey renderer exists/is tested yet) - `byScore`
+                                      # is used instead: its renderer already exists, is tested, and matches
+                                      # the mockup's visual style for "a number that moves with score". A
+                                      # deliberate, documented SPEC.md deviation - see docs/DECISIONS.md.
+    "trend_shift": "trend",  # table: "Trend", priority 6 - matches SPEC.md section 4's row exactly
 }
-PRIORITY_BY_KIND = {"long_tail": 2, "dominant_theme": 3, "tone_contrast": 4}
+PRIORITY_BY_KIND = {
+    "long_tail": 2, "dominant_theme": 3, "tone_contrast": 4, "segment_skew": 5, "score_correlation": 5,
+    "trend_shift": 6,
+}
 
 
 @dataclass
@@ -406,21 +424,35 @@ def _build_quality(cleaning_report: Any, total_rows: int, total_answered: int,
 
 # ==================================================================== 2. candidate_findings
 
-def candidate_findings(themes: list[Theme], min_group_size: int | None = None) -> list[Candidate]:
+def candidate_findings(
+    themes: list[Theme], min_group_size: int | None = None, structured: StructuredContext | None = None,
+) -> list[Candidate]:
     """Computes candidate findings from stored `Theme` rows (SPEC.md section 9.3).
 
-    Deliberately narrow first pass - see the module docstring for why only these two kinds exist yet:
+    Five kinds total now - see the module docstring's history for why only two existed before this stream:
       - **tone contrast**: a theme whose sentiment differs notably (either direction) from the dataset's
         overall (answer-count-weighted) sentiment.
       - **dominant/rare theme**: the largest real theme, if it clearly leads (a "clear #1"), or the
         "Other"/long-tail group, if it is unusually large (a data-quality signal as much as a finding).
+      - **segment skew** (`structured.segment`, SPEC 9.3 "a theme raised more by one group"), **score
+        correlation** (`structured.score`, "a number that moves with sentiment or score") and **trend
+        shift** (`structured.trend`, "a trend over time") - each only computed when `structured` is given
+        and has real data for that column; see `app/findings_structured.py`'s own B3 section for their
+        gate/solid thresholds and scoring.
 
     Every candidate must clear `min_group_size` (defaults to `app.cleaning.suppression.min_group_size()`,
     this codebase's existing convention for "too small a group to report on" - reused rather than a second
     constant) before it is even considered, and must additionally clear a kind-specific effect-size gate
-    (`TONE_GAP_MIN`/`DOMINANT_SHARE_MIN`+`DOMINANT_MARGIN_MIN`/`LONGTAIL_SHARE_MIN`) to become a Candidate
-    at all. Each candidate's `score` blends effect size (the dominant factor) with a diminishing bonus for
-    larger groups, so two similarly-sized effects rank the one backed by more answers higher.
+    (`TONE_GAP_MIN`/`DOMINANT_SHARE_MIN`+`DOMINANT_MARGIN_MIN`/`LONGTAIL_SHARE_MIN`, or the new kinds' own
+    gates in `app/findings_structured.py`) to become a Candidate at all. `score`'s shape differs by kind,
+    on purpose: `tone_contrast` blends its -1..+1 effect size with a diminishing size bonus, while
+    `dominant_theme`/`long_tail` score on a bare percentage point with no bonus at all - the 3 new kinds
+    match `dominant_theme`/`long_tail`'s bare-percentage-point shape exactly (not `tone_contrast`'s), so
+    those 4 kinds compete on the same scale in one ranked pool; `tone_contrast`'s own pre-existing mismatch
+    with the other 4 is left as documented, known debt, not fixed here - see docs/DECISIONS.md.
+
+    `structured=None` (the default, and passing it explicitly) is byte-identical to today's behaviour: no
+    new candidates are computed, existing callers are unaffected.
 
     Returns the top `MAX_CANDIDATES` (5) by score - a CAP, never a floor: SPEC.md section 5 also describes
     an "also checked, nothing notable" case, so this can legitimately return `[]` when nothing clears the
@@ -482,6 +514,18 @@ def candidate_findings(themes: list[Theme], min_group_size: int | None = None) -
                 numbers={"theme": other.label, "share_pct": share, "count": other.size},
             ))
 
+    # --- score/segment/date-driven kinds (B3): appended to the SAME pool above, not a parallel mechanism -
+    # only computed for whichever of structured.segment/.score/.trend actually has real data.
+    if structured is not None:
+        if structured.segment is not None:
+            candidates.extend(segment_skew_candidates(structured.segment, themes, floor))
+        if structured.score is not None:
+            candidates.extend(score_correlation_candidates(structured.score, themes, floor))
+        if structured.trend is not None:
+            candidates.extend(trend_shift_candidates(
+                structured.trend, themes, floor, structured.trend_column_name,
+            ))
+
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates[:MAX_CANDIDATES]
 
@@ -491,8 +535,14 @@ def candidate_findings(themes: list[Theme], min_group_size: int | None = None) -
 def label_confidence(candidate: Candidate) -> str:
     """"Solid" or "Tentative" (SPEC.md section 9.3/6). A simple, documented threshold on group size
     (`SOLID_COUNT_MULTIPLIER` times the suppression floor) AND a kind-specific effect-size threshold -
-    both are named constants at the top of this module, easy to retune; SPEC.md gives no exact numbers
-    for this, only "label uncertain ones Tentative"."""
+    both are named constants (the 3 newest ones in `app/findings_structured.py`, imported above), easy to
+    retune; SPEC.md gives no exact numbers for this, only "label uncertain ones Tentative".
+
+    `candidate.count` already carries the exact answer count each new kind's own "Solid" rule (in
+    `app/findings_structured.py`'s B3 section) needs checked against the floor - the group's `n` for
+    `segment_skew`, the smaller of the two extreme bands' `answers` for `score_correlation`, the theme's
+    own `size` for `trend_shift` - so the group-size check above already applies correctly to all 5 kinds
+    without any kind-specific branching for it."""
     floor = _suppression_min_group_size()
     if candidate.count < floor * SOLID_COUNT_MULTIPLIER:
         return "tentative"
@@ -502,6 +552,13 @@ def label_confidence(candidate: Candidate) -> str:
         return "solid" if candidate.numbers["share_pct"] >= DOMINANT_SHARE_SOLID else "tentative"
     if candidate.kind == "long_tail":
         return "solid" if candidate.numbers["share_pct"] >= LONGTAIL_SHARE_SOLID else "tentative"
+    if candidate.kind == "segment_skew":
+        ratio = candidate.numbers["ratio"]
+        return "solid" if (ratio >= SEGMENT_SKEW_RATIO_SOLID or ratio <= 1 / SEGMENT_SKEW_RATIO_SOLID) else "tentative"
+    if candidate.kind == "score_correlation":
+        return "solid" if candidate.numbers["spread_pct"] >= SCORE_SPREAD_SOLID else "tentative"
+    if candidate.kind == "trend_shift":
+        return "solid" if abs(candidate.numbers["change_pct"]) >= TREND_SHIFT_SOLID else "tentative"
     return "tentative"  # pragma: no cover - defensive: every real kind is handled above
 
 
@@ -628,6 +685,7 @@ def build_findings(
     cleaning_report: Any = None,
     answer_lengths: list[int] | None = None,
     min_group_size: int | None = None,
+    structured: StructuredContext | None = None,
 ) -> Report:
     """Orchestrates 1-5 for one dataset + open-text column: loads its stored `Theme` rows, computes and
     scores candidates, writes headlines (one batched Claude call), builds the `ReportData`, and persists
@@ -648,6 +706,11 @@ def build_findings(
     the whole report"). A caller that wants to render a block calls
     `render(block["chart_id"], build_report_data(dataset, themes, cleaning_report, question))`.
 
+    `structured` is an optional `app.findings_structured.StructuredContext` (see `build_report_data`'s own
+    docstring): when given, it is threaded into both `candidate_findings` (the 3 new score/segment/date
+    finding kinds) and `build_report_data` (the `byScore`/`heatmap`/`trend` chart data), from the SAME
+    `StructuredContext` instance - never rebuilt twice for one report.
+
     Raises `NoThemesForColumn` if no themes are stored yet for this dataset + column.
     """
     themes = list(db_session.scalars(
@@ -657,9 +720,11 @@ def build_findings(
         raise NoThemesForColumn(f"No stored themes for dataset {dataset.id}, column {column!r}. Build themes first.")
 
     question = question_for(dataset, column)
-    candidates = candidate_findings(themes, min_group_size=min_group_size)
+    candidates = candidate_findings(themes, min_group_size=min_group_size, structured=structured)
     sentences = write_headline(candidates, claude_client, question)
-    report_data = build_report_data(dataset, themes, cleaning_report, question, answer_lengths=answer_lengths)
+    report_data = build_report_data(
+        dataset, themes, cleaning_report, question, answer_lengths=answer_lengths, structured=structured,
+    )
 
     # Replace prior findings/report for this dataset + column - see the column-correlation note above.
     for old_finding in db_session.scalars(select(Finding).where(Finding.dataset_id == dataset.id)).all():

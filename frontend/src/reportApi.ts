@@ -23,6 +23,15 @@ export interface ReportBlock {
   finding: ReportFinding | null
 }
 
+// One chip per column this report actually used - the report's own open-text column first (role
+// "open-ended text"), then only whichever of score/segment/date columns actually survived suppression and
+// produced real chart data (never one merely confirmed but unused). See docs/DECISIONS.md's 2026-09-28
+// "honest 'Columns used' chip row" entry, which this fulfils.
+export interface ReportColumnUsed {
+  name: string
+  role: string
+}
+
 export interface ReportResponse {
   dataset_id: number
   column: string
@@ -30,6 +39,7 @@ export interface ReportResponse {
   summary: string
   also_checked_nothing_notable: boolean
   blocks: ReportBlock[]
+  columns_used: ReportColumnUsed[]
 }
 
 async function asError(r: Response): Promise<Error> {

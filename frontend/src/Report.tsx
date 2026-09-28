@@ -84,10 +84,12 @@ export default function ReportView({
 
       <div className="rp-chips-label">Columns used</div>
       <div className="rp-chips">
-        <span className="rp-chip">
-          {report.column}
-          <span className="rp-chip-note">open-ended text</span>
-        </span>
+        {report.columns_used.map((c) => (
+          <span className="rp-chip" key={c.name}>
+            {c.name}
+            <span className="rp-chip-note">{c.role}</span>
+          </span>
+        ))}
       </div>
 
       {findings.length > 0 && (

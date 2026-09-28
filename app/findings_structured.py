@@ -44,6 +44,7 @@ __all__ = [
     "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
     "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
     "pick_structured_columns", "build_structured_context",
+    "segment_skew_candidates", "score_correlation_candidates", "trend_shift_candidates",
 ]
 
 
@@ -729,3 +730,187 @@ def build_structured_context(
                 context.trend_column_name = date_col
 
     return context
+
+
+# ==================================================================== B3 - new candidate-finding kinds
+#
+# Three new SPEC.md section 9.3 finding kinds ("a theme raised more by one group", "a number that moves
+# with sentiment or score", "a trend over time"), built directly on B2's `StructuredContext.segment`/
+# `.score`/`.trend` rather than re-deriving anything from raw rows. Each has its own gate/solid threshold
+# pair, named and commented the same way `app/findings.py`'s existing `TONE_GAP_MIN`/`TONE_GAP_SOLID` etc.
+# are - see that module's own threshold-constant block for the convention this mirrors.
+#
+# Score-scale consistency (a deliberate, already-made decision - see docs/DECISIONS.md's 2026-09-29 entry):
+# `app/findings.py::candidate_findings`'s own existing kinds are NOT all on one scale already -
+# `dominant_theme`'s score is a bare percentage-point margin (`score=margin`) and `long_tail`'s is a bare
+# percentage-point share (`score=share`), NEITHER with any size-bonus multiplier; only `tone_contrast` uses
+# an effect-size-times-size-bonus shape, on its own -1..+1 sentiment-gap scale (the pre-existing mismatch
+# this stream deliberately leaves alone). So "matching the existing ones" for these 3 new kinds means
+# matching `dominant_theme`/`long_tail` exactly: every `Candidate.score` below is a BARE percentage-point
+# effect size, with NO size-bonus multiplier - not `tone_contrast`'s shape, and not a third, new hybrid
+# shape either (an earlier draft of this module multiplied by the same bonus `tone_contrast` uses, which
+# would have made these 3 kinds systematically outrank `dominant_theme`/`long_tail` on an equivalent-sized
+# effect, not merely compete fairly with them - caught in review and reverted). The ratio/percentage-point
+# numbers used for the GATE/SOLID checks (ratios for `segment_skew`, percentage points for
+# `score_correlation`/`trend_shift`) are unaffected either way, matching SPEC.md's own example sentence
+# style.
+#
+# Circular-import note: `Candidate` (and, for `score_correlation_candidates`, `theme_nodes`) live in
+# `app/findings.py`, which already imports `StructuredContext` from this module at module level - a
+# top-level `from .findings import Candidate` here would therefore be a real import cycle (this module
+# would need `app.findings` fully initialised before `app.findings` finishes initialising itself). Each
+# function below does that import inside its own body instead: by the time any of these functions is
+# actually CALLED, both modules have finished loading, so the deferred import always succeeds - no
+# restructuring of either module needed, and `python -c "import app.findings"` /
+# `python -c "import app.findings_structured"` both still work standalone.
+
+SEGMENT_SKEW_RATIO_MIN = 1.5  # group-vs-overall share ratio (either direction) to raise a segment-skew candidate at all
+SEGMENT_SKEW_RATIO_SOLID = 2.0  # ratio needed (with the group-size floor below) to call it "Solid"
+
+SCORE_SPREAD_MIN = 8.0  # percentage-point spread across score bands to raise a score-correlation candidate at all
+SCORE_SPREAD_SOLID = 15.0  # spread needed (with the band-size floor below) to call it "Solid"
+
+TREND_SHIFT_MIN = 6.0  # percentage-point change from first to last period to raise a trend-shift candidate at all
+TREND_SHIFT_SOLID = 12.0  # change needed (with the theme-size floor below) to call it "Solid"
+
+
+def segment_skew_candidates(segment: SegmentData, themes: list["Theme"], floor: int) -> list["Candidate"]:
+    """One candidate per surviving `(row, group)` heatmap cell whose group share diverges from that row's
+    theme's overall share by at least `SEGMENT_SKEW_RATIO_MIN`x in either direction - every cell, not just
+    `segment.highlight` (which is only the single most-extreme cell, kept for the chart's own hover UI).
+    Rows whose `overall` is 0 are skipped (nothing to divide by). `group.n < floor` is a defensive check
+    only: every group in `segment.groups` already survived `build_segment_data`'s own stricter
+    `heatmap_group_floor`, so this should never actually trigger in practice.
+
+    `Candidate.score` is the group-vs-overall percentage-point gap (`abs(group_share - overall_share)`),
+    a bare percentage point with no size-bonus multiplier - the same shape `dominant_theme`'s `score=margin`
+    already uses, not `tone_contrast`'s effect-times-bonus shape - see the module-section comment above."""
+    from .findings import Candidate  # deferred - see the module-section comment above
+
+    by_label = _themes_by_label(themes)
+    candidates: list[Candidate] = []
+
+    for row in segment.rows:
+        if row.overall == 0:
+            continue
+        t = by_label.get(row.theme)
+        theme_id = t.id if t is not None else None
+        for gi, group in enumerate(segment.groups):
+            if group.n < floor:  # defensive - see docstring
+                continue
+            cell_value = row.values[gi]
+            ratio = cell_value / row.overall
+            gated = ratio >= SEGMENT_SKEW_RATIO_MIN or ratio <= 1 / SEGMENT_SKEW_RATIO_MIN
+            if not gated:
+                continue
+            gap_pp = abs(cell_value - row.overall)
+            candidates.append(Candidate(
+                kind="segment_skew", id=f"segment_skew:{theme_id}:{gi}", theme_id=theme_id,
+                theme_name=row.theme, count=group.n, score=gap_pp,
+                numbers={
+                    "column": segment.name, "group": group.label, "theme": row.theme,
+                    "group_share_pct": cell_value, "overall_share_pct": row.overall,
+                    "ratio": round(ratio, 3), "group_n": group.n,
+                },
+            ))
+    return candidates
+
+
+def score_correlation_candidates(score: ScoreData, themes: list["Theme"], floor: int) -> list["Candidate"]:
+    """One candidate per theme whose share of answers moves notably across score bands (`ScoreBand.mix`,
+    positionally aligned per-theme - see `build_score_data`'s own docstring): the spread between that
+    theme's highest-mix band and lowest-mix band, by real value not by band position (a theme's mix can
+    peak in a middle band, so this never assumes `score.bands[0]`/`[-1]` are the extremes).
+
+    `themes` need not already be in `nodes` order: `theme_nodes(themes, total)` re-sorts real themes by
+    size internally regardless of input order (real-first largest-to-smallest, "Other" last), so recomputing
+    it here from the same `themes` list `build_structured_context` was given reproduces the exact positional
+    order `ScoreBand.mix` was built against.
+
+    `Candidate.score` is `spread_pct` itself, unmultiplied - already real percentage points, the same bare
+    shape `dominant_theme`'s `score=margin` uses, not `tone_contrast`'s effect-times-bonus shape - see the
+    module-section comment above."""
+    from .findings import Candidate, theme_nodes  # deferred - see the module-section comment above
+
+    if not score.bands:
+        return []
+
+    total = sum(t.size for t in themes)
+    nodes = theme_nodes(themes, total)
+    by_label = _themes_by_label(themes)
+    candidates: list[Candidate] = []
+
+    for i, node in enumerate(nodes):
+        per_band = [(band, band.mix[i]) for band in score.bands]
+        max_band, max_pct = max(per_band, key=lambda bm: bm[1])
+        min_band, min_pct = min(per_band, key=lambda bm: bm[1])
+        spread_pct = round(max_pct - min_pct, 1)
+        if spread_pct < SCORE_SPREAD_MIN:
+            continue
+        if max_band.answers < floor or min_band.answers < floor:
+            continue
+        t = by_label.get(node.name)
+        theme_id = t.id if t is not None else None
+        constraining = min(max_band.answers, min_band.answers)
+        candidates.append(Candidate(
+            kind="score_correlation", id=f"score_correlation:{theme_id}", theme_id=theme_id,
+            theme_name=node.name, count=constraining, score=spread_pct,
+            numbers={
+                "column": score.name, "theme": node.name,
+                "low_band": min_band.label, "low_pct": min_pct,
+                "high_band": max_band.label, "high_pct": max_pct,
+                "spread_pct": spread_pct,
+            },
+        ))
+    return candidates
+
+
+def trend_shift_candidates(
+    trend: TrendData, themes: list["Theme"], floor: int, column: str = "",
+) -> list["Candidate"]:
+    """One candidate per theme whose share of answers moves notably from the first to the last surviving
+    period (`TrendSeries.values[0]` to `[-1]`). `TrendData`/`TrendSeries` carry no per-period answer count
+    (only each period's aggregate `sentiment`/theme-share, per `app/chart_data.py`) - every surviving period
+    already cleared `build_trend_data`'s own per-period floor (SPEC.md's trend-specific "under 30" skip
+    row), so this gate instead checks the theme's own overall stored `Theme.size` against `floor`, a
+    documented, deliberate substitution rather than a per-period recomputation this module has no data for.
+
+    `column` is accepted separately because (unlike `ScoreData.name`/`SegmentData.name`) `TrendData` itself
+    carries no column-name field - `app/findings.py::candidate_findings` passes
+    `structured.trend_column_name` through here so `numbers["column"]` is still populated; the default
+    keeps this callable with exactly the 3-argument shape the rest of this module's B3 functions share.
+
+    `Candidate.score` is `abs(change_pct)` itself, unmultiplied - already real percentage points, the same
+    bare shape `dominant_theme`'s `score=margin` uses, not `tone_contrast`'s effect-times-bonus shape - see
+    the module-section comment above."""
+    from .findings import Candidate  # deferred - see the module-section comment above
+
+    if not trend.series or not trend.labels:
+        return []
+
+    by_label = _themes_by_label(themes)
+    candidates: list[Candidate] = []
+
+    for series in trend.series:
+        if not series.values:
+            continue
+        first_pct, last_pct = series.values[0], series.values[-1]
+        change_pct = round(last_pct - first_pct, 1)
+        if abs(change_pct) < TREND_SHIFT_MIN:
+            continue
+        t = by_label.get(series.theme)
+        count = t.size if t is not None else 0
+        if count < floor:
+            continue
+        theme_id = t.id if t is not None else None
+        candidates.append(Candidate(
+            kind="trend_shift", id=f"trend_shift:{theme_id}", theme_id=theme_id,
+            theme_name=series.theme, count=count, score=abs(change_pct),
+            numbers={
+                "column": column, "theme": series.theme,
+                "first_period": trend.labels[0], "first_pct": first_pct,
+                "last_period": trend.labels[-1], "last_pct": last_pct,
+                "change_pct": change_pct, "direction": "rising" if change_pct > 0 else "fading",
+            },
+        ))
+    return candidates

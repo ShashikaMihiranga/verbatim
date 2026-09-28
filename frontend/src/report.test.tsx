@@ -46,6 +46,10 @@ function makeReport(overrides: Partial<ReportResponse> = {}): ReportResponse {
     summary: '2 themes found, overall tone negative (-0.15).',
     also_checked_nothing_notable: false,
     blocks: [OVERVIEW, FINDING_RELIABILITY, FINDING_SUPPORT, QUALITY],
+    // The real backend fixture (tests/test_api_report.py) has no confirmed score/segment/date column yet,
+    // so this is the honest single-chip default every other test below implicitly exercises too - see
+    // the dedicated multi-chip test for the richer case.
+    columns_used: [{ name: 'Why', role: 'open-ended text' }],
     ...overrides,
   }
 }
@@ -61,6 +65,29 @@ describe('ReportView', () => {
     expect(html.indexOf('OVERVIEW-MARK')).toBeLessThan(html.indexOf('RELIABILITY-CHART-MARK'))
     expect(html.indexOf('RELIABILITY-CHART-MARK')).toBeLessThan(html.indexOf('SUPPORT-CHART-MARK'))
     expect(html.indexOf('SUPPORT-CHART-MARK')).toBeLessThan(html.indexOf('QUALITY-MARK'))
+  })
+
+  it('shows a chip per column actually used, each with its own role note', () => {
+    const report = makeReport({
+      columns_used: [
+        { name: 'Why', role: 'open-ended text' },
+        { name: 'Likelihood to buy', role: 'score' },
+        { name: 'Age group', role: 'segment' },
+        { name: 'Survey date', role: 'date' },
+      ],
+    })
+    const html = renderToStaticMarkup(<ReportView report={report} datasetId={1} />)
+    const chipsStart = html.indexOf('Columns used')
+    const chips = html.slice(chipsStart, chipsStart + 2000)
+    expect(chips).toContain('Why')
+    expect(chips).toContain('open-ended text')
+    expect(chips).toContain('Likelihood to buy')
+    expect(chips).toContain('score')
+    expect(chips).toContain('Age group')
+    expect(chips).toContain('segment')
+    expect(chips).toContain('Survey date')
+    expect(chips).toContain('date')
+    expect((chips.match(/rp-chip/g) ?? []).length).toBeGreaterThanOrEqual(4)
   })
 
   it('lists every finding sentence up front in "What stands out", each with its badge', () => {
