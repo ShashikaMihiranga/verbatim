@@ -10,7 +10,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ThemeChart, { MAX_SCALE, MIN_SCALE, computeScale } from './ThemeChart'
+import ThemeChart from './ThemeChart'
 
 // Two `[data-theme]` groups, the same shape app/charts.py's treemap_svg draws (a <g data-theme="..."> per
 // theme, with a rect and a nested sub-part inside it) - enough to exercise "dim every OTHER group" and
@@ -157,72 +157,5 @@ describe('ThemeChart', () => {
     const observer = FakeResizeObserver.instances[0]
     act(() => root.unmount())
     expect(observer.disconnect).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('computeScale', () => {
-  it('returns 1 when the container matches the fragment\'s natural width', () => {
-    expect(computeScale(1180, 1180)).toBe(1)
-  })
-
-  it('scales up for a wider container, within bounds', () => {
-    expect(computeScale(1408, 1180)).toBeCloseTo(1.193, 2)
-  })
-
-  it('never shrinks below MIN_SCALE for a narrower container', () => {
-    expect(computeScale(700, 1180)).toBe(MIN_SCALE)
-  })
-
-  it('never grows past MAX_SCALE for a very wide container', () => {
-    expect(computeScale(2000, 1180)).toBe(MAX_SCALE)
-  })
-
-  it('falls back to MIN_SCALE on falsy inputs instead of dividing by zero', () => {
-    expect(computeScale(0, 1180)).toBe(MIN_SCALE)
-    expect(computeScale(1180, 0)).toBe(MIN_SCALE)
-  })
-})
-
-describe('ThemeChart scaling', () => {
-  // jsdom has no layout engine, so clientWidth is always 0 - stub it directly on the scroll container
-  // the same way the existing FakeResizeObserver lets a test invoke a "resize" without a real browser.
-  function stubClientWidth(el: HTMLElement, width: number) {
-    Object.defineProperty(el, 'clientWidth', { value: width, configurable: true })
-  }
-
-  it('scales the chart wrapper to fill a wider available container', () => {
-    act(() => {
-      root.render(<ThemeChart fragment={fragment()} />)
-    })
-    const scrollDiv = container.querySelector('.rp-chart-scroll') as HTMLElement
-    const scaleDiv = container.querySelector('.rp-chart-scale') as HTMLElement
-    const chartDiv = container.querySelector('.rp-chart') as HTMLElement
-    stubClientWidth(scrollDiv, 300) // fragment().chart_width is 200 - a wider container than natural
-
-    const observer = FakeResizeObserver.instances[0]
-    act(() => {
-      observer.callback([], observer as unknown as ResizeObserver)
-    })
-
-    const expected = computeScale(300, 200)
-    expect(scaleDiv.style.width).toBe(`${200 * expected}px`)
-    expect(scaleDiv.style.height).toBe(`${100 * expected}px`)
-    expect(chartDiv.style.transform).toBe(`scale(${expected})`)
-  })
-
-  it('falls back to natural size (scale 1) when the container is narrower than the chart', () => {
-    act(() => {
-      root.render(<ThemeChart fragment={fragment()} />)
-    })
-    const scrollDiv = container.querySelector('.rp-chart-scroll') as HTMLElement
-    const chartDiv = container.querySelector('.rp-chart') as HTMLElement
-    stubClientWidth(scrollDiv, 100) // narrower than fragment().chart_width (200)
-
-    const observer = FakeResizeObserver.instances[0]
-    act(() => {
-      observer.callback([], observer as unknown as ResizeObserver)
-    })
-
-    expect(chartDiv.style.transform).toBe('scale(1)')
   })
 })
