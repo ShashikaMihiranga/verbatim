@@ -22,12 +22,15 @@ already gives both consumers a single `EmbeddingClient`.
 from .schema import AnswerScore, Cluster, ClusterMember, ClusterResult, ThemeLabel
 from .embeddings import EmbeddingClient, EmbeddingNotConfigured, FakeEmbeddingClient, VoyageEmbeddingClient
 from .clustering import adaptive_min_cluster_size, adaptive_min_samples, adaptive_n_components, cluster_answers
-from .pipeline import TooFewAnswers, embed_and_cluster
+from .pipeline import EmbeddedAnswers, TooFewAnswers, embed_and_cluster, embed_and_cluster_with_vectors
 from .labeling import (
     AnthropicClaudeClient,
     ClaudeClient,
+    DEFAULT_SAMPLES_PER_SUBCLUSTER,
     LabelingError,
+    SUB_SYSTEM,
     label_clusters,
+    label_sub_clusters,
 )
 from .labeling import ClaudeNotConfigured as LabelingClaudeNotConfigured
 from .labeling import FakeClaudeClient as FakeLabelingClaudeClient
@@ -54,8 +57,9 @@ __all__ = [
     "AnswerScore", "Cluster", "ClusterMember", "ClusterResult", "ThemeLabel",
     "EmbeddingClient", "EmbeddingNotConfigured", "FakeEmbeddingClient", "VoyageEmbeddingClient",
     "adaptive_min_cluster_size", "adaptive_min_samples", "adaptive_n_components", "cluster_answers",
-    "TooFewAnswers", "embed_and_cluster",
-    "AnthropicClaudeClient", "ClaudeClient", "LabelingError", "label_clusters",
+    "EmbeddedAnswers", "TooFewAnswers", "embed_and_cluster", "embed_and_cluster_with_vectors",
+    "AnthropicClaudeClient", "ClaudeClient", "DEFAULT_SAMPLES_PER_SUBCLUSTER", "LabelingError",
+    "SUB_SYSTEM", "label_clusters", "label_sub_clusters",
     "LabelingClaudeNotConfigured", "FakeLabelingClaudeClient",
     "SpotCheckParseError", "SpotCheckReport", "score_column", "score_text", "spot_check", "tone_split",
     "SentimentClaudeNotConfigured", "FakeSentimentClaudeClient",

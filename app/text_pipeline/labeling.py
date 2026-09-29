@@ -31,6 +31,7 @@ from .schema import Cluster, ClusterResult, ThemeLabel
 DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 4096
 DEFAULT_SAMPLES_PER_CLUSTER = 20  # SPEC.md: "About 15 to 25 representative answers per cluster"
+DEFAULT_SAMPLES_PER_SUBCLUSTER = 12  # a sub-cluster is already a slice of one theme; fewer samples suffice
 
 OTHER_LABEL = "Other"
 OTHER_DESCRIPTION = "Answers that were too rare, unclear, or distinct to group into a theme."
@@ -51,6 +52,26 @@ SYSTEM = (
     "- or null if there is nothing to add. "
     "You are not told how many answers are in any cluster and must never guess, invent, or state a "
     "count, percentage, or share for any cluster in your reply."
+)
+
+SUB_SYSTEM = (
+    "You help summarise open-ended survey answers that an automatic algorithm has already grouped into "
+    "sub-clusters WITHIN a larger parent theme. You are given the survey question and, for each "
+    "sub-cluster, the parent theme it belongs to (its own label and description) and a handful of "
+    "representative answers from just that sub-cluster (already stripped of anything sensitive). Reply "
+    'with JSON only, no prose before or after it: {"themes": [{"cluster_id": int, "label": str, '
+    '"description": str, "merge_with": [int, ...], "note": str or null}, ...]}. Include exactly one '
+    "entry per cluster id you were given, using that same id. "
+    '"label" is a few words naming what specifically distinguishes this sub-group from its sibling '
+    "sub-clusters under the SAME parent theme - never just repeat the parent theme's own label or "
+    'description; say what makes this particular slice of the parent theme different. "description" is '
+    "one plain sentence, in language a non-expert would understand, saying what the answers in this "
+    "sub-cluster have in common, again focused on what sets it apart from its siblings under the same "
+    'parent, not on what it shares with the parent theme as a whole. "merge_with" lists the ids of OTHER '
+    "sub-clusters you were given that look like they are really the same sub-theme as this one - use [] "
+    'if none do. "note" is one short sentence flagging anything else worth a human\'s attention, or null '
+    "if there is nothing to add. You are not told how many answers are in any sub-cluster and must "
+    "never guess, invent, or state a count, percentage, or share for any sub-cluster in your reply."
 )
 
 
@@ -271,3 +292,85 @@ def label_clusters(
         labels.append(_other_theme_label(result))
 
     return labels
+
+
+def label_sub_clusters(
+    sub_clusters: dict[int, list[Cluster]],
+    parent_labels: dict[int, ThemeLabel],
+    question: str,
+    client: ClaudeClient,
+    samples_per_cluster: int = DEFAULT_SAMPLES_PER_SUBCLUSTER,
+) -> dict[int, list[ThemeLabel]]:
+    """Label every sub-cluster across every parent in `sub_clusters` (see `subthemes.sub_cluster_themes`)
+    with ONE batched `client.complete()` call total, not one call per parent and not one per sub-cluster.
+    Makes zero calls and returns `{}` if `sub_clusters` is empty.
+
+    Builds a flat, globally-unique integer id space (0..K-1) across ALL parents' sub-clusters combined,
+    in `sub_clusters`' own iteration order (and each parent's own sub-cluster list order) - not a
+    composite string id like `f"{parent_id}:{local_id}"` (would fail `_parse_response`'s
+    `isinstance(cluster_id, int) and not isinstance(cluster_id, bool)` check) and not the real Theme.id
+    (does not exist yet at this point in the pipeline - parent `Theme` rows are only written to the
+    database after labeling finishes, a later stream's job). An internal mapping from each flat id back
+    to `(parent_cluster_id, sub_cluster)` lets the parsed reply be re-associated with the right parent
+    and the right sub-`Cluster` after parsing.
+
+    Reuses `_extract_json`/`_parse_response` unchanged - the reply schema is identical to
+    `label_clusters`'s (`{"themes": [{"cluster_id", "label", "description", "merge_with", "note"}]}`);
+    only the REQUEST side carries the added `parent_theme` context per entry, which Claude echoes
+    nothing back about.
+
+    Sizes always come from `len(sub_cluster.members)`, set in code, never trusted from Claude's reply -
+    same discipline as `label_clusters`.
+
+    Within one parent's own sibling sub-themes, if two get the identical label string from Claude's
+    reply, later ones (in that parent's sub-cluster list order) are de-duplicated by appending " (2)",
+    " (3)", etc. - a defensive guard, since `app/charts.py`'s treemap keys sub-theme rects by name and a
+    same-named sibling would otherwise silently overwrite the first one when rendered.
+
+    Returns `{parent_cluster_id: [ThemeLabel, ...]}` - one entry for every key in `sub_clusters`, in that
+    parent's own sub-cluster order.
+    """
+    if not sub_clusters:
+        return {}
+
+    flat_by_id: dict[int, tuple[int, Cluster]] = {}  # flat_id -> (parent_cluster_id, sub_cluster)
+    clusters_payload: list[dict[str, Any]] = []
+    flat_id = 0
+    for parent_id, subs in sub_clusters.items():
+        parent_label = parent_labels[parent_id]
+        for sub in subs:
+            flat_by_id[flat_id] = (parent_id, sub)
+            clusters_payload.append(
+                {
+                    "cluster_id": flat_id,
+                    "parent_theme": {"label": parent_label.label, "description": parent_label.description},
+                    "sample_answers": _representative_texts(sub, samples_per_cluster),
+                }
+            )
+            flat_id += 1
+
+    prompt = json.dumps({"survey_question": question, "clusters": clusters_payload})
+    raw_response = client.complete(SUB_SYSTEM, prompt)
+    parsed = _parse_response(raw_response, set(flat_by_id))
+
+    result: dict[int, list[ThemeLabel]] = {parent_id: [] for parent_id in sub_clusters}
+    seen_labels_by_parent: dict[int, dict[str, int]] = {parent_id: {} for parent_id in sub_clusters}
+    for fid, (parent_id, sub) in flat_by_id.items():
+        item = parsed[fid]
+        seen = seen_labels_by_parent[parent_id]
+        label_text = item["label"]
+        seen[label_text] = seen.get(label_text, 0) + 1
+        if seen[label_text] > 1:
+            label_text = f"{label_text} ({seen[label_text]})"
+        result[parent_id].append(
+            ThemeLabel(
+                cluster_id=fid,
+                label=label_text,
+                description=item["description"],
+                size=len(sub.members),
+                merge_with=item["merge_with"],
+                note=item["note"],
+            )
+        )
+
+    return result

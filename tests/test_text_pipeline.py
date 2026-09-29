@@ -10,6 +10,7 @@ from sklearn.cluster import HDBSCAN
 
 from app.cleaning import CleaningError, model_safe_column, plan_cleaning
 from app.text_pipeline import (
+    EmbeddedAnswers,
     EmbeddingNotConfigured,
     FakeEmbeddingClient,
     TooFewAnswers,
@@ -19,6 +20,7 @@ from app.text_pipeline import (
     adaptive_n_components,
     cluster_answers,
     embed_and_cluster,
+    embed_and_cluster_with_vectors,
 )
 from app.text_pipeline.clustering import (
     MIN_ANSWERS_FOR_REDUCTION,
@@ -392,6 +394,64 @@ def test_embed_and_cluster_keeps_original_row_indexes():
     all_rows = {m.row for c in result.clusters for m in c.members} | {m.row for m in result.noise}
     assert all_rows <= set(df.index)  # every reported row is a real index label, never renumbered
     assert not all_rows & {33, 34, 35}  # the blank rows' index labels never appear: they were skipped
+
+
+# ---------------------------------------------------------------- embed_and_cluster_with_vectors
+
+
+def test_embed_and_cluster_with_vectors_returns_embedded_answers_consistent_with_the_result():
+    df = _survey_df(n_good=25, n_blank=3)
+    plan = plan_cleaning(df, profile_for(df, {"Why": "open_text"}))
+    client = FakeEmbeddingClient()
+
+    result, embedded = embed_and_cluster_with_vectors(df, plan, "Why", client)
+
+    assert isinstance(embedded, EmbeddedAnswers)
+    assert isinstance(embedded.vectors, np.ndarray)
+    assert embedded.vectors.dtype == np.float32
+    assert embedded.vectors.shape == (len(embedded.row_indexes), 32)  # FakeEmbeddingClient default dims
+
+    # every member row across every cluster + noise appears in position_by_row, and the vector there is
+    # the right one for that row - verified against FakeEmbeddingClient's own deterministic mapping.
+    all_members = [m for c in result.clusters for m in c.members] + result.noise
+    assert all_members  # sanity: there is something to check
+    for member in all_members:
+        assert member.row in embedded.position_by_row
+        position = embedded.position_by_row[member.row]
+        assert embedded.row_indexes[position] == member.row
+        expected_vector = FakeEmbeddingClient().embed([member.text])[0]
+        actual_vector = embedded.vectors[position]
+        assert np.allclose(actual_vector, expected_vector, atol=1e-6)
+
+    # embedded.row_indexes is exactly the set of rows that went into clustering (== total_answers)
+    assert len(embedded.row_indexes) == result.total_answers
+    assert set(embedded.row_indexes) == {m.row for m in all_members}
+
+
+def test_embed_and_cluster_with_vectors_raises_too_few_answers_same_as_wrapper():
+    df = _survey_df(n_good=10, n_blank=5)
+    plan = plan_cleaning(df, profile_for(df, {"Why": "open_text"}))
+
+    with pytest.raises(TooFewAnswers):
+        embed_and_cluster_with_vectors(df, plan, "Why", FakeEmbeddingClient())
+
+
+def test_embed_and_cluster_is_unchanged_now_that_it_wraps_with_vectors():
+    """embed_and_cluster's return value/behavior must be byte-identical to before - it is now a thin
+    wrapper around embed_and_cluster_with_vectors, discarding the EmbeddedAnswers half of the tuple."""
+    df = _survey_df(n_good=40, n_blank=2)
+    plan = plan_cleaning(df, profile_for(df, {"Why": "open_text"}))
+
+    result = embed_and_cluster(df, plan, "Why", FakeEmbeddingClient())
+    result_via_pair, _ = embed_and_cluster_with_vectors(df, plan, "Why", FakeEmbeddingClient())
+
+    assert result.column == result_via_pair.column == "Why"
+    assert result.total_answers == result_via_pair.total_answers == 40
+    assert sum(len(c.members) for c in result.clusters) + len(result.noise) == 40
+    r1_rows = sorted(tuple(sorted(m.row for m in c.members)) for c in result.clusters)
+    r2_rows = sorted(tuple(sorted(m.row for m in c.members)) for c in result_via_pair.clusters)
+    assert r1_rows == r2_rows
+    assert {m.row for m in result.noise} == {m.row for m in result_via_pair.noise}
 
 
 # ---------------------------------------------------------------- VoyageEmbeddingClient (no network)

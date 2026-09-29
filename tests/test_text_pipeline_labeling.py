@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from app.text_pipeline import LabelingError, label_clusters
+from app.text_pipeline import LabelingError, label_clusters, label_sub_clusters
 from app.text_pipeline.labeling import (
     AnthropicClaudeClient,
     ClaudeNotConfigured,
@@ -11,7 +11,7 @@ from app.text_pipeline.labeling import (
     OTHER_CLUSTER_ID,
     OTHER_LABEL,
 )
-from app.text_pipeline.schema import Cluster, ClusterMember, ClusterResult
+from app.text_pipeline.schema import Cluster, ClusterMember, ClusterResult, ThemeLabel
 
 QUESTION = "What could we do better?"
 
@@ -203,3 +203,146 @@ def test_samples_per_cluster_is_respected_and_closest_to_centroid_first():
     sample_answers = sent_payload["clusters"][0]["sample_answers"]
     assert len(sample_answers) == 5
     assert sample_answers == ["answer 0", "answer 1", "answer 2", "answer 3", "answer 4"]
+
+
+# ---------------------------------------------------------------- label_sub_clusters
+
+
+def make_parent_label(parent_id):
+    return ThemeLabel(
+        cluster_id=parent_id,
+        label=f"Parent {parent_id}",
+        description=f"Description of parent {parent_id}.",
+        size=999,
+        merge_with=[],
+        note=None,
+    )
+
+
+def sub_reply_for(flat_ids, **overrides):
+    """Builds a reply keyed by FLAT ids, same shape as reply_for but named distinctly since
+    label_sub_clusters' cluster ids are the flat 0..K-1 space, not each sub-cluster's own local id."""
+    themes = []
+    for fid in flat_ids:
+        entry = {"cluster_id": fid, "label": f"Sub {fid}", "description": f"About sub-cluster {fid}.",
+                  "merge_with": [], "note": None}
+        entry.update(overrides.get(fid, {}))
+        themes.append(entry)
+    return json.dumps({"themes": themes})
+
+
+def test_label_sub_clusters_makes_one_call_across_multiple_parents_with_parent_context():
+    parent0_subs = [make_cluster(10, ["a", "b", "c"]), make_cluster(11, ["d", "e", "f"])]
+    parent1_subs = [make_cluster(20, ["g", "h", "i"]), make_cluster(21, ["j", "k", "l"]),
+                     make_cluster(22, ["m", "n", "o"])]
+    sub_clusters = {0: parent0_subs, 1: parent1_subs}
+    parent_labels = {0: make_parent_label(0), 1: make_parent_label(1)}
+    client = FakeClaudeClient(sub_reply_for(range(5)))
+
+    result = label_sub_clusters(sub_clusters, parent_labels, QUESTION, client)
+
+    assert len(client.calls) == 1  # one batched call total, not one per parent
+
+    sent_payload = json.loads(client.calls[0]["prompt"])
+    assert sent_payload["survey_question"] == QUESTION
+    assert len(sent_payload["clusters"]) == 5  # 2 + 3 sub-clusters, flattened
+
+    # every sub-cluster's request entry carries its OWN parent's label/description
+    by_flat_id = {entry["cluster_id"]: entry for entry in sent_payload["clusters"]}
+    for fid in (0, 1):  # parent 0's two sub-clusters
+        assert by_flat_id[fid]["parent_theme"] == {"label": "Parent 0", "description": "Description of parent 0."}
+    for fid in (2, 3, 4):  # parent 1's three sub-clusters
+        assert by_flat_id[fid]["parent_theme"] == {"label": "Parent 1", "description": "Description of parent 1."}
+
+    assert set(result.keys()) == {0, 1}
+    assert len(result[0]) == 2
+    assert len(result[1]) == 3
+
+
+def test_label_sub_clusters_flat_ids_are_globally_unique_across_parents():
+    sub_clusters = {
+        100: [make_cluster(0, ["a"]), make_cluster(1, ["b"]), make_cluster(2, ["c"])],
+        200: [make_cluster(0, ["d"]), make_cluster(1, ["e"]), make_cluster(2, ["f"])],
+        300: [make_cluster(0, ["g"]), make_cluster(1, ["h"]), make_cluster(2, ["i"])],
+    }
+    parent_labels = {100: make_parent_label(100), 200: make_parent_label(200), 300: make_parent_label(300)}
+    client = FakeClaudeClient(sub_reply_for(range(9)))
+
+    result = label_sub_clusters(sub_clusters, parent_labels, QUESTION, client)
+
+    sent_payload = json.loads(client.calls[0]["prompt"])
+    sent_ids = [entry["cluster_id"] for entry in sent_payload["clusters"]]
+    assert len(sent_ids) == 9
+    assert len(set(sent_ids)) == 9  # no collisions despite each parent's sub-clusters starting at local id 0
+
+    all_returned_ids = [label.cluster_id for labels in result.values() for label in labels]
+    assert len(all_returned_ids) == len(set(all_returned_ids)) == 9
+
+
+def test_label_sub_clusters_raises_labeling_error_when_reply_missing_an_id():
+    sub_clusters = {0: [make_cluster(0, ["a"]), make_cluster(1, ["b"])]}
+    parent_labels = {0: make_parent_label(0)}
+    client = FakeClaudeClient(sub_reply_for([0]))  # flat id 1 missing from the reply
+
+    with pytest.raises(LabelingError):
+        label_sub_clusters(sub_clusters, parent_labels, QUESTION, client)
+
+
+def test_label_sub_clusters_sizes_always_come_from_members_never_from_the_reply():
+    sub = make_cluster(0, ["a", "b", "c", "d", "e"])  # 5 real members
+    sub_clusters = {0: [sub]}
+    parent_labels = {0: make_parent_label(0)}
+    reply = json.dumps({"themes": [{
+        "cluster_id": 0, "label": "X", "description": "Y", "size": 999999, "merge_with": [], "note": None,
+    }]})
+    client = FakeClaudeClient(reply)
+
+    result = label_sub_clusters(sub_clusters, parent_labels, QUESTION, client)
+
+    assert result[0][0].size == 5
+
+
+def test_label_sub_clusters_dedupes_identical_sibling_labels_within_one_parent():
+    parent0_subs = [make_cluster(0, ["a"]), make_cluster(1, ["b"]), make_cluster(2, ["c"])]
+    sub_clusters = {0: parent0_subs}
+    parent_labels = {0: make_parent_label(0)}
+    # all three siblings come back with the identical label from Claude
+    reply = json.dumps({"themes": [
+        {"cluster_id": 0, "label": "Same Label", "description": "d0", "merge_with": [], "note": None},
+        {"cluster_id": 1, "label": "Same Label", "description": "d1", "merge_with": [], "note": None},
+        {"cluster_id": 2, "label": "Same Label", "description": "d2", "merge_with": [], "note": None},
+    ]})
+    client = FakeClaudeClient(reply)
+
+    result = label_sub_clusters(sub_clusters, parent_labels, QUESTION, client)
+
+    labels = [label.label for label in result[0]]
+    assert labels == ["Same Label", "Same Label (2)", "Same Label (3)"]
+
+
+def test_label_sub_clusters_dedupe_is_scoped_per_parent_not_global():
+    sub_clusters = {
+        0: [make_cluster(0, ["a"])],
+        1: [make_cluster(0, ["b"])],
+    }
+    parent_labels = {0: make_parent_label(0), 1: make_parent_label(1)}
+    reply = json.dumps({"themes": [
+        {"cluster_id": 0, "label": "Same Label", "description": "d0", "merge_with": [], "note": None},
+        {"cluster_id": 1, "label": "Same Label", "description": "d1", "merge_with": [], "note": None},
+    ]})
+    client = FakeClaudeClient(reply)
+
+    result = label_sub_clusters(sub_clusters, parent_labels, QUESTION, client)
+
+    # two DIFFERENT parents' sub-clusters getting the same label is not a collision - no " (2)" needed
+    assert result[0][0].label == "Same Label"
+    assert result[1][0].label == "Same Label"
+
+
+def test_label_sub_clusters_empty_input_makes_no_calls_and_returns_empty_dict():
+    client = FakeClaudeClient("should never be used")
+
+    result = label_sub_clusters({}, {}, QUESTION, client)
+
+    assert result == {}
+    assert client.calls == []
