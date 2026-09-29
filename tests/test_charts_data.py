@@ -215,6 +215,22 @@ def test_treemap_html_label_never_overflows_its_cell():
     assert "overflow:hidden" in html
 
 
+def test_treemap_html_sub_cells_have_their_own_label_swap_fallback():
+    """Regression pin for a follow-up fluid-layout fix (docs/DECISIONS.md): sub-theme cells used to
+    always render name+pct combined with no fallback, unlike their parent cells - now they get the same
+    full/short container-query label-swap pattern. small_report()'s "Zebra crossing" theme has a real
+    sub-theme (SubTheme("Zebra paint", 40)) in its fixture data."""
+    data = small_report()
+    html = treemap_html(data, 1084, 580)
+
+    assert "tms0_0f" in html and "tms0_0s" in html
+    assert re.search(r'\.tms0_0f\{display:none!important\}@container \(min-width:\d+px\)\{'
+                      r'\.tms0_0f\{display:inline!important\}\.tms0_0s\{display:none!important\}\}', html)
+    sub_cell = re.search(r'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
+                          r'container-type:inline-size;[^"]+">', html)
+    assert sub_cell, "no sub-cell with its own container-type:inline-size found"
+
+
 def test_rank_bar_width_is_percent_not_fixed_pixels():
     """Regression pin for the fluid-layout rewrite (docs/DECISIONS.md): a rank row's share bar must
     genuinely reflow with its own row's width, not stay pinned to a px number computed against the old

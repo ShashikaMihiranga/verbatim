@@ -906,13 +906,22 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
                 sub_cells = ""
                 for k, (sn, sp) in enumerate(subs):
                     sx, sy, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
+                    # Same full/short label-swap pattern as the parent cell above (scls unique per
+                    # parent x sub-theme pair) - a sub-cell used to always render name+pct combined with
+                    # no fallback, which could look crowded at a narrow rendered width. display is not
+                    # set inline here either, for the same reason as the parent's full variant.
+                    scls = f"tms{idx}_{k}"
+                    s_needed_w = round(len(f"{sn} {sp:g}%") * 3.9 + 12)
+                    s_full = f'<span class="{scls}f">{esc(sn)}<br>{sp:g}%</span>'
+                    s_short = f'<span class="{scls}s">{sp:g}%</span>'
+                    css_rules.append(f'.{scls}f{{display:none!important}}@container (min-width:{s_needed_w}px){{.{scls}f{{display:inline!important}}.{scls}s{{display:none!important}}}}')
                     sub_cells += (
                         f'<div style="position:absolute;left:{sx / sub_w * 100:.2f}%;top:{sy / sub_h * 100:.2f}%;'
                         f'width:{sw / sub_w * 100:.2f}%;height:{sh / sub_h * 100:.2f}%;padding:1.5px">'
-                        f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
+                        f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;container-type:inline-size;'
                         f'background:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface));'
                         f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
-                        f'<span style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2">{esc(sn)}<br>{sp:g}%</span>'
+                        f'<span style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2">{s_full}{s_short}</span>'
                         f'</div></div>')
                 sub_html = f'<div style="position:absolute;left:0;top:{header_pct}%;width:100%;height:{100 - header_pct}%">{sub_cells}</div>'
 
