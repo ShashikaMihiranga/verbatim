@@ -866,12 +866,16 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
     any more. Every rect it returns is expressed as a `%` of `w`/`h` here, so the whole treemap is a
     `position:relative` box whose HEIGHT stays this design's fixed `h`px (matching every other rewritten
     chart's "width reflows, height doesn't" choice) but whose WIDTH genuinely fills whatever its own
-    container gives it - see docs/DECISIONS.md's fluid-charts entry. Each theme's own label has two
-    pre-rendered variants (name+share, share-only), switched by a CSS container query keyed to that
-    div's own real rendered width instead of a server-side pixel-width guess (`wrap()`/`fit_label()`,
-    used elsewhere by the 3 dead chart functions still on the old fixed-pixel SVG design, are not used
-    here any more) - a cell too small for even the short variant just clips via `overflow:hidden` rather
-    than overflowing into a sibling cell, the same "never overflow" guarantee the old pixel-fit logic
+    container gives it - see docs/DECISIONS.md's fluid-charts entry. Each cell's own label always tries
+    to show its name (matching the original design prototype's own density - it wraps a name across as
+    many lines as fit rather than dropping to a bare percentage early): since HEIGHT never changes with
+    viewport width, the number of lines that fit is fully computable server-side from the cell's own
+    known height, and `-webkit-line-clamp` is set to exactly that count - WIDTH-wise wrapping is left
+    entirely to the browser's own natural text flow, which adapts correctly to whatever width the cell
+    renders at with no server-side pixel-width guess needed (`wrap()`/`fit_label()`, used elsewhere by
+    the 3 dead chart functions still on the old fixed-pixel SVG design, are not used here any more). A
+    cell too short even for one line still gets one attempted line, clipped by `overflow:hidden` rather
+    than overflowing into a sibling cell - the same "never overflow" guarantee the old pixel-fit logic
     existed to provide, now enforced structurally by CSS instead of computed per-render.
 
     Each theme's own box (and any sub-theme boxes nested inside it) carries `data-theme="..."`, so a
@@ -880,20 +884,9 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
     `frontend/src/ThemeChart.tsx`); `closest()` is DOM-structure-based and does not care that this is now
     a `<div>` tree instead of nested `<svg><g>` groups."""
     rects = squarify([(n, s) for n, s, _, _, _ in treemap_rows(data)], 0, 0, w, h)
-    css_rules = []
     cells = []
     for idx, (name, share, sent, cnt, col) in enumerate(treemap_rows(data)):
         rx, ry, rw, rh = rects[name]
-        cls = f"tmc{idx}"
-        needed_w = round(len(f"{name} {share}%") * 4.2 + 24)  # rough "would 1-2 wrapped lines fit" estimate
-        # display is NOT set inline here (only via the !important stylesheet rules below) - the full
-        # variant's own inline style needs display:-webkit-box for -webkit-line-clamp to work at all, and
-        # an inline style always beats a plain stylesheet rule regardless of which @container matched, so
-        # the show/hide toggle has to win that fight with !important on both sides.
-        full = (f'<div class="{cls}f" style="font-size:15px;font-weight:600;color:{TH_ON[col]};line-height:1.3;'
-                f'overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical">{esc(name)} {share}%</div>')
-        short = f'<div class="{cls}s" style="font-size:15px;font-weight:600;color:{TH_ON[col]}">{share}%</div>'
-        css_rules.append(f'.{cls}f{{display:none!important}}@container (min-width:{needed_w}px){{.{cls}f{{display:-webkit-box!important}}.{cls}s{{display:none!important}}}}')
 
         subs = subs_of(data, name)
         sub_html = ""
@@ -906,33 +899,44 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
                 sub_cells = ""
                 for k, (sn, sp) in enumerate(subs):
                     sx, sy, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
-                    # Same full/short label-swap pattern as the parent cell above (scls unique per
-                    # parent x sub-theme pair) - a sub-cell used to always render name+pct combined with
-                    # no fallback, which could look crowded at a narrow rendered width. display is not
-                    # set inline here either, for the same reason as the parent's full variant.
-                    scls = f"tms{idx}_{k}"
-                    s_needed_w = round(len(f"{sn} {sp:g}%") * 3.9 + 12)
-                    s_full = f'<span class="{scls}f">{esc(sn)}<br>{sp:g}%</span>'
-                    s_short = f'<span class="{scls}s">{sp:g}%</span>'
-                    css_rules.append(f'.{scls}f{{display:none!important}}@container (min-width:{s_needed_w}px){{.{scls}f{{display:inline!important}}.{scls}s{{display:none!important}}}}')
+                    # Line count is computed from this sub-cell's own known height (sh, already in the
+                    # fixed 580px design-height reference frame the browser actually renders at) rather
+                    # than capped at a fixed number - see treemap_html's own docstring. Width-wise
+                    # wrapping is left entirely to the browser's natural text flow.
+                    s_line_h = 14 * 1.2
+                    s_max_lines = max(1, int((sh - 4) // s_line_h))
                     sub_cells += (
                         f'<div style="position:absolute;left:{sx / sub_w * 100:.2f}%;top:{sy / sub_h * 100:.2f}%;'
                         f'width:{sw / sub_w * 100:.2f}%;height:{sh / sub_h * 100:.2f}%;padding:1.5px">'
-                        f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;container-type:inline-size;'
+                        f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
                         f'background:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface));'
                         f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
-                        f'<span style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2">{s_full}{s_short}</span>'
+                        f'<span style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2;'
+                        f'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;'
+                        f'-webkit-line-clamp:{s_max_lines};-webkit-box-orient:vertical">'
+                        f'{esc(sn)} <span style="font-weight:600">{sp:g}%</span></span>'
                         f'</div></div>')
                 sub_html = f'<div style="position:absolute;left:0;top:{header_pct}%;width:100%;height:{100 - header_pct}%">{sub_cells}</div>'
+
+        # Same height-derived line count as sub-cells above, computed against the header area only
+        # (header_pct of rh) when sub-cells actually render - otherwise a tall cell's label could compute
+        # more lines than fit before the sub-cells start, visually colliding with them.
+        line_h = 15 * 1.3
+        label_h = (rh * header_pct / 100) if sub_html else rh
+        max_lines = max(1, int((label_h - 12 - 8) // line_h))
+        label = (f'<div style="font-size:15px;font-weight:500;color:{TH_ON[col]};line-height:1.3;'
+                 f'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;'
+                 f'-webkit-line-clamp:{max_lines};-webkit-box-orient:vertical">'
+                 f'{esc(name)} <span style="font-weight:600">{share}%</span></div>')
 
         cells.append(
             f'<div data-theme="{esc(name)}" style="position:absolute;left:{rx / w * 100:.2f}%;top:{ry / h * 100:.2f}%;'
             f'width:{rw / w * 100:.2f}%;height:{rh / h * 100:.2f}%;padding:1.5px">'
             f'<div style="width:100%;height:100%;border-radius:5px;overflow:hidden;position:relative;'
-            f'container-type:inline-size;background:var(--{col})">'
-            f'<div style="position:absolute;left:10px;top:12px;right:8px">{full}{short}</div>'
+            f'background:var(--{col})">'
+            f'<div style="position:absolute;left:10px;top:12px;right:8px">{label}</div>'
             f'{sub_html}</div></div>')
-    return f'<style>{"".join(css_rules)}</style><div style="position:relative;width:100%;height:{h}px">{"".join(cells)}</div>'
+    return f'<div style="position:relative;width:100%;height:{h}px">{"".join(cells)}</div>'
 
 
 def f_treemap(data: ReportData):

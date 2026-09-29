@@ -192,8 +192,10 @@ def test_treemap_html_label_never_overflows_its_cell():
     each cell's own label sits inside an `overflow:hidden` box) - the old pixel-math check this test used
     to do is now a structural CSS guarantee instead of something computed per render, so this test asserts
     the structure that guarantee depends on: no <svg, every [data-theme] cell's position/size are all %,
-    every cell declares container-type (for the label-swap container query), and every cell that draws a
-    label is overflow:hidden so a too-long label can never bleed into a sibling cell."""
+    every label declares a positive-integer -webkit-line-clamp (computed from the cell's own known
+    height, not a fixed cap - see docs/DECISIONS.md's follow-up entry) plus overflow-wrap:break-word, and
+    every cell that draws a label is overflow:hidden so a too-long label can never bleed into a sibling
+    cell."""
     data = small_report()
     data.themes = [
         ThemeNode("Tiny", 1, 0.0, 1, "t1", ToneSplit(0, 100, 0)),
@@ -211,24 +213,29 @@ def test_treemap_html_label_never_overflows_its_cell():
             m = re.search(rf'{prop}:([^;]+);', style)
             assert m and m.group(1).endswith("%"), f"{prop} in {style!r} is not a %"
 
-    assert html.count("container-type:inline-size") == 3
+    clamps = [int(v) for v in re.findall(r'-webkit-line-clamp:(\d+);', html)]
+    assert len(clamps) == 3
+    assert all(c >= 1 for c in clamps)
+    assert html.count("overflow-wrap:break-word") == 3
     assert "overflow:hidden" in html
 
 
-def test_treemap_html_sub_cells_have_their_own_label_swap_fallback():
+def test_treemap_html_sub_cell_label_line_count_is_derived_from_its_own_height():
     """Regression pin for a follow-up fluid-layout fix (docs/DECISIONS.md): sub-theme cells used to
-    always render name+pct combined with no fallback, unlike their parent cells - now they get the same
-    full/short container-query label-swap pattern. small_report()'s "Zebra crossing" theme has a real
-    sub-theme (SubTheme("Zebra paint", 40)) in its fixture data."""
+    always render name+pct combined with no fallback and no way to show more of a long name in a tall
+    cell; now their -webkit-line-clamp is computed from the sub-cell's own known height, same mechanism
+    as the parent cell, instead of a container-query full/short toggle. small_report()'s "Zebra crossing"
+    theme has a real sub-theme (SubTheme("Zebra paint", 40)) in its fixture data."""
     data = small_report()
     html = treemap_html(data, 1084, 580)
 
-    assert "tms0_0f" in html and "tms0_0s" in html
-    assert re.search(r'\.tms0_0f\{display:none!important\}@container \(min-width:\d+px\)\{'
-                      r'\.tms0_0f\{display:inline!important\}\.tms0_0s\{display:none!important\}\}', html)
-    sub_cell = re.search(r'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
-                          r'container-type:inline-size;[^"]+">', html)
-    assert sub_cell, "no sub-cell with its own container-type:inline-size found"
+    sub_cell = re.search(
+        r'<span style="font-size:14px;font-weight:500;color:var\(--ink\);line-height:1.2;'
+        r'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;-webkit-line-clamp:(\d+);'
+        r'-webkit-box-orient:vertical">Zebra paint <span style="font-weight:600">',
+        html)
+    assert sub_cell, "no sub-cell label with a computed -webkit-line-clamp found for Zebra paint"
+    assert int(sub_cell.group(1)) >= 1
 
 
 def test_rank_bar_width_is_percent_not_fixed_pixels():
