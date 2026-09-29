@@ -36,11 +36,44 @@
 
 /* The chart fragment itself keeps its own designed pixel width (from the API's chart_width) so its
    internal fixed-layout pieces (grids, flex rows with hardcoded widths) lay out exactly as intended.
-   The outer scroll container only grows a horizontal scrollbar when that width genuinely exceeds the
-   viewport - never a blanket forced minimum applied to every chart regardless of its real size. */
+   ThemeChart.tsx scales the whole fragment (via .rp-chart-scale/.rp-chart below) to fill however much
+   of .rp-chart-scroll's own width is available, up to its own MAX_SCALE cap - the outer scroll container
+   only grows a horizontal scrollbar on screens too narrow to fit the chart even at its natural size. */
 .rp-chart-scroll { max-width: 100%; overflow-x: auto; }
 .rp-chart { max-width: none; }
 .rp-chart svg { display: block; overflow: visible; max-width: 100%; }
+
+/* Not overflow:hidden: app/charts.py's f_heatmap draws its hover tooltip absolutely-positioned outside
+   this box on purpose (bottom:calc(100% + 12px)) - clipping it here would newly break that. */
+.rp-chart-scale { overflow: visible; }
+
+/* Lets .rp-chart-scroll grow past .page's normal 960px reading column so ThemeChart.tsx's scale-to-fit
+   has real room on wide screens, while every text element around it (.rp-title, .rp-summary,
+   .rp-sentence, .rp-standout, the chip row, and Themes.tsx's own .th-* cards) is untouched and keeps
+   reading at .page's normal column - only this selector changes, .page itself never does.
+   .rp-chart-scroll's direct parent is always either .rp-section (Report.tsx's Divider) or .page itself
+   (Themes.tsx's browse view) - both add zero horizontal padding/margin beyond .page's own 960px/16px, so
+   one set of numbers works for both screens. Two tiers, not one calc(): below, the box tracks the
+   viewport with a constant 16px gutter each side (matching .page's own edge padding exactly at the
+   960px boundary); above 1600px content width the box stops growing and stays centered on the viewport
+   at a fixed width instead (a fixed margin-left here still centers it, because .page's own `margin: 0
+   auto` keeps recentering as the viewport grows, and that recentering term exactly cancels the fixed
+   margin - verified algebraically, not just visually). 1600px matches ThemeChart.tsx's own MAX_SCALE
+   (1.35 * a chart's natural 1180px width). */
+@media (min-width: 960px) and (max-width: 1631px) {
+  .rp-chart-scroll {
+    width: calc(100vw - 32px);
+    max-width: none;
+    margin-left: calc(480px - 50vw);
+  }
+}
+@media (min-width: 1632px) {
+  .rp-chart-scroll {
+    width: 1600px;
+    max-width: none;
+    margin-left: -336px;
+  }
+}
 
 .rp-nothing { color: var(--muted); font-size: 16px; }
 
