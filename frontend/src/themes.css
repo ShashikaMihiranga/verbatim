@@ -30,6 +30,19 @@
 .th-see { background: none; border: none; padding: 0; color: var(--accent); font: inherit; font-weight: 500; font-size: 14px; cursor: pointer; }
 .th-see:hover { text-decoration: underline; }
 
+/* A theme's up to-3-largest sub-themes (frontend/src/ThemeDetail.tsx's SubThemeRow) - same visual language
+   as the rest of this file's .th-* rules, no color swatch (no color data exists for sub-themes - see
+   themesApi.ts::SubThemeCard's own comment). */
+.th-subs { margin: 14px 0 0; border-top: 1px solid var(--line); padding-top: 12px; }
+.th-subs-h { font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
+.th-sub-row { padding: 8px 0 8px 14px; border-top: 1px solid var(--line); }
+.th-sub-row:first-of-type { border-top: none; padding-top: 0; }
+.th-sub-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.th-sub-label { font-weight: 500; font-size: 14px; overflow-wrap: anywhere; }
+.th-sub-pct { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.th-sub-desc { color: var(--muted); font-size: 13px; margin: 4px 0 8px; }
+.th-subs-note { font-size: 12px; margin-top: 10px; }
+
 .th-answers { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
 .th-answer { font-size: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); overflow-wrap: anywhere; }
 .th-answer .tag { display: inline-block; font-size: 11px; font-weight: 600; margin-bottom: 4px; }

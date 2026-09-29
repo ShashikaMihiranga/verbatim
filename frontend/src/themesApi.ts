@@ -7,6 +7,20 @@ export interface ToneSplit {
   pos: number
 }
 
+// One of a theme's up to 3 largest sub-clusters (app/api_themes.py::_theme_dict's `sub_themes` field) - a
+// second, nested clustering pass within that theme's own answers. Never carries `answer_refs`; those are
+// drill-down only, via getThemeAnswers's `subIndex` param. No `color` field - sub-theme colors aren't a
+// concept this API exposes (see ThemeCard's own comment).
+export interface SubThemeCard {
+  index: number
+  label: string
+  description: string | null
+  size: number
+  size_pct: number
+  sentiment: number | null
+  tone: ToneSplit
+}
+
 export interface ThemeCard {
   id: number
   label: string
@@ -16,6 +30,9 @@ export interface ThemeCard {
   sentiment: number | null
   tone: ToneSplit
   confidence: 'solid' | 'tentative'
+  // 0-3 entries, largest first, `[]` for most themes (needs >=100 answers, top 7 by size, and to pass
+  // coverage/count gates - see app/text_pipeline/subthemes.py). No `color` field - see SubThemeCard above.
+  sub_themes: SubThemeCard[]
 }
 
 export interface ThemesResponse {
@@ -46,6 +63,9 @@ export interface ThemeAnswersResponse {
   limit: number
   offset: number
   answers: ThemeAnswer[]
+  // Only set when these answers came from the sub-theme answers route (GET .../sub-themes/{index}/answers) -
+  // see getThemeAnswers's `subIndex` param below.
+  sub_theme_index?: number
 }
 
 async function asError(r: Response): Promise<Error> {
@@ -88,14 +108,21 @@ export async function getThemesChart(id: number, column: string): Promise<ThemeC
   return r.json()
 }
 
+// `subIndex` given hits the sub-theme answers route instead of the theme's own (app/api_themes.py's
+// GET .../sub-themes/{index}/answers) - same shape as the theme's own route, plus `sub_theme_index`.
 export async function getThemeAnswers(
   id: number,
   themeId: number,
   limit = 20,
   offset = 0,
+  subIndex?: number,
 ): Promise<ThemeAnswersResponse> {
   const q = new URLSearchParams({ limit: String(limit), offset: String(offset) })
-  const r = await authFetch(`/api/datasets/${id}/themes/${themeId}/answers?${q}`)
+  const path =
+    subIndex === undefined
+      ? `/api/datasets/${id}/themes/${themeId}/answers?${q}`
+      : `/api/datasets/${id}/themes/${themeId}/sub-themes/${subIndex}/answers?${q}`
+  const r = await authFetch(path)
   if (!r.ok) throw await asError(r)
   return r.json()
 }

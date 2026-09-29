@@ -53,7 +53,9 @@ export function ToneBar({ tone }: { tone: ThemeCard['tone'] }) {
   )
 }
 
-export function AnswerList({ id, themeId }: { id: number; themeId: number }) {
+// `subIndex` given fetches one sub-theme's own answers instead of the parent theme's (see
+// themesApi.ts::getThemeAnswers) - same loading/error/offset state machine either way.
+export function AnswerList({ id, themeId, subIndex }: { id: number; themeId: number; subIndex?: number }) {
   const [answers, setAnswers] = useState<ThemeAnswer[]>([])
   const [offset, setOffset] = useState(0)
   const [total, setTotal] = useState<number | null>(null)
@@ -64,7 +66,7 @@ export function AnswerList({ id, themeId }: { id: number; themeId: number }) {
     setLoading(true)
     setError('')
     try {
-      const r = await getThemeAnswers(id, themeId, PAGE_SIZE, offset)
+      const r = await getThemeAnswers(id, themeId, PAGE_SIZE, offset, subIndex)
       setAnswers((prev) => [...prev, ...r.answers])
       setTotal(r.total)
       setOffset(offset + r.answers.length)
