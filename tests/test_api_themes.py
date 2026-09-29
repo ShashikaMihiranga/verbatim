@@ -616,12 +616,11 @@ def test_themes_chart_happy_path_renders_real_theme_labels(env):
     body = r.json()
     assert isinstance(body["chart_width"], int) and body["chart_width"] > 0
     assert isinstance(body["chart_height"], int) and body["chart_height"] > 0
-    assert "<svg" in body["chart_html"]
     assert "<!doctype html>" not in body["chart_html"].lower()  # a fragment, same shape as app/api_report.py
     for label in real_labels:
         assert label in body["chart_html"]
     # each theme's own drawing is grouped under data-theme="<label>" (frontend/src/ThemeChart.tsx resolves
-    # clicks/hover back to a theme through this attribute - see app/charts.py:treemap_svg).
+    # clicks/hover back to a theme through this attribute - see app/charts.py:treemap_html).
     for label in real_labels:
         assert f'data-theme="{label}"' in body["chart_html"]
 

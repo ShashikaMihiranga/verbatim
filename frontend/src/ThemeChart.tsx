@@ -19,7 +19,7 @@ export interface ChartFragmentData {
 interface ThemeChartProps {
   fragment: ChartFragmentData
   title?: string
-  // Called with a theme's name (its `data-theme` attribute - see app/charts.py's treemap_svg, the only
+  // Called with a theme's name (its `data-theme` attribute - see app/charts.py's treemap_html, the only
   // chart that currently draws these groups) when the viewer clicks anywhere inside that theme's group,
   // including one of its sub-theme rects (a click there still resolves to the parent theme's own
   // `[data-theme]` group via `closest()`).
@@ -107,7 +107,12 @@ export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChar
       <div
         ref={ref}
         className="rp-chart"
-        style={{ width: fragment.chart_width, minHeight: fragment.chart_height }}
+        // chart_width/chart_height are a DESIGN CAP, not a forced size: each chart's own markup (see
+        // app/charts.py's fluid-layout rewrite, docs/DECISIONS.md) genuinely reflows within whatever
+        // width it's given via CSS/container queries, so this wrapper should fill its container up to
+        // that cap rather than always rendering at exactly chart_width - never wider than the design was
+        // built for on a huge monitor, but never artificially pinned narrower either.
+        style={{ width: '100%', maxWidth: fragment.chart_width, minHeight: fragment.chart_height }}
         aria-label={title}
         dangerouslySetInnerHTML={{ __html: fragment.chart_html }}
       />

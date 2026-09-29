@@ -34,13 +34,36 @@
 .rp-head-side { display: flex; align-items: center; gap: 16px; flex: none; padding-top: 2px; }
 .rp-sentence { font-size: clamp(19px, 2.4vw, 24px); font-weight: 300; line-height: 1.35; margin: 0; max-width: 760px; }
 
-/* The chart fragment itself keeps its own designed pixel width (from the API's chart_width) so its
-   internal fixed-layout pieces (grids, flex rows with hardcoded widths) lay out exactly as intended.
-   The outer scroll container only grows a horizontal scrollbar when that width genuinely exceeds the
-   viewport - never a blanket forced minimum applied to every chart regardless of its real size. */
+/* Each chart's own markup (app/charts.py) genuinely reflows to whatever width it's given, via CSS/
+   container queries rather than fixed pixel coordinates - see docs/DECISIONS.md's fluid-charts entry.
+   ThemeChart.tsx sets the wrapper's own width to 100% capped at the fragment's chart_width (a design
+   cap, never forced) - .rp-chart itself needs no max-width override here any more. overflow-x:auto on
+   the scroll container is a safety net, not the normal path: it only kicks in on a screen too narrow
+   for a chart's own minimum readable layout, or for the handful of charts (reachable only via the
+   internal /frame/{id} design-review gallery) that stay fixed-pixel because nothing rewrote them. */
 .rp-chart-scroll { max-width: 100%; overflow-x: auto; }
-.rp-chart { max-width: none; }
 .rp-chart svg { display: block; overflow: visible; max-width: 100%; }
+
+/* Lets .rp-chart-scroll grow past .page's normal 960px reading column, so a genuinely fluid chart (see
+   above) has real room to use on a wide screen - without this, .rp-chart's own max-width:100% would
+   just fill .page's capped ~928px content box on any viewport, no matter how wide, and none of the
+   fluid-layout work above would ever be visible. Text elsewhere on the page (.rp-title, .rp-summary,
+   .rp-sentence, .rp-standout, the chip row, Themes.tsx's own .th-* cards) is untouched and keeps reading
+   at .page's normal column - only this selector changes, .page itself never does.
+   .rp-chart-scroll's direct parent is always either .rp-section (Report.tsx's Divider) or .page itself
+   (Themes.tsx's browse view) - both add zero horizontal padding/margin beyond .page's own 960px/16px, so
+   one rule covers both screens: the box tracks the viewport with a constant 16px gutter each side
+   (matching .page's own edge padding exactly at the 960px boundary - continuous, not a jump). No upper
+   cap is needed here: each chart's own inline max-width (its design's chart_width, set in ThemeChart.tsx)
+   is what actually stops it from growing past its own designed size - this rule only removes the .page
+   ceiling that would otherwise sit below that inline cap and make it unreachable. */
+@media (min-width: 960px) {
+  .rp-chart-scroll {
+    width: calc(100vw - 32px);
+    max-width: none;
+    margin-left: calc(480px - 50vw);
+  }
+}
 
 .rp-nothing { color: var(--muted); font-size: 16px; }
 

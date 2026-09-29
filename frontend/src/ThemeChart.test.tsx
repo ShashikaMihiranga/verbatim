@@ -12,7 +12,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ThemeChart from './ThemeChart'
 
-// Two `[data-theme]` groups, the same shape app/charts.py's treemap_svg draws (a <g data-theme="..."> per
+// Two `[data-theme]` groups, the same shape app/charts.py's treemap_html draws (a <div data-theme="..."> per
 // theme, with a rect and a nested sub-part inside it) - enough to exercise "dim every OTHER group" and
 // "a click on a nested part still resolves to its own parent [data-theme] group via closest()".
 const TWO_THEME_FRAGMENT = `<svg width="200" height="100">
@@ -58,6 +58,18 @@ function fragment() {
 }
 
 describe('ThemeChart', () => {
+  it('sizes the chart wrapper to fill its container, capped at the fragment\'s own chart_width', () => {
+    // Regression pin: chart_width is a design cap now, not a forced size - app/charts.py's charts
+    // genuinely reflow within whatever width they're given (see docs/DECISIONS.md), so the wrapper
+    // should fill available space up to that cap rather than always rendering at exactly chart_width.
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} />)
+    })
+    const chartDiv = container.querySelector('.rp-chart') as HTMLElement
+    expect(chartDiv.style.width).toBe('100%')
+    expect(chartDiv.style.maxWidth).toBe('200px')
+  })
+
   it('dims every OTHER [data-theme] group on hover, and restores opacity on mouseout', () => {
     act(() => {
       root.render(<ThemeChart fragment={fragment()} />)

@@ -10,7 +10,7 @@ from app.chart_data import (
     QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode,
     ToneSplit, TrendData, TrendSeries,
 )
-from app.charts import FRAMES, render, rows, treemap_rows, treemap_svg
+from app.charts import FRAMES, render, rows, treemap_html, treemap_rows
 from app.main import app
 
 client = TestClient(app)
@@ -119,13 +119,12 @@ def test_treemap_theme_name_with_quote_cannot_break_out_of_data_theme_attribute(
     letting the rest of the name inject a new HTML attribute (e.g. an event handler) into the fragment that
     frontend/src/ThemeChart.tsx renders via dangerouslySetInnerHTML."""
     from app.chart_data import ToneSplit
-    from app.charts import treemap_svg
 
     data = small_report()
     data.themes = [ThemeNode('Evil" onmouseover="alert(1)', 100, 0.0, 100, "t1", ToneSplit(0, 100, 0))]
-    html = treemap_svg(data, 400, 300)
+    html = treemap_html(data, 400, 300)
 
-    assert 'data-theme="Evil&quot; onmouseover=&quot;alert(1)">' in html
+    assert 'data-theme="Evil&quot; onmouseover=&quot;alert(1)" style=' in html
     assert 'onmouseover="alert(1)"' not in html
 
 
@@ -157,11 +156,11 @@ def test_treemap_rows_merges_all_other_colored_themes_into_one():
     assert other_row[2] == pytest.approx(-0.1)  # count-weighted sentiment: (0.2*100 - 0.1*50 - 0.3*150) / 300
 
 
-def test_treemap_svg_draws_exactly_one_other_group_for_merged_themes():
+def test_treemap_html_draws_exactly_one_other_box_for_merged_themes():
     data = small_report()
     data.themes = _other_colored_themes()
 
-    html = treemap_svg(data, 1084, 580)
+    html = treemap_html(data, 1084, 580)
 
     assert html.count('data-theme="Other"') == 1
     assert 'data-theme="Theme X"' not in html
@@ -187,10 +186,14 @@ def test_treemap_rows_noop_with_exactly_one_other_colored_theme():
     assert treemap_rows(data) == rows(data)
 
 
-def test_treemap_svg_label_never_overflows_cell_height():
-    """Regression pin for the label-overflow bug: a narrow/short canvas with a very long theme name must
-    not draw label text below the rect's own bottom edge - either the label fits and draws in full, or
-    nothing is drawn for that cell at all."""
+def test_treemap_html_label_never_overflows_its_cell():
+    """Regression pin for the fluid-layout rewrite (docs/DECISIONS.md): treemap_html has no fixed pixel
+    coordinates to check for overflow any more (every box's position/size is now a % of the whole, and
+    each cell's own label sits inside an `overflow:hidden` box) - the old pixel-math check this test used
+    to do is now a structural CSS guarantee instead of something computed per render, so this test asserts
+    the structure that guarantee depends on: no <svg, every [data-theme] cell's position/size are all %,
+    every cell declares container-type (for the label-swap container query), and every cell that draws a
+    label is overflow:hidden so a too-long label can never bleed into a sibling cell."""
     data = small_report()
     data.themes = [
         ThemeNode("Tiny", 1, 0.0, 1, "t1", ToneSplit(0, 100, 0)),
@@ -198,11 +201,119 @@ def test_treemap_svg_label_never_overflows_cell_height():
         ThemeNode("Other", 95, 0.0, 95, "other", ToneSplit(0, 100, 0), note="Folded in: too rare"),
     ]
 
-    html = treemap_svg(data, 300, 60)
-    assert "<text" in html  # sanity: the fix isn't just suppressing every label, the big cell still gets one
+    html = treemap_html(data, 300, 60)
+    assert "<svg" not in html
 
-    for group in re.findall(r'<g data-theme="[^"]*">(.*?)</g>', html, re.S):
-        rx, ry, rw, rh = (float(v) for v in re.search(
-            r'<rect x="(-?[\d.]+)" y="(-?[\d.]+)" width="(-?[\d.]+)" height="(-?[\d.]+)"', group).groups())
-        for tx, ty in re.findall(r'<text x="(-?[\d.]+)" y="(-?[\d.]+)"', group):
-            assert float(ty) <= ry + rh + 1  # +1: sub-pixel rounding tolerance, not a real overflow allowance
+    cells = re.findall(r'<div data-theme="[^"]*" style="([^"]+)">', html)
+    assert len(cells) == 3
+    for style in cells:
+        for prop in ("left", "top", "width", "height"):
+            m = re.search(rf'{prop}:([^;]+);', style)
+            assert m and m.group(1).endswith("%"), f"{prop} in {style!r} is not a %"
+
+    assert html.count("container-type:inline-size") == 3
+    assert "overflow:hidden" in html
+
+
+def test_rank_bar_width_is_percent_not_fixed_pixels():
+    """Regression pin for the fluid-layout rewrite (docs/DECISIONS.md): a rank row's share bar must
+    genuinely reflow with its own row's width, not stay pinned to a px number computed against the old
+    fixed 1180px design - so its width is always a CSS %, never a bare px number."""
+    html = render("rank")
+    bar_widths = re.findall(r'<div style="flex:1;min-width:0"><div style="width:([^;"]+);', html)
+    assert len(bar_widths) >= 1
+    for w in bar_widths:
+        assert w.endswith("%"), f"bar width {w!r} is not a percentage"
+
+
+def test_byscore_bar_is_fluid_with_container_query_label_swap():
+    """Regression pin: byScore's segmented bar row must genuinely reflow (no literal width:700px), and
+    the old server-side "does the name fit" guess must be replaced by a real CSS container query so the
+    decision is made at the segment's actual final width, not an assumed design width."""
+    html = render("byScore")
+    assert "width:700px" not in html
+    assert "@container" in html
+
+
+def test_trend_labels_sit_outside_the_svg_within_bounds():
+    """Regression pin for the fluid-layout rewrite (docs/DECISIONS.md): f_trend's SVG now draws shapes
+    only (gridlines/polylines/dots, genuinely benefits from scaling as one proportional unit) - every
+    text label was moved to a sibling HTML div positioned by % of the chart's own width/height, so its
+    font-size stays literal instead of being subject to the SVG's own viewBox scaling. Geometry invariant
+    (not exact pixels, since the whole point is these percentages are resolution-independent): every
+    label's computed left/top % stays within [0, 100] across a few different synthetic trend shapes."""
+    from app.charts import f_trend
+    from app.chart_data import TrendData, TrendSeries
+
+    # NP=1 (a single time bucket) hits a pre-existing, unrelated division-by-zero in f_trend's own dx
+    # calculation (unchanged by this rewrite) - not exercised here since it was never reachable behavior.
+    # Values stay within the chart's own fixed 0-40% y-axis scale (its gridlines are hardcoded to
+    # 0/10/20/30/40, a pre-existing characteristic of this design, unchanged by this rewrite) - a value
+    # outside that range would draw above/below the plot area by design, in both the old SVG version and
+    # this one, so isn't a useful input for testing THIS rewrite's own position-percentage invariant.
+    base = small_report()
+    for labels, series, sentiment, hover in [
+        (["W1", "W2", "W3"], [TrendSeries("Zebra crossing", "t1", [15, 20, 25]), TrendSeries("Yak shaving", "t2", [35, 30, 25])], [-0.1, -0.05, 0.0], 1),
+        (["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+         [TrendSeries("A Very Long Theme Name Indeed", "t1", [0, 5, 10, 15, 20, 40])], [-0.2, -0.15, -0.1, -0.05, 0.0, 0.0], 5),
+    ]:
+        data = base
+        data.trend = TrendData(labels, series, sentiment, hover, "Note.")
+        html, w, h = f_trend(data)
+        assert "<svg" in html
+        assert "<text" not in html
+        lefts = [float(v.rstrip("%")) for v in re.findall(r'left:(-?[\d.]+)%', html)]
+        tops = [float(v.rstrip("%")) for v in re.findall(r'top:(-?[\d.]+)%', html)]
+        assert lefts and tops
+        for v in lefts + tops:
+            assert -5 <= v <= 105, f"label position {v}% is wildly out of bounds"  # small allowance: axis labels sit just outside the plot area by design (e.g. x0-10)
+
+
+def test_sentsun_labels_sit_outside_the_svg_within_bounds():
+    """Regression pin for the fluid-layout rewrite (docs/DECISIONS.md): f_sentsun's SVG now draws wedge
+    shapes only (genuine polar/arc geometry - the one case that truly can't be plain CSS boxes) - every
+    label (arc_label()'s in-ring text, the center count) is a sibling HTML div positioned by % + rotate,
+    same reasoning as f_trend's rewrite. Geometry invariant, not exact pixels: every label's computed
+    left/top % stays within bounds across a few different synthetic theme/tone shapes."""
+    from app.charts import f_sentsun
+
+    data = small_report()
+    for themes in [
+        [ThemeNode("Zebra crossing", 60, -0.3, 600, "t1", ToneSplit(60, 30, 10)),
+         ThemeNode("Yak shaving", 40, 0.2, 400, "t2", ToneSplit(10, 30, 60))],
+        [ThemeNode("A", 1, 0.0, 10, "t1", ToneSplit(33, 34, 33)),
+         ThemeNode("A Very Long Theme Name That Barely Fits Anywhere", 98, 0.0, 980, "t2", ToneSplit(0, 0, 100)),
+         ThemeNode("Other", 1, 0.0, 10, "other", ToneSplit(100, 0, 0), note="Folded in: too rare")],
+    ]:
+        data.themes = themes
+        html, w, h = f_sentsun(data)
+        assert "<svg" in html
+        assert "<text" not in html
+        lefts = [float(v) for v in re.findall(r'left:(-?[\d.]+)%', html)]
+        tops = [float(v) for v in re.findall(r'top:(-?[\d.]+)%', html)]
+        assert lefts and tops
+        for v in lefts + tops:
+            assert -5 <= v <= 105, f"label position {v}% is wildly out of bounds"
+
+
+def test_quality_histogram_is_css_bars_not_svg():
+    """Regression pin: the quality histogram was an SVG (axis-aligned rects, no curved geometry - no
+    reason to keep SVG once byScore proved the CSS-flex-bar pattern works). Bar heights are a % of their
+    fixed-height track so the chart genuinely reflows in width."""
+    html = render("quality")
+    assert "<svg" not in html
+    bar_heights = re.findall(r'<div style="width:100%;height:([^;"]+);border-radius:3px 3px 0 0', html)
+    assert len(bar_heights) >= 1
+    for h in bar_heights:
+        assert h.endswith("%"), f"bar height {h!r} is not a percentage"
+
+
+def test_heatmap_first_column_is_not_a_bare_pixel_width():
+    """Regression pin: the heatmap's row-label column must be a range (minmax/clamp), not a literal
+    250px, so it can use extra width on a wide screen instead of staying pinned to the old design."""
+    html = render("heatmap")
+    m = re.search(r'grid-template-columns:([^;"]+);', html)
+    assert m, "no grid-template-columns found in heatmap output"
+    first_col = m.group(1).split(" ")[0]
+    assert first_col.startswith("minmax(") or first_col.startswith("clamp("), \
+        f"heatmap's first column {first_col!r} is a bare fixed width"

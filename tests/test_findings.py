@@ -280,8 +280,10 @@ def test_build_report_data_renders_through_real_charts_module():
     for frame_id in ("overview", "treemap", "rank", "sentsun", "quality"):
         html = render(frame_id, data)
         assert html.startswith("<!doctype html>")
-        if frame_id in ("treemap", "sentsun"):
-            assert "<svg" in html
+        if frame_id == "sentsun":
+            assert "<svg" in html  # genuine polar geometry - still SVG, see docs/DECISIONS.md
+        if frame_id == "treemap":
+            assert "<svg" not in html  # rewritten to fluid HTML/CSS - see docs/DECISIONS.md
         if frame_id in ("treemap", "rank", "sentsun"):
             assert "Cost" in html and "Charging" in html  # real theme data reached the renderer
 

@@ -53,13 +53,24 @@ TH_ON = {"t1": "#ffffff", "t2": "#ffffff", "t3": "#12303a", "t4": "#12303a", "t5
          "t6": "#12303a", "t7": "#12303a", "other": "#12303a"}
 DIM = 0.28  # opacity of unselected themes
 
+# Font sizes aligned to frontend/src/report.css's own scale (the surrounding report page's real text),
+# not independently invented per chart - see docs/DECISIONS.md's fluid-charts entry. FS_HDR_TITLE matches
+# .rp-standout-title (20px/600) exactly; FS_BODY matches CLAUDE.md's stated "Body 16px/1.55" and
+# .rp-summary exactly; the rest sit deliberately between report.css's own existing sizes.
+FS_HDR_TITLE = 20
+FS_HDR_SUB = 14
+FS_BODY = 16
+FS_LABEL = 14
+FS_LABEL_SM = 13
+FS_NUMBER_LG = 32
+
 def rows(data):
     return [(t.name, t.share, t.sentiment, t.count, t.color) for t in data.themes]
 
 def treemap_rows(data):
-    """Like rows(data), but every entry with col == "other" is merged into one - so treemap_svg never
-    draws more than 8 rectangles (7 real + 1 merged Other) regardless of how many real themes exist
-    upstream (see _theme_color's rank-7+ fallback in app/findings.py). Used ONLY by treemap_svg - rows()
+    """Like rows(data), but every entry with col == "other" is merged into one - so treemap_html never
+    draws more than 8 boxes (7 real + 1 merged Other) regardless of how many real themes exist
+    upstream (see _theme_color's rank-7+ fallback in app/findings.py). Used ONLY by treemap_html - rows()
     itself, and every other chart that reads data.themes, keep seeing every real theme individually;
     this merge is a treemap-drawing concern, not a data concern."""
     base = rows(data)  # [(name, share, sent, cnt, col), ...]
@@ -100,9 +111,9 @@ def T(x, y, s, size=14, w=400, fill="var(--ink)", anchor="start", extra=""):
             f'style="font-size:{size}px;font-weight:{w};fill:{fill}"{extra}>{esc(s)}</text>')
 
 def hdr(title, sub=None):
-    s = f'<div style="font-size:22px;font-weight:600;line-height:1.3">{esc(title)}</div>'
+    s = f'<div style="font-size:{FS_HDR_TITLE}px;font-weight:600;line-height:1.3">{esc(title)}</div>'
     if sub:
-        s += f'<div style="font-size:15px;color:var(--muted);margin-top:2px">{esc(sub)}</div>'
+        s += f'<div style="font-size:{FS_HDR_SUB}px;color:var(--muted);margin-top:2px">{esc(sub)}</div>'
     return s
 
 def seg(items, selected, hover=None, small=False):
@@ -131,7 +142,14 @@ def wedge(cx, cy, r0, r1, a0, a1):
     return (f"M{x0:.2f} {y0:.2f}A{r1:.2f} {r1:.2f} 0 {lg} 1 {x1:.2f} {y1:.2f}"
             f"L{x2:.2f} {y2:.2f}A{r0:.2f} {r0:.2f} 0 {lg} 0 {x3:.2f} {y3:.2f}Z")
 
-def arc_label(cx, cy, rm, thick, a0, a1, name, pct, fs, color):
+def arc_label(cx, cy, rm, thick, a0, a1, name, pct, fs, color, W, H, opacity=1):
+    """The "does this label fit its wedge" decision below is computed entirely in SVG-coordinate-space
+    (cx/cy/rm/thick/a0/a1 are all fixed design-time numbers, not real rendered pixels) - genuinely making
+    the chart's WIDTH fluid via viewBox+width:100% doesn't change that space at all, so unlike
+    treemap_html's old wrap()/fit_label() (which needed a real target pixel box that no longer exists
+    once width became fluid), this fit logic still applies unchanged. Only the OUTPUT changes: a sibling
+    HTML label (see chart_label()) instead of an SVG <g><text> group, since SVG text scales with its
+    viewBox and this chart's whole point is that labels stay a literal, fixed font-size."""
     mid = (a0 + a1) / 2
     arc = rm * math.radians(a1 - a0)
     lh = fs * 1.2
@@ -154,21 +172,30 @@ def arc_label(cx, cy, rm, thick, a0, a1, name, pct, fs, color):
             if (len(lines) + 1) * lh > thick - 6:
                 lines = []
     n_name = len(lines)
-    lines = lines + [pct]
+    all_lines = lines + [pct]
     x, y = polar(cx, cy, rm, mid)
     rot = mid if not (90 < mid < 270) else mid + 180
-    n = len(lines)
-    items = ""
-    for i, t in enumerate(lines):
-        dy = (i - (n - 1) / 2) * lh
-        wt = 500 if i < n_name else (600 if n_name else 500)
-        items += (f'<text x="0" y="{dy:.1f}" text-anchor="middle" dominant-baseline="central" '
-                  f'style="font-size:{fs}px;font-weight:{wt};fill:{color}">{esc(t)}</text>')
-    return f'<g transform="translate({x:.1f} {y:.1f}) rotate({rot:.1f})">{items}</g>'
+    parts = "".join(
+        f'<div style="font-weight:{500 if i < n_name else (600 if n_name else 500)}">{esc(t)}</div>'
+        for i, t in enumerate(all_lines))
+    op = f"opacity:{opacity};" if opacity != 1 else ""
+    return (f'<div style="position:absolute;left:{x / W * 100:.3f}%;top:{y / H * 100:.3f}%;'
+            f'transform:translate(-50%,-50%) rotate({rot:.1f}deg);font-size:{fs}px;color:{color};{op}'
+            f'text-align:center;line-height:{lh:.1f}px;white-space:nowrap">{parts}</div>')
 
 def sunburst(data, W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, external=True, cfs=34, csub=15):
+    """Wedge shapes (genuine polar/arc geometry - the one case in this app that truly can't be plain CSS
+    boxes) stay in a shapes-only SVG, scaled as one proportional unit via viewBox+width:100% (with
+    preserveAspectRatio="none" so a fixed-height/fluid-width container stretches it correctly - matching
+    every other rewritten chart's choice). Every label (arc_label()'s in-ring labels, external callout
+    text, the center count) is a sibling HTML div instead, positioned by % + rotate - see arc_label()'s
+    and chart_label()'s own docstrings for why SVG <text>/<foreignObject> can't be used here at all. The
+    connector line/circle for an external callout stay in the SVG (pure geometry); only its text moves
+    out. See docs/DECISIONS.md's fluid-charts entry."""
     hole, r1, r2 = 0.36 * R, 0.68 * R, 0.70 * R
-    o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Two-ring sunburst: themes inside, sub-themes outside">']
+    shapes = [f'<svg width="100%" height="100%" viewBox="0 0 {W} {H}" preserveAspectRatio="none" '
+              'style="display:block" role="img" aria-label="Two-ring sunburst: themes inside, sub-themes outside">']
+    labels = []
     a = 0.0
     ext = []
     for name, share, sent, cnt, col in rows(data):
@@ -181,20 +208,18 @@ def sunburst(data, W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, ex
         if external and span < 30:
             ext.append((name, share, cnt, col, (a0 + a1) / 2))
         else:
-            g.append(arc_label(cx, cy, (hole + r1) / 2, r1 - hole, a0, a1, name, f"{share}%", fs_in, TH_ON[col]))
+            labels.append(arc_label(cx, cy, (hole + r1) / 2, r1 - hole, a0, a1, name, f"{share}%", fs_in, TH_ON[col], W, H, op))
         aa = a0
         for k, (sn, sp) in enumerate(subs_of(data, name)):
             sspan = sp * 3.6
             mixp = [46, 36, 27][k]
             g.append(f'<path d="{wedge(cx, cy, r2, R, aa, aa + sspan)}" style="fill:color-mix(in srgb,var(--{col}) {mixp}%,var(--surface));stroke:var(--surface);stroke-width:2.5"/>')
-            g.append(arc_label(cx, cy, (r2 + R) / 2, R - r2, aa, aa + sspan, sn, f"{sp:g}%", fs_out, "var(--ink)"))
+            labels.append(arc_label(cx, cy, (r2 + R) / 2, R - r2, aa, aa + sspan, sn, f"{sp:g}%", fs_out, "var(--ink)", W, H, op))
             aa += sspan
         if hover == name:
             g.append(f'<path d="{wedge(cx, cy, hole, R, a0, a1)}" style="fill:none;stroke:var(--ink);stroke-width:2.5"/>')
-        if external and span < 30:
-            pass
         g.append("</g>")
-        o.append("".join(g))
+        shapes.append("".join(g))
     # external callouts for small themes (desktop)
     if external:
         pos = {t.name: t.callout for t in data.themes if t.callout}
@@ -206,25 +231,21 @@ def sunburst(data, W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, ex
                 ex, ey, lines = pos[name]
                 lh = 16
                 n = len(lines)
-                t = f'<g style="opacity:{op}"><line x1="{ex + 5}" y1="{ey}" x2="{px:.1f}" y2="{py:.1f}" style="stroke:var(--muted);stroke-width:1"/>'
-                t += f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" style="fill:var(--{col})"/>'
+                shapes.append(f'<g style="opacity:{op}"><line x1="{ex + 5}" y1="{ey}" x2="{px:.1f}" y2="{py:.1f}" style="stroke:var(--muted);stroke-width:1"/>'
+                               f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" style="fill:var(--{col})"/></g>')
                 for i, ln in enumerate(lines):
                     dy = (i - (n - 1) / 2) * lh
                     wt = 600 if i == n - 1 and n > 1 else 500
-                    t += T(ex, ey + dy, ln, 14, wt, "var(--ink)", "end")
-                t += "</g>"
-                o.append(t)
+                    labels.append(chart_label(ex, ey + dy, W, H, ln, 14, wt, "var(--ink)", "end", opacity=op))
             else:  # Other callout
-                t = f'<g style="opacity:{op}"><polyline points="{px:.1f},{py:.1f} {px + 14:.1f},{py - 30:.1f} {px + 26:.1f},{py - 30:.1f}" style="fill:none;stroke:var(--muted);stroke-width:1"/>'
-                t += f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" style="fill:var(--other)"/>'
-                t += T(px + 32, py - 40, f"{name} {fmt(cnt)} ({share}%)", 14, 600)
-                t += T(px + 32, py - 22, notes[name], 13, 400, "var(--muted)")
-                t += "</g>"
-                o.append(t)
-    o.append(T(cx, cy - csub * 0.9, fmt(data.answered), cfs, 300, "var(--ink)", "middle"))
-    o.append(T(cx, cy + cfs * 0.45, "answered", csub, 400, "var(--muted)", "middle"))
-    o.append("</svg>")
-    return "".join(o)
+                shapes.append(f'<g style="opacity:{op}"><polyline points="{px:.1f},{py:.1f} {px + 14:.1f},{py - 30:.1f} {px + 26:.1f},{py - 30:.1f}" style="fill:none;stroke:var(--muted);stroke-width:1"/>'
+                               f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" style="fill:var(--other)"/></g>')
+                labels.append(chart_label(px + 32, py - 40, W, H, f"{name} {fmt(cnt)} ({share}%)", 14, 600, opacity=op))
+                labels.append(chart_label(px + 32, py - 22, W, H, notes[name], 13, 400, "var(--muted)", opacity=op))
+    labels.append(chart_label(cx, cy - csub * 0.9, W, H, fmt(data.answered), cfs, 300, "var(--ink)", "middle"))
+    labels.append(chart_label(cx, cy + cfs * 0.45, W, H, "answered", csub, 400, "var(--muted)", "middle"))
+    shapes.append("</svg>")
+    return f'<div style="position:relative;width:100%;height:{H}px">{"".join(shapes)}{"".join(labels)}</div>'
 
 def theme_rows(data, selected=None, hover=None, mobile=False):
     rh = 38 if mobile else 40
@@ -293,7 +314,7 @@ OVERVIEW_TREEMAP_H = 320
 
 def f_overview(data: ReportData):
     stats = data.overview.stats
-    chart = treemap_svg(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H)
+    chart = treemap_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H)
     st = '<div style="display:flex;margin-top:36px">'
     for i, (l, n, note) in enumerate(stats):
         bd = "border-left:1px solid var(--line);padding-left:24px;" if i else ""
@@ -332,12 +353,19 @@ def rank_rows(data, mobile=False, selected=None, hover=None):
                   f'<div style="display:flex;align-items:center;gap:10px;margin-top:6px"><div style="width:{bw:.0f}px;height:22px;border-radius:3px;background:{tone(sent, data.overall_sentiment)};flex:none"></div>'
                   f'<div style="line-height:1.15"><div style="font-size:16px;font-weight:600">{share}%</div><div style="font-size:12px;color:var(--muted)">{fmt(cnt)}</div></div></div></div>')
         else:
-            bw = share / mx * 560
+            pct = share / mx * 100
+            # Bar width is a % of its own flex:1 wrapper (not a px number computed against a fixed
+            # design width) so the bar genuinely lengthens as the row itself widens - the two side
+            # columns use flex-basis: clamp() rather than a bare px so they get a little breathing
+            # room on a wide screen without ever shrinking below a readable minimum. Font sizes are
+            # untouched literal px - only the layout reflows, matching docs/DECISIONS.md's fluid-charts
+            # entry.
             o += (f'<div style="display:flex;align-items:center;height:64px;padding:0 16px;border-radius:8px;{bg}{ring}opacity:{op}">'
-                  f'<div style="width:250px;font-size:17px;font-weight:500;flex:none">{esc(name)}</div>'
-                  f'<div style="flex:1;display:flex;align-items:center;gap:14px"><div style="width:{bw:.0f}px;height:28px;border-radius:3px;background:{tone(sent, data.overall_sentiment)}"></div>'
-                  f'<div style="line-height:1.2"><div style="font-size:18px;font-weight:600">{share}%</div><div style="font-size:13px;color:var(--muted)">{fmt(cnt)}</div></div></div>'
-                  f'<div style="width:90px;text-align:right;font-size:17px">{sent:+.2f}</div></div>')
+                  f'<div style="flex:0 0 clamp(160px,18%,280px);font-size:17px;font-weight:500">{esc(name)}</div>'
+                  f'<div style="flex:1;display:flex;align-items:center;gap:14px">'
+                  f'<div style="flex:1;min-width:0"><div style="width:{pct:.1f}%;height:28px;border-radius:3px;background:{tone(sent, data.overall_sentiment)}"></div></div>'
+                  f'<div style="line-height:1.2;flex:none"><div style="font-size:18px;font-weight:600">{share}%</div><div style="font-size:13px;color:var(--muted)">{fmt(cnt)}</div></div></div>'
+                  f'<div style="flex:0 0 clamp(70px,8%,110px);text-align:right;font-size:17px">{sent:+.2f}</div></div>')
     return o
 
 def rank_legend():
@@ -351,7 +379,7 @@ def f_rank(data: ReportData):
             f'<div>{hdr("What should we fix first?", f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f}).")}</div>'
             f'{seg(["Themes", "Sub-themes"], "Themes")}</div>'
             f'<div style="margin-top:22px;display:flex;flex-wrap:wrap">{rank_legend()}</div>'
-            f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="width:250px">Theme</div><div style="flex:1">Share of answered, with count</div><div style="width:90px;text-align:right">Avg sentiment</div></div>'
+            f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="flex:0 0 clamp(160px,18%,280px)">Theme</div><div style="flex:1">Share of answered, with count</div><div style="flex:0 0 clamp(70px,8%,110px);text-align:right">Avg sentiment</div></div>'
             f'{rank_rows(data, False, None, data.selected_theme)}</div>')
     return body, 1180, 860
 
@@ -429,27 +457,33 @@ def key_row(data):
 def f_byscore(data: ReportData):
     BYS = [(b.label, b.mix, b.sentiment, b.answers) for b in data.score.bands]
     rows_html = ""
-    for lab, vals, sent, n in BYS:
+    css_rules = ""
+    for ri, (lab, vals, sent, n) in enumerate(BYS):
         segs = ""
         for i, v in enumerate(vals):
             col = data.themes[i].color
-            wpx = v * 7
             name = data.themes[i].name
-            show_name = wpx >= len(name) * 7.6 + 16
             txt = f"{v}%" if v >= 5 else f"{v}"
-            inner = ""
-            if show_name:
-                inner = f'<div style="font-size:13px;font-weight:500;line-height:1.2">{esc(name)}</div><div style="font-size:16px;font-weight:600;line-height:1.2">{txt}</div>'
-            else:
-                inner = f'<div style="font-size:{15 if v >= 5 else 11}px;font-weight:600">{txt}</div>'
-            segs += (f'<div style="flex:0 0 {v}%;background:var(--{col});color:{TH_ON[col]};border-right:2px solid var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">{inner}</div>')
+            # The bar's own row is now fluid (width:100% below), so a segment's real rendered width can
+            # no longer be decided server-side against an assumed 700px reference - both label variants
+            # are always emitted, and a CSS container query (container-type:inline-size on the segment
+            # itself) picks which is visible at the segment's real final width. Font sizes stay literal
+            # px, driven by the data value v, never by width. See docs/DECISIONS.md's fluid-charts entry.
+            cls = f"bysc{ri}_{i}"
+            needed = round(len(name) * 7.6 + 16)
+            full = f'<div class="{cls}f" style="font-size:13px;font-weight:500;line-height:1.2">{esc(name)}</div><div class="{cls}f" style="font-size:16px;font-weight:600;line-height:1.2">{txt}</div>'
+            short = f'<div class="{cls}s" style="font-size:{15 if v >= 5 else 11}px;font-weight:600">{txt}</div>'
+            css_rules += (f'.{cls}f{{display:none}}'
+                           f'@container (min-width:{needed}px){{.{cls}f{{display:block}}.{cls}s{{display:none}}}}')
+            segs += (f'<div class="{cls}" style="container-type:inline-size;flex:0 0 {v}%;background:var(--{col});color:{TH_ON[col]};border-right:2px solid var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">{full}{short}</div>')
         pp = min(55, abs(sent) / 0.2 * 55)
         rows_html += (f'<div style="display:flex;align-items:center;padding:20px 0;border-top:1px solid var(--line)">'
                  f'<div style="width:200px;flex:none"><div style="font-size:18px;font-weight:600">{lab}</div><div style="font-size:14px;color:var(--muted)">{fmt(n)} answers</div></div>'
-                 f'<div style="width:700px;height:66px;display:flex;border-radius:6px;overflow:hidden;flex:none">{segs}</div>'
+                 f'<div style="flex:1;height:66px;display:flex;border-radius:6px;overflow:hidden">{segs}</div>'
                  f'<div style="margin-left:32px;display:inline-flex;align-items:baseline;gap:8px;padding:6px 16px;border:1px solid var(--line);border-radius:999px;background:color-mix(in srgb,var(--neg) {pp:.0f}%,var(--surface))">'
                  f'<span style="font-size:13px;color:var(--ink)">avg sentiment</span><span style="font-size:17px;font-weight:600">{sent:+.2f}</span></div></div>')
     body = (f'<div style="padding:56px 48px">{hdr("What does each score group talk about?", f"Theme mix by {data.score.name}. Each bar adds to 100%.")}'
+            f'<style>{css_rules}</style>'
             f'<div style="height:24px"></div><div style="border-bottom:1px solid var(--line)">{rows_html}</div>'
             f'<div style="margin-top:24px">{key_row(data)}</div></div>')
     return body, 1180, 660
@@ -465,7 +499,10 @@ def f_heatmap(data: ReportData):
     seg_ = data.segment
     AGES = [(g.label, g.n) for g in seg_.groups]
     HM = [(r.theme, r.overall, r.values) for r in seg_.rows]
-    g = f'<div style="display:grid;grid-template-columns:250px repeat({len(AGES)},minmax(0,1fr));gap:4px">'
+    # First column is a range (not a bare px) so it gets a little breathing room on a wide screen without
+    # ever shrinking below a readable minimum - cell text/font-size is untouched, only the grid's own
+    # column widths reflow. See docs/DECISIONS.md's fluid-charts entry.
+    g = f'<div style="display:grid;grid-template-columns:minmax(160px,220px) repeat({len(AGES)},minmax(0,1fr));gap:4px">'
     g += '<div></div>'
     for a, n in AGES:
         g += f'<div style="padding:0 0 8px;text-align:center"><div style="font-size:16px;font-weight:500">{a}</div><div style="font-size:13px;color:var(--muted)">n={fmt(n)}</div></div>'
@@ -490,6 +527,28 @@ def f_heatmap(data: ReportData):
     return body, 1180, 700
 
 # ---------- trend ----------
+TREND_W, TREND_H = 1084, 672
+
+def chart_label(x, y, W, H, text, size, w=400, color="var(--ink)", anchor="start", rotate=0, opacity=1):
+    """A sibling HTML label positioned as a % of a chart's own design W/H, for a shapes-only SVG (no
+    <text> inside it) - an SVG <text> node scales with its ambient viewBox (verified: neither a literal
+    px font-size nor <foreignObject> escapes that), so every label in a genuinely width-fluid chart has
+    to live outside the SVG entirely to keep a literal, report-matching font-size. `anchor` replicates
+    T()'s text-anchor via a CSS transform instead - "middle"/"end" shift the label left by half/all of
+    its own rendered width, so it stays anchored to the same (x,y) point `T()` would have centered/
+    right-aligned text on; translateY centers vertically the same way dominant-baseline="central" does.
+    `rotate` (degrees) replicates a rotated <g> group, applied around the label's own center after it's
+    positioned - used by sunburst()'s arc labels, unused (0) by f_trend's."""
+    tx = {"start": "0%", "middle": "-50%", "end": "-100%"}[anchor]
+    rot = f" rotate({rotate:.1f}deg)" if rotate else ""
+    op = f"opacity:{opacity};" if opacity != 1 else ""
+    return (f'<div style="position:absolute;left:{x / W * 100:.3f}%;top:{y / H * 100:.3f}%;'
+            f'transform:translate({tx},-50%){rot};font-size:{size}px;font-weight:{w};color:{color};{op}'
+            f'white-space:nowrap;line-height:1">{esc(text)}</div>')
+
+def trend_label(x, y, text, size, w=400, color="var(--ink)", anchor="start"):
+    return chart_label(x, y, TREND_W, TREND_H, text, size, w, color, anchor)
+
 def f_trend(data: ReportData):
     tr = data.trend
     MONTHS = tr.labels
@@ -503,42 +562,49 @@ def f_trend(data: ReportData):
     def X(i): return x0 + dx * i
     def Y(v): return ty1 - v / 40 * (ty1 - ty0)
     def YS(v): return by0 + (0 - v) / 0.2 * (by1 - by0)
-    o = ['<svg width="1084" height="672" viewBox="0 0 1084 672" role="img" aria-label="Theme share and average sentiment by month">']
-    o.append(T(0, 12, "Share of answers", 15, 600))
+    # Shapes only (gridlines, polylines, dots) - pure coordinate geometry genuinely benefits from scaling
+    # as one unit with the container's width (preserveAspectRatio="none" so it stretches horizontally
+    # without letterboxing, matching the fixed-height/fluid-width design every other rewritten chart
+    # uses). No <text> lives in here - see trend_label()'s docstring for why.
+    o = [f'<svg width="100%" height="100%" viewBox="0 0 {TREND_W} {TREND_H}" preserveAspectRatio="none" '
+         'style="display:block" role="img" aria-label="Theme share and average sentiment by month">']
+    labels = []
+    labels.append(trend_label(0, 12, "Share of answers", 15, 600))
     for g in (0, 10, 20, 30, 40):
         o.append(f'<line x1="{x0}" y1="{Y(g):.1f}" x2="{x1}" y2="{Y(g):.1f}" style="stroke:var(--line);stroke-width:1"/>')
-        o.append(T(x0 - 10, Y(g), f"{g}%", 13, 400, "var(--muted)", "end"))
+        labels.append(trend_label(x0 - 10, Y(g), f"{g}%", 13, 400, "var(--muted)", "end"))
     HV = tr.hover_index
     for name, col, vals in S:
         pts = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(vals))
         o.append(f'<polyline points="{pts}" style="fill:none;stroke:var(--{col});stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round"/>')
         o.append(f'<circle cx="{X(NP - 1):.1f}" cy="{Y(vals[-1]):.1f}" r="4" style="fill:var(--{col})"/>')
-        o.append(T(x1 + 16, Y(vals[-1]) - 0, f"{name} {vals[-1]:.0f}%", 14, 600, "var(--ink)"))
+        labels.append(trend_label(x1 + 16, Y(vals[-1]), f"{name} {vals[-1]:.0f}%", 14, 600, "var(--ink)"))
         o.append(f'<circle cx="{X(0):.1f}" cy="{Y(vals[0]):.1f}" r="4" style="fill:var(--{col})"/>')
-        o.append(T(X(0) + 8, Y(vals[0]) - 12, f"{vals[0]:.0f}%", 13, 500, "var(--muted)"))
+        labels.append(trend_label(X(0) + 8, Y(vals[0]) - 12, f"{vals[0]:.0f}%", 13, 500, "var(--muted)"))
     # hover crosshair
     o.append(f'<line x1="{X(HV):.1f}" y1="{ty0 - 6}" x2="{X(HV):.1f}" y2="{by1}" style="stroke:var(--ink);stroke-width:1;stroke-dasharray:3 3"/>')
     for name, col, vals in S:
         o.append(f'<circle cx="{X(HV):.1f}" cy="{Y(vals[HV]):.1f}" r="4.5" style="fill:var(--surface);stroke:var(--{col});stroke-width:2.5"/>')
-        o.append(T(X(HV) + 10, Y(vals[HV]) - 11, f"{vals[HV]:.1f}%", 13, 600, "var(--ink)"))
+        labels.append(trend_label(X(HV) + 10, Y(vals[HV]) - 11, f"{vals[HV]:.1f}%", 13, 600, "var(--ink)"))
     # bottom
-    o.append(T(0, by0 - 28, "Average sentiment", 15, 600))
+    labels.append(trend_label(0, by0 - 28, "Average sentiment", 15, 600))
     for g in (0, -0.1, -0.2):
         o.append(f'<line x1="{x0}" y1="{YS(g):.1f}" x2="{x1}" y2="{YS(g):.1f}" style="stroke:var(--line);stroke-width:1"/>')
-        o.append(T(x0 - 10, YS(g), f"{g:.2f}" if g else "0.00", 13, 400, "var(--muted)", "end"))
+        labels.append(trend_label(x0 - 10, YS(g), f"{g:.2f}" if g else "0.00", 13, 400, "var(--muted)", "end"))
     pts = " ".join(f"{X(i):.1f},{YS(v):.1f}" for i, v in enumerate(sent))
     o.append(f'<polyline points="{pts}" style="fill:none;stroke:var(--ink);stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round"/>')
     o.append(f'<circle cx="{X(0):.1f}" cy="{YS(sent[0]):.1f}" r="4" style="fill:var(--ink)"/>')
-    o.append(T(X(0) + 8, YS(sent[0]) - 14, f"{sent[0]:.2f}", 13, 500, "var(--muted)"))
+    labels.append(trend_label(X(0) + 8, YS(sent[0]) - 14, f"{sent[0]:.2f}", 13, 500, "var(--muted)"))
     o.append(f'<circle cx="{X(NP - 1):.1f}" cy="{YS(sent[-1]):.1f}" r="4" style="fill:var(--ink)"/>')
-    o.append(T(x1 + 16, YS(sent[-1]), f"Average sentiment {sent[-1]:.2f}", 14, 600))
+    labels.append(trend_label(x1 + 16, YS(sent[-1]), f"Average sentiment {sent[-1]:.2f}", 14, 600))
     o.append(f'<circle cx="{X(HV):.1f}" cy="{YS(sent[HV]):.1f}" r="4.5" style="fill:var(--surface);stroke:var(--ink);stroke-width:2.5"/>')
-    o.append(T(X(HV) + 10, YS(sent[HV]) - 12, f"{sent[HV]:.2f}", 13, 600))
+    labels.append(trend_label(X(HV) + 10, YS(sent[HV]) - 12, f"{sent[HV]:.2f}", 13, 600))
     for i, m in enumerate(MONTHS):
-        o.append(T(X(i), by1 + 26, m, 13, 500 if i == HV else 400, "var(--ink)" if i == HV else "var(--muted)", "middle"))
+        labels.append(trend_label(X(i), by1 + 26, m, 13, 500 if i == HV else 400, "var(--ink)" if i == HV else "var(--muted)", "middle"))
     o.append("</svg>")
+    chart = f'<div style="position:relative;width:100%;height:{TREND_H}px">{"".join(o)}{"".join(labels)}</div>'
     body = (f'<div style="padding:56px 48px">{hdr("What's rising or fading?".replace("What's", "What\'s"), tr.note)}'
-            f'<div style="height:24px"></div>{"".join(o)}</div>')
+            f'<div style="height:24px"></div>{chart}</div>')
     return body, 1180, 880
 
 # ---------- freq ----------
@@ -622,29 +688,39 @@ def f_quotes(data: ReportData):
 
 # ---------- quality ----------
 def f_quality(data: ReportData):
+    # Was an SVG histogram at a fixed pixel width; bars are simple axis-aligned rects with no curved
+    # geometry, so there's no reason to keep SVG here (unlike sentsun's genuine polar shapes) - a CSS
+    # flex "bar chart" lets each bar's own column genuinely reflow with the available width, the same
+    # pattern proven by byScore. Only the track HEIGHT stays a fixed px reference (270px) - the ask was
+    # for width to reflow, not height - and every font-size stays a literal px, driven by the data value,
+    # never by width. See docs/DECISIONS.md's fluid-charts entry.
     q = data.quality
     BINS = q.bins
     mx = max(c for _, c in BINS)
-    base = 350; maxh = 270; bw = 100; gap = 20; x0 = 12
-    o = ['<svg width="1084" height="440" viewBox="0 0 1084 440" role="img" aria-label="Histogram of answer length in words">']
-    for i, (lab, c) in enumerate(BINS):
-        h = c / mx * maxh
-        x = x0 + i * (bw + gap)
+    track_h = 270
+    bars = ""
+    labels = ""
+    for lab, c in BINS:
+        h = c / mx * 100
         typ = lab == q.typical_bin
         fill = "var(--accent)" if typ else "color-mix(in srgb,var(--accent) 55%,var(--bg))"
-        o.append(f'<rect x="{x}" y="{base - h:.1f}" width="{bw}" height="{h:.1f}" rx="3" style="fill:{fill}"/>')
-        o.append(T(x + bw / 2, base - h - 14, fmt(c), 15, 600, "var(--ink)", "middle"))
-        o.append(T(x + bw / 2, base + 22, lab, 15, 500, "var(--ink)", "middle"))
-        if typ:
-            o.append(T(x + bw / 2, base - h - 44, q.typical_note, 14, 500, "var(--accent)", "middle"))
-    o.append(f'<line x1="0" y1="{base}" x2="1084" y2="{base}" style="stroke:var(--ink);stroke-width:1"/>')
-    o.append(T(542, base + 58, "Words per answer", 14, 500, "var(--muted)", "middle"))
-    o.append("</svg>")
+        note = (f'<div style="font-size:14px;font-weight:500;color:var(--accent);text-align:center;margin-bottom:6px;white-space:nowrap">{esc(q.typical_note)}</div>'
+                if typ else "")
+        bars += (f'<div style="flex:1;display:flex;flex-direction:column;align-items:center">'
+                 f'{note}'
+                 f'<div style="font-size:15px;font-weight:600;color:var(--ink);margin-bottom:6px">{fmt(c)}</div>'
+                 f'<div style="width:100%;max-width:100px;height:{track_h}px;display:flex;align-items:flex-end">'
+                 f'<div style="width:100%;height:{h:.1f}%;border-radius:3px 3px 0 0;background:{fill}"></div></div>'
+                 f'</div>')
+        labels += f'<div style="flex:1;text-align:center;font-size:15px;font-weight:500;color:var(--ink)">{esc(lab)}</div>'
+    chart = (f'<div style="display:flex;align-items:flex-end;gap:20px;border-bottom:1px solid var(--ink)">{bars}</div>'
+             f'<div style="display:flex;gap:20px;margin-top:22px">{labels}</div>'
+             f'<div style="margin-top:22px;text-align:center;font-size:14px;font-weight:500;color:var(--muted)">Words per answer</div>')
     notes = q.notes
     nt = '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px;margin-top:20px">' + "".join(
         f'<div style="border-top:1px solid var(--line);padding-top:14px;font-size:16px;line-height:1.55">{esc(n)}</div>' for n in notes) + "</div>"
     body = (f'<div style="padding:56px 48px">{hdr("Can I trust this?", f"Answer length in words, for the {fmt(data.answered)} answers analysed.")}'
-            f'<div style="height:40px"></div>{"".join(o)}{nt}</div>')
+            f'<div style="height:40px"></div>{chart}{nt}</div>')
     return body, 1180, 880
 
 # ---------- context ----------
@@ -781,52 +857,78 @@ def frame(title, sub, inner, h, extra_top=24):
     return (f'<div style="padding:56px 48px">{hdr(title, sub)}<div style="height:{extra_top}px"></div>{inner}</div>'), 1180, h
 
 # ---- treemap
-def treemap_svg(data: ReportData, w: int, h: int) -> str:
-    """The treemap's own `<svg>...</svg>` markup (no `frame()` wrapper) at whatever size `w`/`h` a caller
-    needs - `f_treemap` below calls this at its own standalone size, and `f_overview`/
-    `app.api_themes.themes_chart` call it again at a smaller "hero"/browse size, so the drawing logic
+def treemap_html(data: ReportData, w: int, h: int) -> str:
+    """The treemap's own markup (no `frame()` wrapper) - `f_treemap` below calls this at its own
+    standalone size, and `f_overview` calls it again at a smaller "hero"/browse size, so the layout logic
     itself exists in exactly one place rather than being copy-pasted per caller.
 
-    Each theme's rect + label (and any sub-theme rects/labels nested inside it) sit inside their own
-    `<g data-theme="...">` group, so a frontend click/hover handler can resolve any part of a theme's
-    drawing - including a sub-theme rect - back to its parent theme with a single `closest('[data-theme]')`
-    lookup (see `frontend/src/ThemeChart.tsx`)."""
+    `w`/`h` are the design's reference size that `squarify()` packs against - not a rendered pixel size
+    any more. Every rect it returns is expressed as a `%` of `w`/`h` here, so the whole treemap is a
+    `position:relative` box whose HEIGHT stays this design's fixed `h`px (matching every other rewritten
+    chart's "width reflows, height doesn't" choice) but whose WIDTH genuinely fills whatever its own
+    container gives it - see docs/DECISIONS.md's fluid-charts entry. Each theme's own label has two
+    pre-rendered variants (name+share, share-only), switched by a CSS container query keyed to that
+    div's own real rendered width instead of a server-side pixel-width guess (`wrap()`/`fit_label()`,
+    used elsewhere by the 3 dead chart functions still on the old fixed-pixel SVG design, are not used
+    here any more) - a cell too small for even the short variant just clips via `overflow:hidden` rather
+    than overflowing into a sibling cell, the same "never overflow" guarantee the old pixel-fit logic
+    existed to provide, now enforced structurally by CSS instead of computed per-render.
+
+    Each theme's own box (and any sub-theme boxes nested inside it) carries `data-theme="..."`, so a
+    frontend click/hover handler can resolve any part of a theme's drawing - including a sub-theme box -
+    back to its parent theme with a single `closest('[data-theme]')` lookup (see
+    `frontend/src/ThemeChart.tsx`); `closest()` is DOM-structure-based and does not care that this is now
+    a `<div>` tree instead of nested `<svg><g>` groups."""
     rects = squarify([(n, s) for n, s, _, _, _ in treemap_rows(data)], 0, 0, w, h)
-    o = [f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" aria-label="Treemap of themes and sub-themes">']
-    for name, share, sent, cnt, col in treemap_rows(data):
+    css_rules = []
+    cells = []
+    for idx, (name, share, sent, cnt, col) in enumerate(treemap_rows(data)):
         rx, ry, rw, rh = rects[name]
-        rx += 1.5; ry += 1.5; rw -= 3; rh -= 3
-        g = [f'<g data-theme="{esc(name)}">']
-        g.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" rx="5" style="fill:var(--{col})"/>')
-        lines = wrap(f"{name} {share}%", rw - 18, 15)
-        if lines is not None and len(lines) * 18 + 14 <= rh:
-            for i, t in enumerate(lines):
-                g.append(T(rx + 10, ry + 16 + i * 18, t, 15, 600, TH_ON[col]))
-            hh = len(lines) * 18 + 14
-        else:
-            pct_only = wrap(f"{share}%", rw - 18, 15) or []
-            if pct_only and len(pct_only) * 18 + 14 <= rh:
-                g.append(T(rx + 10, ry + 16, pct_only[0], 15, 600, TH_ON[col]))
-                hh = 18 + 14
-            else:
-                hh = 0  # nothing fits - draw no label at all, rather than overflow
+        cls = f"tmc{idx}"
+        needed_w = round(len(f"{name} {share}%") * 4.2 + 24)  # rough "would 1-2 wrapped lines fit" estimate
+        # display is NOT set inline here (only via the !important stylesheet rules below) - the full
+        # variant's own inline style needs display:-webkit-box for -webkit-line-clamp to work at all, and
+        # an inline style always beats a plain stylesheet rule regardless of which @container matched, so
+        # the show/hide toggle has to win that fight with !important on both sides.
+        full = (f'<div class="{cls}f" style="font-size:15px;font-weight:600;color:{TH_ON[col]};line-height:1.3;'
+                f'overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical">{esc(name)} {share}%</div>')
+        short = f'<div class="{cls}s" style="font-size:15px;font-weight:600;color:{TH_ON[col]}">{share}%</div>'
+        css_rules.append(f'.{cls}f{{display:none!important}}@container (min-width:{needed_w}px){{.{cls}f{{display:-webkit-box!important}}.{cls}s{{display:none!important}}}}')
+
         subs = subs_of(data, name)
-        if subs and rh - hh - 5 > 20:
-            sr = squarify(subs, rx + 5, ry + hh, rw - 10, rh - hh - 5)
-            for k, (sn, sp) in enumerate(subs):
-                sx, sy, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
-                sx += 1.5; sy += 1.5; sw -= 3; sh -= 3
-                g.append(f'<rect x="{sx:.1f}" y="{sy:.1f}" width="{sw:.1f}" height="{sh:.1f}" rx="3" style="fill:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"/>')
-                g.append(fit_label(sx, sy, sw, sh, sn, f"{sp:g}%", 14, "var(--ink)", False))
-        g.append("</g>")
-        o.append("".join(g))
-    o.append("</svg>")
-    return "".join(o)
+        sub_html = ""
+        header_pct = 34  # a fixed share of this cell's own height reserved for its label, not a computed
+                          # "how tall did the label actually render" pixel value - see docstring above.
+        if subs:
+            sub_w, sub_h = rw - 10, rh * (100 - header_pct) / 100 - 5
+            if sub_w > 20 and sub_h > 20:
+                sr = squarify(subs, 0, 0, sub_w, sub_h)
+                sub_cells = ""
+                for k, (sn, sp) in enumerate(subs):
+                    sx, sy, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
+                    sub_cells += (
+                        f'<div style="position:absolute;left:{sx / sub_w * 100:.2f}%;top:{sy / sub_h * 100:.2f}%;'
+                        f'width:{sw / sub_w * 100:.2f}%;height:{sh / sub_h * 100:.2f}%;padding:1.5px">'
+                        f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
+                        f'background:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface));'
+                        f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
+                        f'<span style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2">{esc(sn)}<br>{sp:g}%</span>'
+                        f'</div></div>')
+                sub_html = f'<div style="position:absolute;left:0;top:{header_pct}%;width:100%;height:{100 - header_pct}%">{sub_cells}</div>'
+
+        cells.append(
+            f'<div data-theme="{esc(name)}" style="position:absolute;left:{rx / w * 100:.2f}%;top:{ry / h * 100:.2f}%;'
+            f'width:{rw / w * 100:.2f}%;height:{rh / h * 100:.2f}%;padding:1.5px">'
+            f'<div style="width:100%;height:100%;border-radius:5px;overflow:hidden;position:relative;'
+            f'container-type:inline-size;background:var(--{col})">'
+            f'<div style="position:absolute;left:10px;top:12px;right:8px">{full}{short}</div>'
+            f'{sub_html}</div></div>')
+    return f'<style>{"".join(css_rules)}</style><div style="position:relative;width:100%;height:{h}px">{"".join(cells)}</div>'
 
 
 def f_treemap(data: ReportData):
-    svg = treemap_svg(data, 1084, 580)
-    return frame("What are the themes?", "Block area is share of answered. Sub-themes sit inside their theme.", svg, 800)
+    tm = treemap_html(data, 1084, 580)
+    return frame("What are the themes?", "Block area is share of answered. Sub-themes sit inside their theme.", tm, 800)
 
 # fix: squarify keys must be hashable and unique; sub items are (name, share) tuples keyed by name
 def _sub_items(subs):
@@ -855,28 +957,38 @@ def f_icicle(data: ReportData):
 
 # ---- sentiment sunburst
 def f_sentsun(data: ReportData):
+    # Same shapes-only-SVG + sibling-HTML-labels split as sunburst()/arc_label() above (this function has
+    # its own independent drawing loop - a single ring split by sentiment tone, not sub-themes, so it
+    # isn't a candidate for sharing that helper directly) - see arc_label()'s and chart_label()'s
+    # docstrings for why. The diagram's own wrapper gets aspect-ratio:1 (it's a circle - W and H are
+    # always equal here) and a flexible width bound instead of a literal flex:none 580px, so it can use a
+    # little extra space on a wide screen instead of staying pinned to one fixed size; the "answered"
+    # count is a real report number (it always reads correctly at any size since it's genuinely centered
+    # via % + translate, not computed against a specific rendered pixel size). See docs/DECISIONS.md.
     W = H = 580
     cx = cy = 290
     R = 280
     hole, r1, r2 = 0.34 * R, 0.62 * R, 0.64 * R
-    o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Sentiment sunburst: themes inside, tone split outside">']
+    shapes = [f'<svg width="100%" height="100%" viewBox="0 0 {W} {H}" role="img" aria-label="Sentiment sunburst: themes inside, tone split outside">']
+    labels = []
     a = 0.0
     tones = tones_of(data)
     for name, share, sent, cnt, col in rows(data):
         span = share * 3.6
         a0, a1 = a, a + span
         a = a1
-        o.append(f'<path d="{wedge(cx, cy, hole, r1, a0, a1)}" style="fill:var(--{col});stroke:var(--surface);stroke-width:3"/>')
-        o.append(arc_label(cx, cy, (hole + r1) / 2, r1 - hole, a0, a1, name, f"{share}%", 13.5, TH_ON[col]))
+        shapes.append(f'<path d="{wedge(cx, cy, hole, r1, a0, a1)}" style="fill:var(--{col});stroke:var(--surface);stroke-width:3"/>')
+        labels.append(arc_label(cx, cy, (hole + r1) / 2, r1 - hole, a0, a1, name, f"{share}%", 13.5, TH_ON[col], W, H))
         aa = a0
         for v, c, on in zip(tones[name], ("neg", "neu", "pos"), ("var(--on-neg)", "var(--on-neu)", "var(--on-pos)")):
             sp = span * v / 100
-            o.append(f'<path d="{wedge(cx, cy, r2, R, aa, aa + sp)}" style="fill:var(--{c});stroke:var(--surface);stroke-width:2.5"/>')
-            o.append(arc_label(cx, cy, (r2 + R) / 2, R - r2, aa, aa + sp, None, f"{v}%", 13, on))
+            shapes.append(f'<path d="{wedge(cx, cy, r2, R, aa, aa + sp)}" style="fill:var(--{c});stroke:var(--surface);stroke-width:2.5"/>')
+            labels.append(arc_label(cx, cy, (r2 + R) / 2, R - r2, aa, aa + sp, None, f"{v}%", 13, on, W, H))
             aa += sp
-    o.append(T(cx, cy - 12, fmt(data.answered), 32, 300, "var(--ink)", "middle"))
-    o.append(T(cx, cy + 16, "answered", 15, 400, "var(--muted)", "middle"))
-    o.append("</svg>")
+    labels.append(chart_label(cx, cy - 12, W, H, fmt(data.answered), 32, 300, "var(--ink)", "middle"))
+    labels.append(chart_label(cx, cy + 16, W, H, "answered", 15, 400, "var(--muted)", "middle"))
+    shapes.append("</svg>")
+    diagram = f'<div style="position:relative;width:100%;height:100%">{"".join(shapes)}{"".join(labels)}</div>'
     tbl = ('<div style="flex:1;padding-top:12px"><div style="display:flex;align-items:center;gap:10px;height:30px;font-size:13px;font-weight:500;color:var(--muted)">'
            '<span style="width:12px"></span><span style="flex:1">Theme</span>'
            '<span style="width:72px;text-align:right">Negative</span><span style="width:72px;text-align:right">Neutral</span><span style="width:72px;text-align:right">Positive</span></div>')
@@ -888,7 +1000,8 @@ def f_sentsun(data: ReportData):
     def sw(c, t):
         return f'<span style="display:inline-flex;align-items:center;gap:8px;margin-right:20px;font-size:14px;color:var(--muted)"><span style="width:14px;height:14px;border-radius:3px;background:{c}"></span>{t}</span>'
     tbl += f'<div style="margin-top:20px">{sw("var(--neg)", "Negative")}{sw("var(--neu)", "Neutral")}{sw("var(--pos)", "Positive")}</div></div>'
-    inner = f'<div style="display:flex;gap:40px;align-items:flex-start"><div style="flex:none">{"".join(o)}</div>{tbl}</div>'
+    inner = (f'<div style="display:flex;gap:40px;align-items:flex-start">'
+             f'<div style="flex:1 1 320px;max-width:{W}px;aspect-ratio:1">{diagram}</div>{tbl}</div>')
     return frame("Which themes sound negative or positive?", "Inner ring is the theme. Outer ring splits each theme by tone.", inner, 800)
 
 # ---- marimekko
