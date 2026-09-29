@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.charts import render
 from app.db import Base
+from app.chart_data import SubTheme
 from app.findings import (
     Candidate,
     FakeClaudeClient,
@@ -27,6 +28,7 @@ from app.findings import (
     default_claude_client,
     label_confidence,
     pick_chart,
+    theme_nodes,
     write_headline,
 )
 from app.models import Dataset, Finding, Report, Theme
@@ -36,13 +38,24 @@ QUESTION = "Why haven't you bought an electric vehicle yet?"
 
 # ---------------------------------------------------------------- fixture builders
 
-def make_theme(tid, label, size, sentiment, tone=None, column_name="Why", dataset_id=1, description=None):
+def make_theme(tid, label, size, sentiment, tone=None, column_name="Why", dataset_id=1, description=None,
+               sub_themes=None):
     t = Theme(
         dataset_id=dataset_id, column_name=column_name, label=label, description=description,
         size=size, sentiment=sentiment, tone=tone or {"neg": 34.0, "neu": 33.0, "pos": 33.0}, answer_refs=[],
+        sub_themes=sub_themes,
     )
     t.id = tid  # unpersisted rows: assign a stable fake id so Candidate.id stays unique across kinds/tests
     return t
+
+
+def make_sub_theme(label, size, sentiment=0.0, tone=None):
+    """One `Theme.sub_themes` JSON entry, same shape `app.api_themes._write_theme_rows` stores - see
+    `app.models.Theme.sub_themes`'s own comment for the exact keys."""
+    return {
+        "label": label, "description": f"About {label}.", "size": size, "sentiment": sentiment,
+        "tone": tone or {"neg": 34.0, "neu": 33.0, "pos": 33.0}, "answer_refs": list(range(size)),
+    }
 
 
 def tone_contrast_themes():
@@ -178,9 +191,11 @@ def test_label_confidence_thresholds():
 
 def test_pick_chart_mapping_and_the_sunburst_to_treemap_fallback():
     """SPEC.md section 4's table: "Sunburst: ...Skip when fewer than 3 sub-themes in total, use treemap."
-    Every ReportData this engine builds has zero sub-themes (see app/findings.py's module docstring), so
-    a "theme breakdown" finding (long_tail) must use the table's own stated fallback (treemap), never
-    sunburst - this test pins that down explicitly rather than leaving it implicit."""
+    `pick_chart` never selects sunburst/icicle for any finding kind - real sub-themes existing now
+    (app/findings.py's module docstring) does not by itself change this, since wiring that table row's own
+    threshold check into `pick_chart` is separate, explicitly out-of-scope follow-up work (see
+    CHART_BY_KIND's own comment) - so a "theme breakdown" finding (long_tail) must still use the table's
+    documented fallback (treemap), never sunburst, regardless of how many sub-themes exist."""
     tone = Candidate("tone_contrast", "x", 1, "X", count=1, score=1.0, numbers={})
     dominant = Candidate("dominant_theme", "x", 1, "X", count=1, score=1.0, numbers={})
     long_tail = Candidate("long_tail", "x", 1, "X", count=1, score=1.0, numbers={})
@@ -188,6 +203,58 @@ def test_pick_chart_mapping_and_the_sunburst_to_treemap_fallback():
     assert pick_chart(dominant) == "rank"
     assert pick_chart(long_tail) == "treemap"
     assert pick_chart(long_tail) != "sunburst"
+
+
+# ==================================================================== theme_nodes (real sub-theme wiring)
+
+def test_theme_nodes_backward_compat_no_sub_themes_yields_empty_children():
+    """Pin: a `Theme` with no `sub_themes` at all (`None`, e.g. every row this app wrote before this
+    stream, or any theme that was never split) still yields `children == []`, exactly as before."""
+    themes = [make_theme(1, "Cost", 100, -0.1), make_theme(2, "Other", 20, 0.0)]
+    nodes = theme_nodes(themes, total_answered=120)
+    assert all(n.children == [] for n in nodes)
+
+
+def test_theme_nodes_populates_children_from_stored_sub_themes():
+    sub_themes = [
+        make_sub_theme("Price too high", size=40, sentiment=-0.3),
+        make_sub_theme("Hidden fees", size=20, sentiment=-0.1),
+    ]
+    themes = [
+        make_theme(1, "Cost", 100, -0.2, sub_themes=sub_themes),
+        make_theme(2, "Other", 20, 0.0),
+    ]
+    nodes = theme_nodes(themes, total_answered=200)
+    cost_node = next(n for n in nodes if n.name == "Cost")
+    assert cost_node.children == [
+        SubTheme(name="Price too high", share=20.0),  # 40/200
+        SubTheme(name="Hidden fees", share=10.0),  # 20/200
+    ]
+    # "Other" is never sub-clustered (see app/text_pipeline/subthemes.py) and this fixture never gave it
+    # any sub_themes anyway - children stays empty for it.
+    other_node = next(n for n in nodes if n.name == "Other")
+    assert other_node.children == []
+
+
+def test_theme_nodes_caps_children_at_three():
+    sub_themes = [make_sub_theme(f"Sub {i}", size=10) for i in range(4)]  # a 4th sub-theme entry, stored
+    themes = [make_theme(1, "Cost", 100, -0.1, sub_themes=sub_themes)]
+    nodes = theme_nodes(themes, total_answered=100)
+    assert len(nodes[0].children) == 3
+    assert [c.name for c in nodes[0].children] == ["Sub 0", "Sub 1", "Sub 2"]  # 4th silently dropped, not crashed on
+
+
+def test_theme_nodes_drops_sub_themes_whose_share_rounds_to_zero():
+    """A sub-theme's stored `size` is always > 0, but its computed SHARE (of the whole column's answers,
+    not the parent's) can still round to 0.0 on a large enough dataset - app.charts.py's treemap divides by
+    a sub-theme's share via squarify, so this must be filtered, not merely tolerated."""
+    sub_themes = [
+        make_sub_theme("Real sub-theme", size=5_000),
+        make_sub_theme("Rounds to zero", size=1),  # 1 / 2_000_000 * 100 rounds to 0.0
+    ]
+    themes = [make_theme(1, "Cost", 5_001, -0.1, sub_themes=sub_themes)]
+    nodes = theme_nodes(themes, total_answered=2_000_000)
+    assert [c.name for c in nodes[0].children] == ["Real sub-theme"]
 
 
 # ==================================================================== build_report_data + render() smoke test
@@ -205,7 +272,10 @@ def test_build_report_data_renders_through_real_charts_module():
     assert [t.name for t in data.themes] == ["Cost", "Charging", "Range", "Other"]
     assert data.themes[-1].color == "other"
     assert data.themes[0].color == "t1" and data.themes[1].color == "t2"
-    assert all(t.children == [] for t in data.themes)  # sub-theme wiring is out of scope
+    # None of dominant_and_longtail_themes()'s fixture Themes set `sub_themes`, so every ThemeNode still
+    # has empty children - real sub-theme wiring (see theme_nodes tests below) is additive, not a change
+    # in behaviour for a Theme that was never split.
+    assert all(t.children == [] for t in data.themes)
 
     for frame_id in ("overview", "treemap", "rank", "sentsun", "quality"):
         html = render(frame_id, data)

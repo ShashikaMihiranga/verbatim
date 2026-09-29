@@ -7,6 +7,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -83,6 +84,114 @@ def install_fakes():
     app.dependency_overrides[get_embedding_client] = lambda: FakeEmbeddingClient()
     app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply)
     app.dependency_overrides[get_jev_client_factory] = lambda: (lambda: FakeJevClient(("pos", 0.8)))
+
+
+# ---------------------------------------------------------------- big, real-sub-structure fixture (sub-themes)
+# `FakeEmbeddingClient` above is a bag-of-words hash (see its own docstring): fine for "two topics separate
+# from each other", not reliable enough to also keep 3 sub-topics merged into ONE >=100-answer top-level
+# theme while still being separable by a SECOND, independent clustering pass on just that subset - exactly
+# what a real sub-theme test needs. `FakeFamilyEmbeddingClient` below instead maps each exact (masked) answer
+# text to a precomputed vector from a small numpy fixture, built the same way
+# tests/test_text_pipeline.py's `_high_dimensional_fixture` is (family centers + substantial per-dimension
+# noise, unit-length, 300 "real-embedding-shaped" dimensions) - see docs/DECISIONS.md for the exact
+# parameters and how they were found (a direct parameter sweep against `cluster_answers`/`sub_cluster_themes`
+# in this environment, not guessed).
+_SUB_DIM = 300
+_SUB_GROUP_SIZES = (45, 45, 40)  # 3 sub-groups under one big parent theme - 130 answers, well over the
+                                 # 100-answer sub-clustering floor (app/text_pipeline/subthemes.py)
+_SUB_B_SIZE = 35  # a second, unrelated top-level theme - too small (< 100) to ever be sub-clustered itself
+_SUB_DELTA_SCALE = 0.05  # how far each of the 3 sub-group centers sits from their shared base direction -
+                         # close enough that top-level clustering merges all 3 into ONE cluster
+_SUB_MEMBER_NOISE = 0.15  # per-member noise around its own sub-group center - loose enough that a second,
+                          # independent UMAP fit on just the merged cluster's own subset can still tell the
+                          # 3 sub-groups apart
+_SUB_B_NOISE = 0.2
+
+# Real-sounding vocabularies for 3 "shipping problem" sub-themes plus one distinct "support quality" theme -
+# disjoint word lists per group (so texts stay recognisably on-topic) and each answer text ends up unique
+# (checked below) purely from `random.sample`'s own random ordering, same convention as `_WORDS_RELIABILITY`/
+# `_WORDS_SUPPORT` above; no digits/capitals/@ anywhere, so nothing here is ever touched by PII masking.
+_SUB_WORDS = {
+    0: ["delivery", "arrived", "late", "shipping", "package", "delayed", "tracking", "slow", "days", "waited"],
+    1: ["wrong", "item", "received", "incorrect", "order", "mismatched", "size", "color", "swapped", "mistake"],
+    2: ["damaged", "box", "broken", "packaging", "crushed", "dented", "torn", "cracked", "wrapped", "return"],
+    "b": ["staff", "polite", "cheerful", "welcoming", "checkout", "friendly", "helpful", "wonderful", "team", "attentive"],
+}
+
+
+def _family_vectors_and_groups():
+    """Deterministic (fixed seed): 300-dim unit vectors for `_SUB_GROUP_SIZES` answers across 3 sub-groups
+    that all sit close to one shared base direction (so top-level clustering merges them into one theme),
+    plus `_SUB_B_SIZE` answers from a wholly separate direction (a second, ordinary top-level theme).
+    Returns `(vectors, group_of_each_row)` - `group_of_each_row[i]` is `0`/`1`/`2` for a sub-group or `"b"`.
+    """
+    rng = np.random.RandomState(7)
+    base = rng.normal(size=_SUB_DIM)
+    base /= np.linalg.norm(base)
+
+    vectors: list[np.ndarray] = []
+    groups: list = []
+    for g, n in enumerate(_SUB_GROUP_SIZES):
+        center = base + _SUB_DELTA_SCALE * rng.normal(size=_SUB_DIM)
+        center /= np.linalg.norm(center)
+        for _ in range(n):
+            v = center + rng.normal(scale=_SUB_MEMBER_NOISE, size=_SUB_DIM)
+            v /= np.linalg.norm(v)
+            vectors.append(v)
+            groups.append(g)
+
+    b_center = rng.normal(size=_SUB_DIM)
+    b_center /= np.linalg.norm(b_center)
+    for _ in range(_SUB_B_SIZE):
+        v = b_center + rng.normal(scale=_SUB_B_NOISE, size=_SUB_DIM)
+        v /= np.linalg.norm(v)
+        vectors.append(v)
+        groups.append("b")
+
+    return np.asarray(vectors, dtype="float32"), groups
+
+
+def big_theme_df_and_vectors() -> tuple[pd.DataFrame, dict[str, list[float]]]:
+    """A ~200-answer survey with one big (130-answer, 3-sub-group) theme plus a smaller, ordinary theme -
+    real enough sub-structure for `sub_cluster_themes` to actually recover something, paired with a
+    text -> vector mapping for `FakeFamilyEmbeddingClient` below."""
+    vectors, groups = _family_vectors_and_groups()
+    rng = random.Random(99)
+    texts: list[str] = []
+    for g in groups:
+        words = _SUB_WORDS[g]
+        k = rng.randint(5, min(8, len(words)))
+        texts.append(" ".join(rng.sample(words, k)))
+    assert len(set(texts)) == len(texts), "generated answer texts must be unique (cleaning dedup safety)"
+
+    df = pd.DataFrame({"Respondent ID": range(1, len(texts) + 1), Q: texts}).astype(object)
+    vectors_by_text = dict(zip(texts, vectors.tolist()))
+    return df, vectors_by_text
+
+
+class FakeFamilyEmbeddingClient:
+    """Deterministic embedding fake that maps each EXACT (masked) answer text to a precomputed vector from
+    `big_theme_df_and_vectors`'s own fixture, instead of `FakeEmbeddingClient`'s bag-of-words hash - see the
+    comment above `_SUB_DIM` for why a real family-clustered fixture is needed for a reliable nested split.
+    """
+
+    def __init__(self, vectors_by_text: dict[str, list[float]]) -> None:
+        self._vectors_by_text = vectors_by_text
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self._vectors_by_text[t] for t in texts]
+
+
+def _fake_claude_reply_sub_labeling_fails(prompt: str) -> str:
+    """Same shape as `_fake_claude_reply` for the MAIN theme-labeling call (one entry per cluster id, no
+    `parent_theme` key on any cluster) - but for the SUB-theme labeling call specifically (identified by
+    `parent_theme` being present on its cluster entries, see `labeling.label_sub_clusters`'s own request
+    shape), returns text that is not valid JSON at all, so `label_sub_clusters` raises `LabelingError` for
+    that one call only, never touching the main labeling step."""
+    payload = json.loads(prompt)
+    if payload["clusters"] and "parent_theme" in payload["clusters"][0]:
+        return "not json at all, sub-theme labeling is broken"
+    return _fake_claude_reply(prompt)
 
 
 # ---------------------------------------------------------------- fixtures
@@ -583,3 +692,107 @@ def test_watchdog_marks_a_truly_stuck_job_failed_without_stopping_the_real_threa
     time.sleep(0.3)
     still = env.client.get(f"/api/datasets/{did}/jobs/{job_id}")
     assert still.json()["status"] == "failed"  # not silently flipped back to "done"
+
+
+# ---------------------------------------------------------------- sub-themes (S2: storage + backend wiring)
+def test_build_themes_with_subthemes_end_to_end(env):
+    """The core ask of this stream: a real build against real (large-enough, family-clustered) sub-
+    structure produces stored `Theme.sub_themes`, not just `[]` everywhere - `FakeEmbeddingClient`'s
+    bag-of-words hash is too coarse for this (see the comment above `_SUB_DIM`), so this uses
+    `FakeFamilyEmbeddingClient` instead. Also covers the new `.../sub-themes/{index}/answers` route:
+    pagination, an out-of-range index, ownership isolation, and 404 for a theme with no sub-themes."""
+    uid1, uid2 = make_users(env, "clerk-sub-1", "clerk-sub-2")
+    as_user(uid1)
+
+    df, vectors_by_text = big_theme_df_and_vectors()
+    app.dependency_overrides[get_embedding_client] = lambda: FakeFamilyEmbeddingClient(vectors_by_text)
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply)
+    app.dependency_overrides[get_jev_client_factory] = lambda: (lambda: FakeJevClient(("pos", 0.8)))
+
+    did = upload_csv(env, df)
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert job["error"] is None
+
+    listed = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()
+    total_answers = listed["total_answers"]
+    themes = listed["themes"]
+    real_themes = [t for t in themes if t["label"] != "Other"]
+    big = max(real_themes, key=lambda t: t["size"])
+    assert big["size"] >= 100  # the 3 sub-groups merged into one top-level theme, exactly as designed
+
+    subs = big["sub_themes"]
+    assert 2 <= len(subs) <= 3  # subthemes.py: >=2 kept sub-clusters required to store any, capped at 3
+    total_sub_size = 0
+    for i, s in enumerate(subs):
+        assert s["index"] == i
+        assert s["label"] and s["description"]
+        assert s["size"] > 0
+        assert s["size_pct"] == pytest.approx(round(s["size"] / total_answers * 100, 1))
+        assert set(s["tone"]) == {"neg", "neu", "pos"}
+        assert abs(sum(s["tone"].values()) - 100) < 0.01
+        assert isinstance(s["sentiment"], float)
+        assert "answer_refs" not in s  # drill-down only, via the route below
+        total_sub_size += s["size"]
+    assert total_sub_size / big["size"] >= 0.5  # subthemes.py's own coverage gate
+
+    # a smaller, ordinary theme (the unrelated 35-answer family) never qualified for sub-clustering at all
+    smaller_real = [t for t in real_themes if t["id"] != big["id"]]
+    assert smaller_real and all(t["sub_themes"] == [] for t in smaller_real)
+
+    # drill-down into the big theme's first sub-theme: same pagination/real-text shape as the parent route
+    sub_ans = env.client.get(
+        f"/api/datasets/{did}/themes/{big['id']}/sub-themes/0/answers", params={"limit": 5, "offset": 0},
+    )
+    assert sub_ans.status_code == 200, sub_ans.text
+    body = sub_ans.json()
+    assert body["theme_id"] == big["id"] and body["sub_theme_index"] == 0
+    assert body["total"] == subs[0]["size"]
+    assert len(body["answers"]) == min(5, subs[0]["size"])
+    for a in body["answers"]:
+        assert a["text"].strip()
+        assert a["tone"] in ("neg", "neu", "pos")
+
+    # pagination offset works the same way theme_answers' own tests already check it
+    page2 = env.client.get(
+        f"/api/datasets/{did}/themes/{big['id']}/sub-themes/0/answers", params={"limit": 5, "offset": 5},
+    ).json()
+    assert {a["row"] for a in page2["answers"]}.isdisjoint({a["row"] for a in body["answers"]})
+
+    # out-of-range index -> 404, not a 500 or an empty-but-200 page
+    assert env.client.get(
+        f"/api/datasets/{did}/themes/{big['id']}/sub-themes/{len(subs)}/answers"
+    ).status_code == 404
+    assert env.client.get(f"/api/datasets/{did}/themes/{big['id']}/sub-themes/-1/answers").status_code == 404
+
+    # a theme with sub_themes == [] -> 404 for any index, including 0
+    other = smaller_real[0]
+    assert env.client.get(f"/api/datasets/{did}/themes/{other['id']}/sub-themes/0/answers").status_code == 404
+
+    # ownership isolation, reused correctly from `_own_dataset` via the same helper `theme_answers` uses
+    as_user(uid2)
+    assert env.client.get(
+        f"/api/datasets/{did}/themes/{big['id']}/sub-themes/0/answers"
+    ).status_code == 404
+
+
+def test_sub_theme_labeling_failure_falls_back_to_no_sub_themes_not_a_failed_job(env):
+    """Plan decision 10: an untrusted/broken reply from the SUB-theme-labeling call specifically (not the
+    main labeling call) must not fail the whole theme build - the job still reaches "done" with themes
+    stored, just with `sub_themes == []` on every theme."""
+    df, vectors_by_text = big_theme_df_and_vectors()
+    app.dependency_overrides[get_embedding_client] = lambda: FakeFamilyEmbeddingClient(vectors_by_text)
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply_sub_labeling_fails)
+    app.dependency_overrides[get_jev_client_factory] = lambda: (lambda: FakeJevClient(("pos", 0.8)))
+
+    did = upload_csv(env, df)
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done", job  # sub-theme labeling failing must never fail the whole build
+    assert job["error"] is None
+
+    themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    assert themes  # themes were still built and stored...
+    assert any(t["size"] >= 100 for t in themes)  # ...including the one that WOULD have split
+    assert all(t["sub_themes"] == [] for t in themes)  # ...just with no sub-themes on any of them

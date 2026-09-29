@@ -17,9 +17,14 @@ stream does not have yet):
     SPEC 9.3's other three kinds ("a theme raised more by one group than by the rest", "a number that
     moves with sentiment or score", "a trend over time") all need segment/score/date columns, which are
     SPEC.md build-order step 3 and out of scope here.
-  - Sub-themes are never populated (`ThemeNode.children` is always `[]`): the `Theme` table has no
-    sub-theme rows yet, so every ReportData this module builds has zero sub-themes. This is not
-    cosmetic - it changes which chart SPEC.md section 4's table says to use; see `pick_chart` below.
+  - Sub-themes ARE now populated when a theme qualifies (`Theme.sub_themes`, a second HDBSCAN pass inside
+    that theme's own answers - see `app/text_pipeline/subthemes.py` for the exact eligibility rule: only
+    the top handful of real themes by size, only above a minimum answer count, and only when enough
+    sub-clusters survive and cover enough of the parent to not visually mislead a treemap block). Most
+    themes still end up with `sub_themes == []` (too small, ranked too low, gated out, or "Other", which is
+    never sub-clustered) - `theme_nodes` below reads `t.sub_themes` directly, capped and filtered, into each
+    `ThemeNode.children`. This still does not change which chart SPEC.md section 4's table selects for a
+    finding; see `pick_chart` below and the `CHART_BY_KIND` comment for why sunburst/icicle stay unwired.
   - `ContextData` (question kind/framing/length) falls back to honest, generic defaults: nothing
     upstream (`app/profiling/claude_hook.py`) infers those fields yet, only column kind/unit and the
     question text itself.
@@ -41,7 +46,7 @@ from sqlalchemy.orm import Session
 
 from .chart_data import (
     ContextData, FreqData, MapData, OverviewData, PhraseData, QualityData, QuoteData, ReportData,
-    ScoreData, SegmentData, ThemeNode, ToneSplit, TrendData,
+    ScoreData, SegmentData, SubTheme, ThemeNode, ToneSplit, TrendData,
 )
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .findings_structured import (
@@ -89,11 +94,13 @@ MAX_CANDIDATES = 5  # SPEC.md section 5: "keep the top 3 to 5" - this is a cap, 
 # ---------------------------------------------------------------- chart selection (SPEC.md section 4)
 
 # SPEC.md section 4's table: "Sunburst: Open-ended text and 2 or more themes... Skip when fewer than 3
-# sub-themes in total, use treemap." Every ReportData this module builds has zero sub-themes (see module
-# docstring), which is always "fewer than 3" - so the sunburst row's own stated skip condition is always
-# met here, and its documented replacement (treemap) is what this module actually uses. Not a workaround:
-# it is the table's own fallback rule, applied honestly rather than rendering a sunburst with no outer
-# ring. See docs/DECISIONS.md.
+# sub-themes in total, use treemap." `pick_chart` below never selects sunburst/icicle for any finding kind
+# regardless of how many real sub-themes now exist (see module docstring) - not because sub-themes are
+# still unpopulated (they aren't, as of this stream), but because wiring that table row's own "3 or more
+# sub-themes in total" threshold check into `pick_chart` is separate, explicitly out-of-scope follow-up
+# work (see the plan's decision 11). Until that guard is added, treemap (this row's documented fallback)
+# is what this module actually uses - the table's own fallback rule, applied honestly rather than
+# rendering a sunburst with no outer ring. See docs/DECISIONS.md.
 CHART_BY_KIND = {
     "tone_contrast": "sentsun",  # table: "Sentiment sunburst or Marimekko", priority 4 - unaffected by the
                                  # sub-theme gap (its own skip condition is about sentiment spread, not sub-themes)
@@ -209,7 +216,16 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
     """Converts stored `Theme` rows into colour-assigned `ThemeNode`s: real themes largest-first get
     "t1".."t7" tokens via `_theme_color` (falling back to "other" beyond seven - see its own docstring),
     "Other" (if present) always goes last with the "other" token and a "Folded in: ..." note. `children`
-    is always `[]` (sub-theme wiring is out of scope for this stream - see the module docstring).
+    is built straight from `t.sub_themes` (see `app.models.Theme.sub_themes` and
+    `app/text_pipeline/subthemes.py`) - `[]` for a `Theme` that was not split (most of them - see the
+    module docstring's eligibility summary) or has no `sub_themes` at all (`None`, e.g. a row written
+    before this stream), exactly as before.
+
+    No signature change needed for real sub-themes to reach a caller: every one of this function's callers
+    already hands it live `Theme` ORM rows, so reading `t.sub_themes` here is enough - see the plan's
+    Context section for why (`build_report_data`, `app.api_themes.themes_chart`,
+    `app.api_report._structured_context_for` and `app.findings_structured.score_correlation_candidates`
+    all get real children for free, with zero interface changes).
 
     Extracted so this exact colour-assignment logic exists in exactly one place, reused by both
     `build_report_data` below (via its own local `_node` partial application) and
@@ -220,6 +236,20 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
     other = next((t for t in themes if t.label == OTHER_LABEL), None)
     ranked_real = sorted(real, key=lambda t: t.size, reverse=True)
 
+    def _children(t: Theme) -> list[SubTheme]:
+        # Capped to MAX_SUBTHEMES_PER_THEME (3) at the clustering step already (subthemes.py), but this is
+        # a second, independent guard here too (plan decision 7): `app.charts.py`'s treemap `MIX` list is a
+        # hardcoded 3-element list (a 4th sub-theme would raise `IndexError` there), and a sub-theme whose
+        # SHARE (not stored size) rounds to 0.0% on a very large dataset would crash squarify's divide-by-
+        # zero - so the `share > 0` filter is applied to the COMPUTED share below, after rounding, not to
+        # the stored `size` (which is always > 0 for anything that was actually kept and stored).
+        children: list[SubTheme] = []
+        for s in (t.sub_themes or [])[:3]:
+            share = round(s["size"] / total_answered * 100, 1) if total_answered else 0.0
+            if share > 0:
+                children.append(SubTheme(name=s["label"], share=share))
+        return children
+
     def _node(t: Theme, color: str, note: str = "") -> ThemeNode:
         share = round(t.size / total_answered * 100, 1) if total_answered else 0.0
         tone = t.tone or {}
@@ -227,7 +257,7 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
             name=t.label, share=share, sentiment=t.sentiment if t.sentiment is not None else 0.0,
             count=t.size, color=color,
             tones=ToneSplit(neg=tone.get("neg", 0.0), neu=tone.get("neu", 100.0), pos=tone.get("pos", 0.0)),
-            children=[],
+            children=_children(t),
             note=note,
         )
 
@@ -365,11 +395,13 @@ def _build_overview(nodes: list[ThemeNode], overall: float, total_rows: int, tot
     pct_answered = round(total_answered / total_rows * 100) if total_rows else 0
     blank = max(0, total_rows - total_answered)
     real_nodes = [n for n in nodes if n.color != "other"]
+    sub_theme_count = sum(len(n.children) for n in real_nodes)
 
     stats = [
         ("Responses", f"{total_rows:,}", ""),
         ("Answered", f"{pct_answered}%", f"({blank:,} blank, n/a or excluded)" if blank else ""),
-        ("Themes", str(len(real_nodes)), "(no sub-themes yet)"),
+        ("Themes", str(len(real_nodes)),
+         f"({sub_theme_count} sub-themes)" if sub_theme_count else "(no sub-themes)"),
         ("Average sentiment", f"{overall:+.2f}", ""),
     ]
     if answer_lengths:

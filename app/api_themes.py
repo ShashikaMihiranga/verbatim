@@ -10,6 +10,9 @@ POST /api/datasets/{id}/themes/build           validates everything cheap/instan
 GET  /api/datasets/{id}/themes?column=...      list stored themes for a column (poll this once the job for
                                                 that column is "done" - see app/api_jobs.py)
 GET  /api/datasets/{id}/themes/{tid}/answers   paginated, REAL (unmasked) verbatim text behind one theme
+GET  .../themes/{tid}/sub-themes/{i}/answers   same, for one theme's i-th sub-theme (see app/text_pipeline/
+                                                subthemes.py - a theme is split into up to 3 sub-themes only
+                                                when it qualifies; most themes' `sub_themes` stays `[]`)
 
 Everything is owner-only (same `current_user`/`_own_dataset` as uploads and cleaning). Only one or two
 build jobs run at once (`THEMES_CONCURRENCY`) - this is much heavier than cleaning (real embedding and
@@ -18,8 +21,8 @@ the shared thread/status-update helper this module shares with `app/api_report.p
 (2026-09-25 entry for the original concurrency/schema/DI choices; the dated "async build jobs" entry for
 why the request no longer blocks on the pipeline at all).
 
-Masking: `embed_and_cluster`/`label_clusters` only ever see text through `model_safe_column` (the pipeline's
-own contract - this module never touches `clean_df[column]` directly for that). The `/answers` route is
+Masking: `embed_and_cluster_with_vectors`/`label_clusters` only ever see text through `model_safe_column`
+(the pipeline's own contract - this module never touches `clean_df[column]` directly for that). The `/answers` route is
 different: the dataset's OWNER is looking at their own data, so it returns the real cleaned text, never the
 masked version - masking exists only for the boundary to an external model (SPEC.md section 9.6 only asks
 for suppression on sensitive/demographic columns and small groups, not on the owner's own view of their
@@ -28,6 +31,7 @@ own open-text answers).
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import threading
@@ -54,6 +58,7 @@ from .models import CleanedFile, Column, Dataset, Theme, User
 from .text_pipeline import (
     AnthropicClaudeClient,
     ClaudeClient,
+    Cluster,
     EmbeddingClient,
     EmbeddingNotConfigured,
     HttpJevClient,
@@ -62,17 +67,21 @@ from .text_pipeline import (
     JevNotConfigured,
     LabelingClaudeNotConfigured,
     LabelingError,
+    ThemeLabel,
     TooFewAnswers,
     VoyageEmbeddingClient,
-    embed_and_cluster,
+    embed_and_cluster_with_vectors,
     label_clusters,
+    label_sub_clusters,
     score_column,
     score_column_with_jev,
     score_text,
     tone_split,
 )
+from .text_pipeline.subthemes import sub_cluster_themes
 
 router = APIRouter(prefix="/api")
+log = logging.getLogger("verbatim.themes")
 
 # Embedding + Claude labelling of a full column means real network round trips, not just in-process pandas
 # work like cleaning - so the default concurrency cap is lower than `CLEAN_CONCURRENCY`'s.
@@ -151,6 +160,15 @@ def _theme_dict(t: Theme, total: int) -> dict:
         "sentiment": t.sentiment,
         "tone": t.tone,
         "confidence": "tentative" if is_other or not solid else "solid",
+        # Never `answer_refs` here - that stays drill-down-only, via GET .../sub-themes/{index}/answers.
+        "sub_themes": [
+            {
+                "index": i, "label": s["label"], "description": s["description"], "size": s["size"],
+                "size_pct": round(s["size"] / total * 100, 1) if total else 0.0,
+                "sentiment": s["sentiment"], "tone": s["tone"],
+            }
+            for i, s in enumerate(t.sub_themes or [])
+        ],
     }
 
 
@@ -160,20 +178,33 @@ class BuildRequest(BaseModel):
     use_jev_sentiment: bool = False
 
 
+def _aggregate_tone(rows: list[int], scores_by_row: dict[int, object]) -> tuple[dict, float]:
+    """Shared by `_write_theme_rows` for both a theme's own tone/sentiment and each of its sub-themes' -
+    lifted out of what used to be `_write_theme_rows`'s own inner `_aggregate` closure so it can be reused
+    for sub-theme rows too, not duplicated."""
+    theme_scores = [scores_by_row[r] for r in rows if r in scores_by_row]
+    ts = tone_split(theme_scores)
+    sentiment = sum(s.polarity for s in theme_scores) / len(theme_scores) if theme_scores else 0.0
+    return {"neg": ts.neg, "neu": ts.neu, "pos": ts.pos}, sentiment
+
+
 def _write_theme_rows(
     db: Session, dataset_id: int, column: str, result, labels, scores,
+    sub_clusters: dict[int, list[Cluster]] | None = None,
+    sub_labels: dict[int, list[ThemeLabel]] | None = None,
 ) -> list[Theme]:
     """The row-building/replace step `build_themes` used to run inline, synchronously, at the end of its
     request. Factored out so the background job thread (see `app/jobs.py`) can call it with its OWN
     short-lived `Session` once the real pipeline work finishes - the request's own `db` session is long
-    gone by then, since the request itself returned as soon as the job was created."""
-    scores_by_row = {s.row: s for s in scores if s is not None}
+    gone by then, since the request itself returned as soon as the job was created.
 
-    def _aggregate(rows: list[int]) -> tuple[dict, float]:
-        theme_scores = [scores_by_row[r] for r in rows if r in scores_by_row]
-        ts = tone_split(theme_scores)
-        sentiment = sum(s.polarity for s in theme_scores) / len(theme_scores) if theme_scores else 0.0
-        return {"neg": ts.neg, "neu": ts.neu, "pos": ts.pos}, sentiment
+    `sub_clusters`/`sub_labels` are optional (`None` = today's exact behaviour, every theme's `sub_themes`
+    ends up `[]`): `sub_clusters` is `subthemes.sub_cluster_themes`'s own return shape
+    (`{parent Cluster.id: [kept sub-Clusters, largest first]}`), `sub_labels` is `label_sub_clusters`'s
+    (`{parent Cluster.id: [ThemeLabel, ...]}`, same order as `sub_clusters[parent_id]`). A real theme whose
+    `cluster.id` is a key in BOTH gets a real `sub_themes` list; every other real theme, and "Other"
+    unconditionally (sub-clustering never touches noise/"Other" - see subthemes.py), gets `[]`."""
+    scores_by_row = {s.row: s for s in scores if s is not None}
 
     # `label_clusters` returns one entry per `result.clusters` (same order), plus at most one extra
     # "Other" entry appended at the end iff `result.noise` is non-empty - see its docstring.
@@ -186,19 +217,30 @@ def _write_theme_rows(
     new_rows: list[Theme] = []
     for cluster, label in zip(result.clusters, real_labels):
         rows = [m.row for m in cluster.members]
-        tone, sentiment = _aggregate(rows)
+        tone, sentiment = _aggregate_tone(rows, scores_by_row)
+
+        sub_themes_json: list[dict] = []
+        if sub_clusters and sub_labels and cluster.id in sub_clusters:
+            for sub_cluster, sub_label in zip(sub_clusters[cluster.id], sub_labels[cluster.id]):
+                sub_rows = [m.row for m in sub_cluster.members]
+                sub_tone, sub_sentiment = _aggregate_tone(sub_rows, scores_by_row)
+                sub_themes_json.append({
+                    "label": sub_label.label, "description": sub_label.description, "size": sub_label.size,
+                    "sentiment": sub_sentiment, "tone": sub_tone, "answer_refs": sub_rows,
+                })
+
         new_rows.append(Theme(
             dataset_id=dataset_id, column_id=column_id, column_name=column,
             label=label.label, description=label.description, size=label.size,
-            sentiment=sentiment, tone=tone, answer_refs=rows,
+            sentiment=sentiment, tone=tone, answer_refs=rows, sub_themes=sub_themes_json,
         ))
     for label in other_labels:
         rows = [m.row for m in result.noise]
-        tone, sentiment = _aggregate(rows)
+        tone, sentiment = _aggregate_tone(rows, scores_by_row)
         new_rows.append(Theme(
             dataset_id=dataset_id, column_id=column_id, column_name=column,
             label=label.label, description=label.description, size=label.size,
-            sentiment=sentiment, tone=tone, answer_refs=rows,
+            sentiment=sentiment, tone=tone, answer_refs=rows, sub_themes=[],
         ))
 
     # A rebuild replaces old themes with new ones atomically: either every step above succeeded and this
@@ -276,16 +318,31 @@ def build_themes(
 
     def _work(step: Callable[[str], None]) -> None:
         step("Turning answers into vectors")
-        result = embed_and_cluster(clean_df, plan, column, embedding_client)
+        result, embedded = embed_and_cluster_with_vectors(clean_df, plan, column, embedding_client)
         step("Naming each group")
         labels = label_clusters(result, question, claude_client)
+        step("Finding sub-themes")
+        sub_clusters = sub_cluster_themes(result, embedded)
+        step("Naming sub-themes")
+        parent_labels = {
+            cluster.id: label for cluster, label in zip(result.clusters, labels[: len(result.clusters)])
+        }
+        try:
+            sub_labels = label_sub_clusters(sub_clusters, parent_labels, question, claude_client)
+        except LabelingError as e:
+            # Sub-themes are an optional enhancement (plan decision 10): a broken/untrusted reply here must
+            # not fail the whole theme build - log it and fall back to no sub-themes for every theme, not
+            # a failed job. Any OTHER unexpected exception still propagates, same as everywhere else in
+            # this pipeline.
+            log.warning("sub-theme labeling failed for dataset %s column %r: %s", dataset_id_, column, e)
+            sub_labels = {}
         step("Scoring tone")
         if use_jev:
             scores = score_column_with_jev(clean_df, plan, column, jev_client)
         else:
             scores = score_column(clean_df, plan, column)
         with _db.SessionLocal() as job_db:
-            _write_theme_rows(job_db, dataset_id_, column, result, labels, scores)
+            _write_theme_rows(job_db, dataset_id_, column, result, labels, scores, sub_clusters, sub_labels)
 
     start_job(
         job, _SLOTS, _work, _theme_build_error,
@@ -368,19 +425,15 @@ def themes_chart(
     return {"chart_html": chart_html, "chart_width": chart_width, "chart_height": chart_height}
 
 
-@router.get("/datasets/{dataset_id}/themes/{theme_id}/answers")
-def theme_answers(
-    dataset_id: int, theme_id: int, limit: int = 20, offset: int = 0,
-    db: Session = Depends(get_db), user: User = Depends(current_user),
-):
-    ds = _own_dataset(db, user, dataset_id)
-    theme = db.get(Theme, theme_id)
-    if theme is None or theme.dataset_id != ds.id:
-        raise HTTPException(404, "Theme not found.")
-
+def _answers_page(
+    ds: Dataset, db: Session, column: str | None, refs: list[int], limit: int, offset: int,
+) -> tuple[int, int, list[dict]]:
+    """Shared pagination/real-text lookup, extracted from what used to be `theme_answers`'s own inline
+    body so `sub_theme_answers` below can reuse it against a sub-theme's own `answer_refs` instead of a
+    parent `Theme` row's. Returns the clamped `(limit, offset, answers)` - same clamping/lookup behaviour
+    as before this extraction, byte-identical for `theme_answers` itself."""
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    refs = theme.answer_refs or []
     page = refs[offset: offset + limit]
 
     answers: list[dict] = []
@@ -388,7 +441,6 @@ def theme_answers(
         # Real, unmasked cleaned text: the dataset's owner is looking at their own answers, not sending
         # them to a model - `model_safe_column` is deliberately NOT used here (see module docstring).
         clean_df, _plan = _load_clean_df(ds, db)
-        column = theme.column_name
         for row in page:
             try:
                 raw = clean_df.at[row, column] if column else None
@@ -401,4 +453,43 @@ def theme_answers(
             _polarity, tone = score_text(raw)
             answers.append({"row": int(row), "text": raw, "tone": tone})
 
+    return limit, offset, answers
+
+
+@router.get("/datasets/{dataset_id}/themes/{theme_id}/answers")
+def theme_answers(
+    dataset_id: int, theme_id: int, limit: int = 20, offset: int = 0,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    ds = _own_dataset(db, user, dataset_id)
+    theme = db.get(Theme, theme_id)
+    if theme is None or theme.dataset_id != ds.id:
+        raise HTTPException(404, "Theme not found.")
+
+    refs = theme.answer_refs or []
+    limit, offset, answers = _answers_page(ds, db, theme.column_name, refs, limit, offset)
     return {"theme_id": theme.id, "total": len(refs), "limit": limit, "offset": offset, "answers": answers}
+
+
+@router.get("/datasets/{dataset_id}/themes/{theme_id}/sub-themes/{index}/answers")
+def sub_theme_answers(
+    dataset_id: int, theme_id: int, index: int, limit: int = 20, offset: int = 0,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Same ownership/pagination/real-text contract as `theme_answers` above, reused via `_answers_page`
+    rather than duplicated - drill-down for one sub-theme's own answers (`Theme.sub_themes[index]`)."""
+    ds = _own_dataset(db, user, dataset_id)
+    theme = db.get(Theme, theme_id)
+    if theme is None or theme.dataset_id != ds.id:
+        raise HTTPException(404, "Theme not found.")
+
+    subs = theme.sub_themes or []
+    if index < 0 or index >= len(subs):
+        raise HTTPException(404, "Sub-theme not found.")
+    sub = subs[index]
+    refs = sub.get("answer_refs") or []
+    limit, offset, answers = _answers_page(ds, db, theme.column_name, refs, limit, offset)
+    return {
+        "theme_id": theme.id, "sub_theme_index": index, "total": len(refs),
+        "limit": limit, "offset": offset, "answers": answers,
+    }

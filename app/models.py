@@ -69,6 +69,13 @@ class Theme(Base):
     tone: Mapped[dict | None] = mapped_column(JSON)
     # row indexes of real answers behind this theme
     answer_refs: Mapped[list | None] = mapped_column(JSON)
+    # up to 3 sub-themes (second HDBSCAN pass inside this theme's own answers - see
+    # app/text_pipeline/subthemes.py), largest first. Each entry:
+    # {"label": str, "description": str, "size": int, "sentiment": float,
+    #  "tone": {"neg": float, "neu": float, "pos": float}, "answer_refs": list[int]}.
+    # [] when this theme was not split (below the size floor, capped out at t1..t7, coverage/count
+    # gates not met, or labeling failed) or is "Other" (never sub-clustered).
+    sub_themes: Mapped[list | None] = mapped_column(JSON)
 
 
 class Finding(Base):
