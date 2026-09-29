@@ -35,6 +35,24 @@ interface ThemeChartProps {
 // look across renders.
 export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChartProps) {
   const ref = useRef<HTMLDivElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  // .rp-chart-scroll's own scrollLeft is browser-owned state that outlives a resize: if a viewer scrolls
+  // this chart while the window is narrow (more of the chart's fixed pixel width needs scrolling), then
+  // widens the window, the browser clamps the stale scrollLeft to the new, smaller max-scroll instead of
+  // resetting it to 0 - so the chart stays shifted and its own left edge (title, first cell, first stat)
+  // renders clipped even though the chart may now fit almost entirely. A ResizeObserver on the scroll
+  // container resets scrollLeft to 0 whenever its size changes, so widening the window always shows the
+  // chart's start, matching what a viewer actually expects from "I made the window bigger."
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const observer = new ResizeObserver(() => {
+      el.scrollLeft = 0
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [fragment.chart_html])
 
   useEffect(() => {
     const root = ref.current
@@ -85,7 +103,7 @@ export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChar
   }, [fragment.chart_html, onThemeSelect])
 
   return (
-    <div className="rp-chart-scroll">
+    <div className="rp-chart-scroll" ref={scrollRef}>
       <div
         ref={ref}
         className="rp-chart"

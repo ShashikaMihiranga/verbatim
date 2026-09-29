@@ -20,6 +20,21 @@ const TWO_THEME_FRAGMENT = `<svg width="200" height="100">
   <g data-theme="Charging"><rect id="charging-rect" x="100" y="0" width="100" height="100"/></g>
 </svg>`
 
+// jsdom has no layout engine, so it never fires a real ResizeObserver - this fake captures the callback
+// ThemeChart registers so a test can invoke it directly, the same way a real browser would after an
+// actual container resize.
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = []
+  callback: ResizeObserverCallback
+  observe = vi.fn()
+  disconnect = vi.fn()
+  unobserve = vi.fn()
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback
+    FakeResizeObserver.instances.push(this)
+  }
+}
+
 let container: HTMLDivElement
 let root: Root
 
@@ -27,12 +42,15 @@ beforeEach(() => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
+  FakeResizeObserver.instances = []
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver)
 })
 
 afterEach(() => {
   act(() => root.unmount())
   container.remove()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function fragment() {
@@ -108,5 +126,36 @@ describe('ThemeChart', () => {
       onlyRect.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(onThemeSelect).toHaveBeenCalledWith('Only')
+  })
+
+  it('resets the scroll container to scrollLeft 0 when it is resized', () => {
+    // Regression test: .rp-chart-scroll's scrollLeft is browser-owned state that outlives a resize - a
+    // chart scrolled while the window was narrow stayed clipped after widening, because the browser
+    // clamps a stale scrollLeft to the new max instead of resetting it to 0. See docs/DECISIONS.md.
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} />)
+    })
+
+    const scrollDiv = container.querySelector('.rp-chart-scroll') as HTMLElement
+    scrollDiv.scrollLeft = 150
+
+    expect(FakeResizeObserver.instances).toHaveLength(1)
+    const observer = FakeResizeObserver.instances[0]
+    expect(observer.observe).toHaveBeenCalledWith(scrollDiv)
+
+    act(() => {
+      observer.callback([], observer as unknown as ResizeObserver)
+    })
+
+    expect(scrollDiv.scrollLeft).toBe(0)
+  })
+
+  it('disconnects the resize observer on unmount', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} />)
+    })
+    const observer = FakeResizeObserver.instances[0]
+    act(() => root.unmount())
+    expect(observer.disconnect).toHaveBeenCalledTimes(1)
   })
 })
