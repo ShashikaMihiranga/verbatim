@@ -324,3 +324,37 @@
   sub-cluster merge under the existing big-fixture machinery); `tests/test_charts_data.py` gained the
   remainder-cell tests described above; `frontend/src/ThemeDetail.test.tsx` gained a case with a small
   sub-theme share against a small parent share, the realistic shape the old formula got wrong.
+
+## 2026-09-30 (rank-8+ themes merge into "Other" upstream, in theme_nodes())
+- Real bug on a real dataset (>7 real themes): `_theme_color`'s 7-token palette fallback meant every real
+  theme ranked 8th or beyond got the same generic "other" colour as the genuine noise cluster - several
+  differently-named `ThemeNode`s all rendering as one indistinguishable grey blob in every chart, some too
+  thin for `arc_label()` (`app/charts.py`) to fit any text in at all.
+- Given a choice between a narrow chart-level fix (only `f_sentsun`/`f_byscore` merge their own rank-8+
+  rows) and an upstream fix (merge once, in `app.findings.theme_nodes()`, so every consumer sees the same
+  already-merged list), the user explicitly chose upstream, overriding the narrower recommendation.
+- Investigating upstream surfaced a real correctness gap before implementing: `build_score_data`/
+  `build_segment_data`/`build_trend_data` and the segment-skew/score-correlation/trend-shift finding
+  candidates all resolved a `ThemeNode` back to its source `Theme` row via `_themes_by_label()`, a
+  `{Theme.label: Theme}` dict keyed off the RAW unmerged rows - relying on a "node name always equals one
+  real Theme.label" invariant that a genuine upstream merge would break (a merged node's name would
+  resolve to only one of several folded rows' `answer_refs`, silently undercounting every downstream
+  cross-tab for that bucket). Reported to the user before implementing; confirmed proceeding with the
+  full fix rather than the narrower one.
+- Fix: `ThemeNode` (`app/chart_data.py`) gained `answer_refs: list[int]` and `theme_id: int | None`.
+  `theme_nodes()` now keeps only the top 7 real themes as their own node; every real theme ranked 8th+,
+  plus the genuine noise cluster (whichever are present), fold into ONE new node via `_merge_into_other`
+  (summed count/share, count-weighted sentiment/tone, unioned `answer_refs`, `theme_id` staying a real id
+  only when exactly one theme is folded - byte-compatible with the common <=7-real-themes case).
+  `build_score_data`/`build_segment_data`/`build_trend_data` now read `node.answer_refs`/`node.sentiment`
+  directly instead of bridging through `_themes_by_label`, which is now deleted; the three candidate
+  functions resolve `Candidate.theme_id` from `ThemeNode.theme_id` the same way (`None` for a genuinely
+  merged bucket - already a pre-existing, already-handled case in the frontend, which types
+  `Finding.theme_id` as `number | null` and gates the "See answers" link on it being non-null).
+- Verified live against a real stored dataset with 11 real themes + noise (`Amazon_reviews.csv`,
+  1,597 answered): `theme_nodes()` now returns exactly 8 nodes (7 real + 1 merged "Other", 469 answers,
+  29.4% share, `theme_id=None`); rendered `byScore`/`sentsun` HTML shows exactly 8 legend entries, one per
+  colour token, with none of the folded-in real themes' names leaking into the chart; the merged answer_refs
+  union exactly equals the raw themes' union (1,597 of 1,597, no overlap, no undercount). A second, <=7-real-
+  theme dataset (`Womens Clothing E-Commerce Reviews.csv`) was confirmed unaffected: 6 nodes, unchanged,
+  each keeping its own real `theme_id`.

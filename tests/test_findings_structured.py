@@ -269,7 +269,7 @@ def test_build_score_data_hand_computable_mix_sentiment_and_answers():
         4: 2, 5: 7, 6: 8, 7: 9,   # B: Low, Middle, Middle, High
         8: 5, 9: 10,              # Other: Low, High
     }
-    data = build_score_data("Score", (0, 10), raw_by_row, themes, nodes, floor=2)
+    data = build_score_data("Score", (0, 10), raw_by_row, nodes, floor=2)
     assert data is not None
     assert data.name == "Score"
     by_label = {b.label: b for b in data.bands}
@@ -298,7 +298,7 @@ def test_build_score_data_drops_bands_below_floor_but_keeps_the_rest():
         0: 3, 1: 4, 2: 9, 3: 9, 4: 2, 5: 7, 6: 8, 7: 9, 8: 5, 9: 10,
     }
     # Middle only has 2 answers (rows 5, 6) - below floor=3, dropped; Low (4) and High (4) survive.
-    data = build_score_data("Score", (0, 10), raw_by_row, themes, nodes, floor=3)
+    data = build_score_data("Score", (0, 10), raw_by_row, nodes, floor=3)
     assert data is not None
     assert {b.label for b in data.bands} == {"Low (0-6)", "High (9-10)"}
 
@@ -310,13 +310,13 @@ def test_build_score_data_returns_none_when_fewer_than_two_bands_survive():
         0: 3, 1: 4, 2: 9, 3: 9, 4: 2, 5: 7, 6: 8, 7: 9, 8: 5, 9: 10,
     }
     # floor=5 - every band (4, 2, 4 answers) falls below it, so 0 survive.
-    assert build_score_data("Score", (0, 10), raw_by_row, themes, nodes, floor=5) is None
+    assert build_score_data("Score", (0, 10), raw_by_row, nodes, floor=5) is None
 
 
 def test_build_score_data_returns_none_when_no_row_has_a_valid_score():
     themes = abc_themes()
     nodes = theme_nodes(themes, total_answered=10)
-    assert build_score_data("Score", (0, 10), {}, themes, nodes, floor=2) is None
+    assert build_score_data("Score", (0, 10), {}, nodes, floor=2) is None
 
 
 # -------------------------------------------------------------------- build_segment_data
@@ -337,7 +337,7 @@ def test_build_segment_data_hand_computable_values_overall_and_highlight():
         5: "G1", 6: "G1", 7: "G2", 8: "G2", 9: "G2",           # B: G1, G1, G2, G2, G2
         10: "G1", 11: "G2", 12: "G2", 13: "G2", 14: "G2",      # Other: G1, G2, G2, G2, G2
     }
-    data = build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=2)
+    data = build_segment_data("Segment", raw_by_row, nodes, floor=2, heatmap_group_floor=2)
     assert data is not None
     assert data.name == "Segment"
     # G2 (10) is larger than G1 (5), so groups sort largest-first: G2 then G1.
@@ -365,7 +365,7 @@ def test_build_segment_data_drops_groups_below_heatmap_floor():
     raw_by_row = {i: "Big" for i in range(8)}
     raw_by_row.update({8: "Tiny", 9: "Tiny"})
     # "Big" has 8 rows, "Tiny" has 2 - below heatmap_group_floor=5, dropped.
-    data = build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=5)
+    data = build_segment_data("Segment", raw_by_row, nodes, floor=2, heatmap_group_floor=5)
     assert data is None  # only 1 group survives
 
 
@@ -373,7 +373,7 @@ def test_build_segment_data_returns_none_when_fewer_than_two_groups_survive():
     themes = abc_themes()
     nodes = theme_nodes(themes, total_answered=10)
     raw_by_row = {i: "OnlyGroup" for i in range(10)}
-    assert build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=5) is None
+    assert build_segment_data("Segment", raw_by_row, nodes, floor=2, heatmap_group_floor=5) is None
 
 
 def test_build_segment_data_skips_rows_whose_overall_share_is_zero():
@@ -385,7 +385,7 @@ def test_build_segment_data_skips_rows_whose_overall_share_is_zero():
     ]
     nodes = theme_nodes(themes, total_answered=10)
     raw_by_row = {i: ("G1" if i < 5 else "G2") for i in range(10)}
-    data = build_segment_data("Segment", raw_by_row, themes, nodes, floor=2, heatmap_group_floor=2)
+    data = build_segment_data("Segment", raw_by_row, nodes, floor=2, heatmap_group_floor=2)
     assert data is not None
     a_row = next(r for r in data.rows if r.theme == "A")
     assert a_row.overall == 0.0
@@ -431,7 +431,7 @@ def test_build_trend_data_hand_computable_shares_sentiment_and_hover_index():
     nodes = theme_nodes(themes, total_answered=90)
     assert [n.name for n in nodes] == ["A", "B", "Other"]
 
-    data = build_trend_data("Date", raw_by_row, themes, nodes, date_bands, "Monthly, P1 to P3.", floor=30)
+    data = build_trend_data("Date", raw_by_row, nodes, date_bands, "Monthly, P1 to P3.", floor=30)
     assert data is not None
     assert data.labels == ["P1", "P2", "P3"]
     assert data.note == "Monthly, P1 to P3."
@@ -456,7 +456,7 @@ def test_build_trend_data_drops_periods_under_thirty_and_needs_at_least_three():
     raw_by_row = {r: float(r) for r in range(60)}
     # Both periods individually have 30 answers (>= 30), but only 2 periods total exist - below the
     # "need at least 3 periods" floor, so this must return None regardless of per-period counts.
-    assert build_trend_data("Date", raw_by_row, themes, nodes, date_bands, "note", floor=30) is None
+    assert build_trend_data("Date", raw_by_row, nodes, date_bands, "note", floor=30) is None
 
 
 def test_build_trend_data_returns_none_when_a_period_is_too_small():
@@ -464,7 +464,7 @@ def test_build_trend_data_returns_none_when_a_period_is_too_small():
     nodes = theme_nodes(themes, total_answered=89)
     date_bands = [Band("P1", 0, 29), Band("P2", 30, 59), Band("P3", 60, 88)]  # P3 has only 29 rows
     raw_by_row = {r: float(r) for r in range(89)}
-    data = build_trend_data("Date", raw_by_row, themes, nodes, date_bands, "note", floor=30)
+    data = build_trend_data("Date", raw_by_row, nodes, date_bands, "note", floor=30)
     assert data is None  # only P1 and P2 survive - below the "at least 3" floor
 
 

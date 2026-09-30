@@ -39,10 +39,11 @@ QUESTION = "Why haven't you bought an electric vehicle yet?"
 # ---------------------------------------------------------------- fixture builders
 
 def make_theme(tid, label, size, sentiment, tone=None, column_name="Why", dataset_id=1, description=None,
-               sub_themes=None):
+               sub_themes=None, answer_refs=None):
     t = Theme(
         dataset_id=dataset_id, column_name=column_name, label=label, description=description,
-        size=size, sentiment=sentiment, tone=tone or {"neg": 34.0, "neu": 33.0, "pos": 33.0}, answer_refs=[],
+        size=size, sentiment=sentiment, tone=tone or {"neg": 34.0, "neu": 33.0, "pos": 33.0},
+        answer_refs=answer_refs if answer_refs is not None else [],
         sub_themes=sub_themes,
     )
     t.id = tid  # unpersisted rows: assign a stable fake id so Candidate.id stays unique across kinds/tests
@@ -255,6 +256,76 @@ def test_theme_nodes_drops_sub_themes_whose_share_rounds_to_zero():
     themes = [make_theme(1, "Cost", 5_001, -0.1, sub_themes=sub_themes)]
     nodes = theme_nodes(themes, total_answered=2_000_000)
     assert [c.name for c in nodes[0].children] == ["Real sub-theme"]
+
+
+# ==================================================================== theme_nodes (rank-8+ / Other merge)
+
+def test_theme_nodes_real_node_carries_its_own_answer_refs_and_theme_id():
+    themes = [make_theme(1, "Cost", 100, -0.1, answer_refs=[3, 1, 2])]
+    nodes = theme_nodes(themes, total_answered=100)
+    assert nodes[0].answer_refs == [1, 2, 3]  # sorted
+    assert nodes[0].theme_id == 1
+
+
+def test_theme_nodes_up_to_seven_real_themes_each_keep_their_own_node():
+    """<=7 real themes (the common case): unchanged from before this fix - each real theme gets its own
+    node/colour, and a lone "Other" node's theme_id stays a real id (not None), byte-compatible with the
+    pre-merge behaviour."""
+    themes = [make_theme(i, f"T{i}", 100 - i, 0.0, answer_refs=[i]) for i in range(1, 8)]
+    other = make_theme(8, "Other", 10, 0.0, answer_refs=[100])
+    nodes = theme_nodes(themes + [other], total_answered=710)
+    assert [n.name for n in nodes] == ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "Other"]
+    assert [n.color for n in nodes] == ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "other"]
+    assert nodes[-1].theme_id == 8  # only the noise cluster folded in - a real, single id, not None
+    assert nodes[-1].answer_refs == [100]
+
+
+def test_theme_nodes_merges_rank_eight_plus_real_themes_with_other_into_one_node():
+    """The bug this fixes: a dataset with >7 real themes used to give ranks 8+ their own nodes, each
+    sharing the same "other" colour as the genuine noise cluster - several indistinguishable grey nodes.
+    Now every one of them, plus the noise cluster, becomes exactly ONE merged node."""
+    kept = [make_theme(i, f"T{i}", 100 - i, 0.1 * i, answer_refs=[i]) for i in range(1, 8)]  # ranks 1-7
+    overflow = [
+        make_theme(8, "Fabric quality", 20, -0.4, answer_refs=[80, 81]),
+        make_theme(9, "Delivery speed", 15, 0.2, answer_refs=[90]),
+    ]
+    other = make_theme(10, "Other", 10, 0.0, answer_refs=[100, 101])
+    nodes = theme_nodes(kept + overflow + [other], total_answered=200)
+
+    assert [n.name for n in nodes] == ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "Other"]
+    assert [n.color for n in nodes] == ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "other"]
+    merged = nodes[-1]
+    assert merged.count == 20 + 15 + 10  # 45
+    assert merged.share == pytest.approx(22.5)  # 45/200
+    assert merged.answer_refs == [80, 81, 90, 100, 101]
+    assert merged.theme_id is None  # 3 themes folded together - no single Theme row represents this
+    assert merged.sentiment == pytest.approx((-0.4 * 20 + 0.2 * 15 + 0.0 * 10) / 45, abs=1e-3)
+    assert "Fabric quality" in merged.note and "Delivery speed" in merged.note
+
+
+def test_theme_nodes_merge_note_preserves_noise_only_wording_when_no_overflow():
+    """Pin: when there's no real rank-8+ overflow (<=7 real themes), the merged node's note text stays
+    byte-identical to the pre-merge behaviour - only genuinely folding in extra real themes changes it."""
+    themes = [make_theme(1, "Cost", 100, 0.0)]
+    other = make_theme(2, "Other", 20, 0.0, description="Answers about unrelated topics.")
+    nodes = theme_nodes(themes + [other], total_answered=120)
+    assert nodes[-1].note == "Folded in: Answers about unrelated topics."
+
+    other_no_desc = make_theme(2, "Other", 20, 0.0, description=None)
+    nodes2 = theme_nodes(themes + [other_no_desc], total_answered=120)
+    assert nodes2[-1].note == "Folded in: answers too rare, unclear or distinct to group into a theme."
+
+
+def test_theme_nodes_merges_overflow_even_with_no_noise_cluster_present():
+    """A dataset can have >7 real themes and no noise cluster at all (nothing was too rare/unclear) - the
+    overflow must still merge into one node, not be silently dropped."""
+    kept = [make_theme(i, f"T{i}", 100 - i, 0.0, answer_refs=[i]) for i in range(1, 8)]
+    overflow = [make_theme(8, "Extra", 5, 0.0, answer_refs=[80])]
+    nodes = theme_nodes(kept + overflow, total_answered=700)
+    assert nodes[-1].name == "Other"
+    assert nodes[-1].count == 5
+    assert nodes[-1].theme_id == 8  # exactly one theme folded in - still a real single id
+    assert nodes[-1].note == "Folded in: Extra."
 
 
 # ==================================================================== build_report_data + render() smoke test

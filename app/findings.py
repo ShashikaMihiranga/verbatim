@@ -214,12 +214,11 @@ def _theme_color(rank_index: int) -> str:
 
 def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
     """Converts stored `Theme` rows into colour-assigned `ThemeNode`s: real themes largest-first get
-    "t1".."t7" tokens via `_theme_color` (falling back to "other" beyond seven - see its own docstring),
-    "Other" (if present) always goes last with the "other" token and a "Folded in: ..." note. `children`
-    is built straight from `t.sub_themes` (see `app.models.Theme.sub_themes` and
-    `app/text_pipeline/subthemes.py`) - `[]` for a `Theme` that was not split (most of them - see the
-    module docstring's eligibility summary) or has no `sub_themes` at all (`None`, e.g. a row written
-    before this stream), exactly as before.
+    "t1".."t7" tokens via `_theme_color` (only the first 7 real themes get their own node - see below),
+    "Other" (if present) always goes last with the "other" token. `children` is built straight from
+    `t.sub_themes` (see `app.models.Theme.sub_themes` and `app/text_pipeline/subthemes.py`) - `[]` for a
+    `Theme` that was not split (most of them - see the module docstring's eligibility summary) or has no
+    `sub_themes` at all (`None`, e.g. a row written before this stream), exactly as before.
 
     No signature change needed for real sub-themes to reach a caller: every one of this function's callers
     already hands it live `Theme` ORM rows, so reading `t.sub_themes` here is enough - see the plan's
@@ -231,10 +230,20 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
     `build_report_data` below (via its own local `_node` partial application) and
     `app.api_themes.themes_chart` (the lightweight "one chart, not a wall of cards" endpoint for the
     Themes screen, which needs the same `Theme` rows -> `ThemeNode`s conversion but has no `Dataset`/
-    `cleaning_report`/`ReportData` context to call the full `build_report_data` with)."""
+    `cleaning_report`/`ReportData` context to call the full `build_report_data` with).
+
+    A dataset with more than 7 real themes used to give every theme beyond the 7th its own `ThemeNode`,
+    just with `_theme_color`'s same "other" fallback colour as the genuine noise cluster - several
+    differently-named nodes all rendering as one indistinguishable grey blob in every chart, some too thin
+    for a wedge label at all (confirmed on a real hotel-reviews dataset with 25+ real themes). Real themes
+    beyond the top 7 (`overflow_real`) are now folded into the SAME single node as the noise cluster via
+    `_merge_into_other` below, so every consumer - charts and the score/segment/trend cross-tab engine
+    alike - sees at most 8 nodes total (7 real + 1 merged "Other"), never more than one node sharing the
+    "other" colour."""
     real = [t for t in themes if t.label != OTHER_LABEL]
     other = next((t for t in themes if t.label == OTHER_LABEL), None)
     ranked_real = sorted(real, key=lambda t: t.size, reverse=True)
+    kept_real, overflow_real = ranked_real[:7], ranked_real[7:]
 
     def _children(t: Theme) -> list[SubTheme]:
         # Capped to MAX_SUBTHEMES_PER_THEME (3) at the clustering step already (subthemes.py), but this is
@@ -250,7 +259,7 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
                 children.append(SubTheme(name=s["label"], share=share))
         return children
 
-    def _node(t: Theme, color: str, note: str = "") -> ThemeNode:
+    def _node(t: Theme, color: str) -> ThemeNode:
         share = round(t.size / total_answered * 100, 1) if total_answered else 0.0
         tone = t.tone or {}
         return ThemeNode(
@@ -258,14 +267,52 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
             count=t.size, color=color,
             tones=ToneSplit(neg=tone.get("neg", 0.0), neu=tone.get("neu", 100.0), pos=tone.get("pos", 0.0)),
             children=_children(t),
-            note=note,
+            answer_refs=sorted(t.answer_refs or []), theme_id=t.id,
         )
 
-    nodes = [_node(t, _theme_color(i)) for i, t in enumerate(ranked_real)]
-    if other is not None:
-        note = f"Folded in: {other.description}" if other.description else \
-            "Folded in: answers too rare, unclear or distinct to group into a theme."
-        nodes.append(_node(other, "other", note=note))
+    def _merge_into_other(overflow: list[Theme], other: Theme | None) -> ThemeNode:
+        """Combines every real theme ranked 8th+ plus the genuine noise cluster (whichever of the two are
+        present) into ONE node, colour "other" - see the module-level note above for why. `answer_refs` is
+        the union of every folded theme's own `answer_refs`, so downstream cross-tab counts
+        (`app.findings_structured.build_score_data` et al.) still count every merged answer correctly.
+        `theme_id` stays a real id (not None) when exactly one theme is being folded - the common case of
+        a dataset with <=7 real themes and just the noise cluster, byte-identical to this function's
+        pre-merge behaviour."""
+        merged = overflow + ([other] if other is not None else [])
+        total_count = sum(t.size for t in merged)
+        share = round(total_count / total_answered * 100, 1) if total_answered else 0.0
+        sentiment = sum((t.sentiment or 0.0) * t.size for t in merged) / total_count if total_count else 0.0
+        tone_totals = {"neg": 0.0, "neu": 0.0, "pos": 0.0}
+        for t in merged:
+            tone = t.tone or {}
+            for k in tone_totals:
+                tone_totals[k] += tone.get(k, 0.0) * t.size
+        tones = ToneSplit(
+            neg=round(tone_totals["neg"] / total_count, 1) if total_count else 0.0,
+            neu=round(tone_totals["neu"] / total_count, 1) if total_count else 100.0,
+            pos=round(tone_totals["pos"] / total_count, 1) if total_count else 0.0,
+        )
+        answer_refs = sorted({r for t in merged for r in (t.answer_refs or [])})
+        theme_id = merged[0].id if len(merged) == 1 else None
+
+        if overflow:
+            folded_names = ", ".join(t.label for t in overflow)
+            note = (f"Folded in: {folded_names}, plus answers too rare, unclear or distinct to group "
+                    "into a theme.") if other is not None else f"Folded in: {folded_names}."
+        elif other is not None:
+            note = f"Folded in: {other.description}" if other.description else \
+                "Folded in: answers too rare, unclear or distinct to group into a theme."
+        else:
+            note = ""
+
+        return ThemeNode(
+            name=OTHER_LABEL, share=share, sentiment=round(sentiment, 3), count=total_count, color="other",
+            tones=tones, note=note, answer_refs=answer_refs, theme_id=theme_id,
+        )
+
+    nodes = [_node(t, _theme_color(i)) for i, t in enumerate(kept_real)]
+    if overflow_real or other is not None:
+        nodes.append(_merge_into_other(overflow_real, other))
     return nodes
 
 

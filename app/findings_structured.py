@@ -399,19 +399,11 @@ def theme_answer_rows(themes: list["Theme"]) -> list[int]:
     return sorted({r for t in themes for r in (t.answer_refs or [])})
 
 
-def _themes_by_label(themes: list["Theme"]) -> dict[str, "Theme"]:
-    """`ThemeNode.name` (from `app.findings.theme_nodes`) always equals the source `Theme.label` it was
-    built from - this is how every function below re-associates a `ThemeNode` (colour-assigned, correctly
-    ordered) with the real `Theme` row (answer_refs, aggregate sentiment) it came from, without threading a
-    second parallel list through every call."""
-    return {t.label: t for t in themes}
-
-
 # -------------------------------------------------------------------- build_score_data
 
 def build_score_data(
     column: str, scale: tuple[int, int], raw_by_row: dict[int, float],
-    themes: list["Theme"], nodes: list["ThemeNode"], floor: int,
+    nodes: list["ThemeNode"], floor: int,
 ) -> "ScoreData | None":
     """Cross-tabs a score column against themes: for each surviving band (per `band_score(scale)`), what
     % of that band's answers came from each theme (`ScoreBand.mix`, in `nodes` order so it lines up
@@ -425,8 +417,6 @@ def build_score_data(
     if not band_by_row:
         return None
 
-    by_label = _themes_by_label(themes)
-
     band_totals: dict[str, int] = {b.label: 0 for b in bands}
     for label in band_by_row.values():
         band_totals[label] += 1
@@ -434,13 +424,11 @@ def build_score_data(
     # theme_name -> band_label -> count-of-that-theme's-rows-in-that-band
     per_theme: dict[str, dict[str, int]] = {}
     for node in nodes:
-        t = by_label.get(node.name)
         counts = {b.label: 0 for b in bands}
-        if t is not None:
-            for r in (t.answer_refs or []):
-                label = band_by_row.get(r)
-                if label is not None:
-                    counts[label] += 1
+        for r in node.answer_refs:
+            label = band_by_row.get(r)
+            if label is not None:
+                counts[label] += 1
         per_theme[node.name] = counts
 
     surviving = [b for b in bands if band_totals[b.label] >= floor]
@@ -453,9 +441,7 @@ def build_score_data(
         mix = [round(100 * per_theme[node.name][b.label] / total, 1) for node in nodes]
         weighted_sentiment = 0.0
         for node in nodes:
-            t = by_label.get(node.name)
-            sentiment = t.sentiment if (t is not None and t.sentiment is not None) else 0.0
-            weighted_sentiment += sentiment * per_theme[node.name][b.label]
+            weighted_sentiment += node.sentiment * per_theme[node.name][b.label]
         result_bands.append(ScoreBand(
             label=b.label, mix=mix, sentiment=round(weighted_sentiment / total, 3), answers=total,
         ))
@@ -476,7 +462,7 @@ def _ratio_phrase(theme_name: str, group_label: str, ratio: float) -> str:
 
 
 def build_segment_data(
-    column: str, raw_by_row: dict[int, str], themes: list["Theme"], nodes: list["ThemeNode"], floor: int,
+    column: str, raw_by_row: dict[int, str], nodes: list["ThemeNode"], floor: int,
     heatmap_group_floor: int = 100, max_rows: int = 7, max_groups: int = 8,
 ) -> "SegmentData | None":
     """Cross-tabs an already-capped set of segment/category groups (`raw_by_row`'s values - capping to the
@@ -499,8 +485,6 @@ def build_segment_data(
     is treated as the most extreme possible deviation, since "never mentioned in this group at all" is
     itself a strong signal); rows whose `overall` is 0 are skipped entirely to avoid dividing by zero.
     """
-    by_label = _themes_by_label(themes)
-
     group_totals: dict[str, int] = {}
     for v in raw_by_row.values():
         group_totals[v] = group_totals.get(v, 0) + 1
@@ -516,13 +500,11 @@ def build_segment_data(
 
     counts: dict[str, dict[str, int]] = {}
     for node in picked_nodes:
-        t = by_label.get(node.name)
         c = {g: 0 for g in surviving_groups}
-        if t is not None:
-            for r in (t.answer_refs or []):
-                g = raw_by_row.get(r)
-                if g in c:
-                    c[g] += 1
+        for r in node.answer_refs:
+            g = raw_by_row.get(r)
+            if g in c:
+                c[g] += 1
         counts[node.name] = c
 
     rows: list[SegmentRow] = []
@@ -561,7 +543,7 @@ def build_segment_data(
 # -------------------------------------------------------------------- build_trend_data
 
 def build_trend_data(
-    column: str, raw_by_row: dict[int, float], themes: list["Theme"], nodes: list["ThemeNode"],
+    column: str, raw_by_row: dict[int, float], nodes: list["ThemeNode"],
     date_bands: list["Band"], date_note: str, floor: int, max_series: int = 5,
 ) -> "TrendData | None":
     """Cross-tabs a date column (already converted to `.toordinal()` floats by the caller, see
@@ -576,7 +558,6 @@ def build_trend_data(
     approximation `build_score_data` uses for bands, computed per period across ALL themes (not just the
     picked series) - matching how `app/findings.py::_overall_sentiment` already blends sentiment globally,
     just re-weighted per period. `hover_index` is always the last surviving period's index."""
-    by_label = _themes_by_label(themes)
     period_by_row = apply_bands(raw_by_row, date_bands)
     if not period_by_row:
         return None
@@ -593,13 +574,11 @@ def build_trend_data(
     # though only the top max_series themes are plotted as lines.
     counts: dict[str, dict[str, int]] = {}
     for node in nodes:
-        t = by_label.get(node.name)
         c = {p: 0 for p in surviving_periods}
-        if t is not None:
-            for r in (t.answer_refs or []):
-                p = period_by_row.get(r)
-                if p in c:
-                    c[p] += 1
+        for r in node.answer_refs:
+            p = period_by_row.get(r)
+            if p in c:
+                c[p] += 1
         counts[node.name] = c
 
     picked_nodes = nodes[:max_series]
@@ -616,9 +595,7 @@ def build_trend_data(
         total = period_totals[p]
         weighted = 0.0
         for node in nodes:
-            t = by_label.get(node.name)
-            s = t.sentiment if (t is not None and t.sentiment is not None) else 0.0
-            weighted += s * counts[node.name][p]
+            weighted += node.sentiment * counts[node.name][p]
         sentiment.append(round(weighted / total, 3) if total else 0.0)
 
     return TrendData(
@@ -672,7 +649,7 @@ def build_structured_context(
                     raw_by_row[r] = clean_df.at[r, score_col]
                 except KeyError:
                     continue
-            score_data = build_score_data(score_col, scale, raw_by_row, themes, nodes, floor)
+            score_data = build_score_data(score_col, scale, raw_by_row, nodes, floor)
             if score_data is not None:
                 context.score = score_data
                 context.score_column_name = score_col
@@ -694,7 +671,7 @@ def build_structured_context(
             counts[v] = counts.get(v, 0) + 1
         top_groups = {g for g, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:8]}
         raw_seg_capped = {r: v for r, v in raw_seg.items() if v in top_groups}
-        segment_data = build_segment_data(segment_col, raw_seg_capped, themes, nodes, floor)
+        segment_data = build_segment_data(segment_col, raw_seg_capped, nodes, floor)
         if segment_data is not None:
             context.segment = segment_data
             context.segment_column_name = segment_col
@@ -724,7 +701,7 @@ def build_structured_context(
 
         if date_bands is not None:
             raw_ordinals = {r: float(d.toordinal()) for r, d in parsed_by_row.items()}
-            trend_data = build_trend_data(date_col, raw_ordinals, themes, nodes, date_bands, date_note, floor)
+            trend_data = build_trend_data(date_col, raw_ordinals, nodes, date_bands, date_note, floor)
             if trend_data is not None:
                 context.trend = trend_data
                 context.trend_column_name = date_col
@@ -785,16 +762,17 @@ def segment_skew_candidates(segment: SegmentData, themes: list["Theme"], floor: 
     `Candidate.score` is the group-vs-overall percentage-point gap (`abs(group_share - overall_share)`),
     a bare percentage point with no size-bonus multiplier - the same shape `dominant_theme`'s `score=margin`
     already uses, not `tone_contrast`'s effect-times-bonus shape - see the module-section comment above."""
-    from .findings import Candidate  # deferred - see the module-section comment above
+    from .findings import Candidate, theme_nodes  # deferred - see the module-section comment above
 
-    by_label = _themes_by_label(themes)
+    total = sum(t.size for t in themes)
+    nodes_by_name = {n.name: n for n in theme_nodes(themes, total)}
     candidates: list[Candidate] = []
 
     for row in segment.rows:
         if row.overall == 0:
             continue
-        t = by_label.get(row.theme)
-        theme_id = t.id if t is not None else None
+        node = nodes_by_name.get(row.theme)
+        theme_id = node.theme_id if node is not None else None
         for gi, group in enumerate(segment.groups):
             if group.n < floor:  # defensive - see docstring
                 continue
@@ -837,7 +815,6 @@ def score_correlation_candidates(score: ScoreData, themes: list["Theme"], floor:
 
     total = sum(t.size for t in themes)
     nodes = theme_nodes(themes, total)
-    by_label = _themes_by_label(themes)
     candidates: list[Candidate] = []
 
     for i, node in enumerate(nodes):
@@ -849,8 +826,7 @@ def score_correlation_candidates(score: ScoreData, themes: list["Theme"], floor:
             continue
         if max_band.answers < floor or min_band.answers < floor:
             continue
-        t = by_label.get(node.name)
-        theme_id = t.id if t is not None else None
+        theme_id = node.theme_id
         constraining = min(max_band.answers, min_band.answers)
         candidates.append(Candidate(
             kind="score_correlation", id=f"score_correlation:{theme_id}", theme_id=theme_id,
@@ -883,12 +859,13 @@ def trend_shift_candidates(
     `Candidate.score` is `abs(change_pct)` itself, unmultiplied - already real percentage points, the same
     bare shape `dominant_theme`'s `score=margin` uses, not `tone_contrast`'s effect-times-bonus shape - see
     the module-section comment above."""
-    from .findings import Candidate  # deferred - see the module-section comment above
+    from .findings import Candidate, theme_nodes  # deferred - see the module-section comment above
 
     if not trend.series or not trend.labels:
         return []
 
-    by_label = _themes_by_label(themes)
+    total = sum(t.size for t in themes)
+    nodes_by_name = {n.name: n for n in theme_nodes(themes, total)}
     candidates: list[Candidate] = []
 
     for series in trend.series:
@@ -898,11 +875,11 @@ def trend_shift_candidates(
         change_pct = round(last_pct - first_pct, 1)
         if abs(change_pct) < TREND_SHIFT_MIN:
             continue
-        t = by_label.get(series.theme)
-        count = t.size if t is not None else 0
+        node = nodes_by_name.get(series.theme)
+        count = node.count if node is not None else 0
         if count < floor:
             continue
-        theme_id = t.id if t is not None else None
+        theme_id = node.theme_id if node is not None else None
         candidates.append(Candidate(
             kind="trend_shift", id=f"trend_shift:{theme_id}", theme_id=theme_id,
             theme_name=series.theme, count=count, score=abs(change_pct),

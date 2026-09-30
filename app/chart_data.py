@@ -31,6 +31,8 @@ class ThemeNode:
     map_xy: Optional[tuple[float, float]] = None  # 0..1 position on the similarity map; None scatters the theme
     callout: Optional[tuple[float, float, list[str]]] = None  # sunburst label for a thin wedge: (x, y, lines)
     note: str = ""  # explanation shown next to a folded-in "Other" theme
+    answer_refs: list[int] = field(default_factory=list)  # cleaned-dataframe row indices behind this node
+    theme_id: Optional[int] = None  # the single Theme.id this node came from; None for a merged bucket
 
 
 @dataclass
