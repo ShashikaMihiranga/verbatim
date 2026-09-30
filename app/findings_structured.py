@@ -606,19 +606,18 @@ def build_trend_data(
 
 # -------------------------------------------------------------------- pick_structured_columns
 
-def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, str | None]:
-    """First confirmed, not-switched-off `Column` of each kind ("score", "segment", "date"), in
-    `Column.position` order. Simple, documented first-pass rule - a future "let the user pick" UI can
-    override it."""
+def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]]:
+    """Every confirmed, not-switched-off `Column` name of each kind ("score", "segment", "date"), in
+    `Column.position` order - every candidate, not just the first, so `build_structured_context` can try
+    each in turn and use the first one that actually produces a usable chart, instead of committing to
+    upload-column-order regardless of whether that specific column's data survives suppression."""
     cols = list(db.scalars(
         select(Column).where(Column.dataset_id == dataset_id).order_by(Column.position)
     ).all())
-    result: dict[str, str | None] = {"score": None, "segment": None, "date": None}
-    for kind in ("score", "segment", "date"):
-        for c in cols:
-            if c.kind == kind and not (c.stats or {}).get("off"):
-                result[kind] = c.name
-                break
+    result: dict[str, list[str]] = {"score": [], "segment": [], "date": []}
+    for c in cols:
+        if c.kind in result and not (c.stats or {}).get("off"):
+            result[c.kind].append(c.name)
     return result
 
 
@@ -626,38 +625,42 @@ def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, str | Non
 
 def build_structured_context(
     clean_df, plan: "CleaningPlan", themes: list["Theme"], nodes: list["ThemeNode"],
-    columns: dict[str, str | None], floor: int,
+    columns: dict[str, list[str]], floor: int,
 ) -> StructuredContext:
-    """Top-level B2 assembly: resolves each of "score"/"segment"/"date" (when present in `columns`) into
-    real cleaned-dataframe values keyed by `theme_answer_rows(themes)`, then calls the matching
-    `build_*_data` function above. Any column that is absent, fails to resolve a scale/date spread, or
-    produces no chart-worthy data after suppression is simply left out of the returned `StructuredContext`
-    (fields stay at their `None`/`""` defaults) - never raises."""
+    """Top-level B2 assembly: for each of "score"/"segment"/"date", tries every confirmed candidate column
+    of that kind (`columns[kind]`, `pick_structured_columns`'s own position-ordered list) in turn, resolving
+    it into real cleaned-dataframe values keyed by `theme_answer_rows(themes)` and calling the matching
+    `build_*_data` function above, and keeps the FIRST candidate whose result is chart-worthy - stopping
+    there rather than always taking the first column in upload order regardless of whether its own data
+    survives suppression. A candidate that is absent, fails to resolve a scale/date spread, or produces no
+    chart-worthy data after suppression is simply skipped in favour of the next one; if every candidate for
+    a kind fails, that field is left out of the returned `StructuredContext` (stays at its `None`/`""`
+    default) - never raises."""
     context = StructuredContext()
     rows = theme_answer_rows(themes)
 
-    score_col = columns.get("score")
-    if score_col:
+    for score_col in columns.get("score", []):
         step = next(
             (s for s in plan.steps if s.key == "check_score_range" and s.column == score_col), None,
         )
-        if step is not None:
-            scale = tuple(step.params["scale"])
-            raw_by_row: dict[int, float] = {}
-            for r in rows:
-                try:
-                    raw_by_row[r] = clean_df.at[r, score_col]
-                except KeyError:
-                    continue
-            score_data = build_score_data(score_col, scale, raw_by_row, nodes, floor)
-            if score_data is not None:
-                context.score = score_data
-                context.score_column_name = score_col
-        # No `check_score_range` step for this column: do not guess a scale from observed data (explicitly
-        # out of scope) - the score column is simply left unset on the context.
+        if step is None:
+            # No `check_score_range` step for this candidate: do not guess a scale from observed data
+            # (explicitly out of scope) - try the next candidate instead of giving up on "score" entirely.
+            continue
+        scale = tuple(step.params["scale"])
+        raw_by_row: dict[int, float] = {}
+        for r in rows:
+            try:
+                raw_by_row[r] = clean_df.at[r, score_col]
+            except KeyError:
+                continue
+        score_data = build_score_data(score_col, scale, raw_by_row, nodes, floor)
+        if score_data is not None:
+            context.score = score_data
+            context.score_column_name = score_col
+            break
 
-    segment_col = columns.get("segment")
-    if segment_col:
+    for segment_col in columns.get("segment", []):
         raw_seg: dict[int, str] = {}
         for r in rows:
             try:
@@ -675,9 +678,9 @@ def build_structured_context(
         if segment_data is not None:
             context.segment = segment_data
             context.segment_column_name = segment_col
+            break
 
-    date_col = columns.get("date")
-    if date_col:
+    for date_col in columns.get("date", []):
         parsed_by_row: dict[int, date] = {}
         for r in rows:
             try:
@@ -697,14 +700,14 @@ def build_structured_context(
         try:
             date_bands, date_note = band_dates(list(parsed_by_row.values()))
         except ValueError:
-            date_bands, date_note = None, None
+            continue  # this candidate's dates don't band usefully - try the next one
 
-        if date_bands is not None:
-            raw_ordinals = {r: float(d.toordinal()) for r, d in parsed_by_row.items()}
-            trend_data = build_trend_data(date_col, raw_ordinals, nodes, date_bands, date_note, floor)
-            if trend_data is not None:
-                context.trend = trend_data
-                context.trend_column_name = date_col
+        raw_ordinals = {r: float(d.toordinal()) for r, d in parsed_by_row.items()}
+        trend_data = build_trend_data(date_col, raw_ordinals, nodes, date_bands, date_note, floor)
+        if trend_data is not None:
+            context.trend = trend_data
+            context.trend_column_name = date_col
+            break
 
     return context
 

@@ -105,9 +105,11 @@ def _answer_lengths_for(clean_df, column: str, themes: list[Theme]) -> list[int]
 def _structured_context_for(
     db: Session, ds: Dataset, clean_df, plan, themes: list[Theme],
 ) -> StructuredContext:
-    """B3 wiring: resolves this dataset's first confirmed score/segment/date column (`pick_structured_columns`)
-    against the cleaned dataframe and the cleaning plan actually applied (`plan` - previously discarded as
-    `_plan` by both call sites below, see docs/DECISIONS.md), producing the `StructuredContext` both
+    """B3 wiring: resolves this dataset's confirmed score/segment/date column candidates
+    (`pick_structured_columns`, tried in order until one produces usable data - see
+    `build_structured_context`'s own docstring) against the cleaned dataframe and the cleaning plan
+    actually applied (`plan` - previously discarded as `_plan` by both call sites below, see
+    docs/DECISIONS.md), producing the `StructuredContext` both
     `app.findings.candidate_findings` (the 3 new finding kinds) and `app.findings.build_report_data` (the
     `byScore`/`heatmap`/`trend` chart data) need. Never raises: a dataset with no usable score/segment/date
     column simply gets a `StructuredContext` with every field at its `None`/`""` default (see that

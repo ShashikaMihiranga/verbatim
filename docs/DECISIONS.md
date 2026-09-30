@@ -414,3 +414,66 @@
   construction, not just by testing: at that scale both `adaptive_fine_min_cluster_size` and
   `adaptive_min_cluster_size` clamp to the same ceiling (50), and `min_samples` derives identically either
   way, so `finer_floor=True` is a provable no-op there.
+
+## 2026-09-30 (adaptive column-kind detection + adaptive score/segment/date column selection)
+- User reported a `categories` column's report looked broken (redundant/overlapping theme labels, no
+  sub-themes ever forming, no amount of rebuilding fixed it). Root-caused via live investigation on the
+  deployed dataset, not by inspection: `categories` isn't free text at all - it's per-product metadata
+  repeated once per review of that product (1,597 rows, only **19 distinct exact strings** - 98.8% of
+  rows are one of 19 exact category-breadcrumb strings). It got auto-classified `open_text` and run
+  through embed+cluster theme discovery, which can only ever rediscover those 19 near-duplicate strings
+  and has nothing left to sub-split once a "theme" is hundreds of copies of one identical string.
+- Root cause in `app/profiling/columns.py`: segment detection had a **fixed absolute cap of 12 distinct
+  values** (`2 <= distinct <= 12 and distinct <= 0.5*n`), blind to dataset scale; a 1,597-row column with
+  19 distinct, heavily-repeated values (ratio 1.2%) failed that cap on a technicality and fell through to
+  `open_text`, which has no uniqueness gate on the *kind* itself (only on confidence) - a real gap against
+  `SPEC.md` section 3's own stated open-text rule ("mostly unique values"), left unaddressed this pass
+  (see below).
+- User's explicit direction, chosen over the narrower single-column fix: build real per-dataset
+  adaptivity into how the report decides which column plays which role, not a fixed rule that assumes
+  every dataset looks the same. Two parallel Explore agents mapped the existing machinery before
+  designing anything, finding: the cross-tab machinery this bug actually needed (heatmap,
+  `segment_skew_candidates` cross-tabbing a `segment` column against theme membership) already exists and
+  works unconditionally for any confirmed segment column - no new correlation engine was needed, the
+  column was just mis-typed at the one place that decides its role; `pick_structured_columns`/`pick_chart`
+  are both pure static, zero-data-awareness lookups (first confirmed column of a kind in upload order,
+  full stop); `SPEC.md` section 4's much richer ranked/adaptive multi-chart-candidate vision is
+  already-documented, deliberate, out-of-scope follow-up work ("decision 11") - not attempted here, several
+  of its chart types have no renderer at all yet; `numeric`/`yes_no` column roles are SPEC'd but never
+  consumed anywhere in the report pipeline - a real, separate gap, also not touched this pass.
+- **Part A** - `_segment_max_distinct(n)` (`app/profiling/columns.py`): the segment ceiling now scales
+  with row count (`max(12, min(30, round(n/80)))`) instead of staying fixed at 12 - floor 12 unchanged for
+  every dataset under ~960 rows (byte-identical to before), ceiling 30 for very large datasets. Verified
+  directly against the real `categories` column data (pulled from the actual dataset via `_load_clean_df`):
+  now classifies `segment` (`distinct=19`, ceiling for n=1,597 is `round(1597/80)=20`), confidence 0.7,
+  reason "19 different answers repeated across rows, so it can split the answers into groups."
+  Deliberately not touched: `open_text`'s own kind decision still doesn't gate on uniqueness (SPEC.md's
+  own stated rule) - a column with too many distinct-but-still-repetitive values to clear even the new
+  30-ceiling would still fall through to `open_text` today. Named, not fixed - no case needing it has been
+  observed yet.
+- **Part B** - `pick_structured_columns` (`app/findings_structured.py`) now returns every confirmed,
+  non-off candidate per kind (`dict[str, list[str]]`, still position-ordered), not just the first;
+  `build_structured_context`'s score/segment/date blocks each try their kind's candidates in turn and keep
+  the first one whose `build_*_data` call actually returns non-`None`, instead of committing to upload-
+  column-order regardless of whether that specific column's data survives suppression. A second confirmed
+  column of the same kind is no longer silently unreachable if the first one produces nothing.
+- **Real limitation flagged to the user directly**: column profiling runs exactly once, at upload time
+  (`app/api_upload.py:179`), never recomputed - Part A only prevents this for *future* uploads, it does
+  not retroactively fix an already-uploaded, already-confirmed column. For the existing `categories`
+  dataset, manually reclassified it live via Check Columns (Open-ended text -> Segment, confirmed via
+  screenshot the selection persisted) as the already-available workaround. Discovered the same
+  misclassification pattern independently affects `name`, `prices`, `dimension`, `reviews.title`, `weight`
+  on this same real dataset (all "Not sure"-badged, "may be a group column" reasoning) - not reclassified,
+  left for the user's own judgement since some may legitimately be open text.
+- Also confirmed live: the Themes/Report flow has no UI to choose which `open_text` column becomes the
+  report's subject - it auto-picks the first one in upload-column order
+  (`frontend/src/Themes.tsx`'s `.find(c => kind === 'open_text' ...)`), which is `dimension` (product
+  physical dimensions, not survey feedback) on this dataset now that `categories` is reclassified. Getting
+  a live end-to-end report specifically on `reviews.text` would require reclassifying several unrelated
+  columns first - out of scope for verifying this fix, not attempted; Parts A and B are both independently
+  verified via direct real-data checks and a comprehensive test suite instead.
+- New tests: `tests/test_profiling.py` (`_segment_max_distinct` bounds, a real-scale low-diversity-column
+  pin reproducing the exact bug shape, a small-dataset regression pin proving the floor is unchanged);
+  `tests/test_findings_structured.py` (the 3 existing `pick_structured_columns` tests updated for the new
+  `list[str]` return shape, plus a new test with two confirmed segment columns where the first fails
+  suppression and the second succeeds, asserting the report actually falls back to and uses the second).

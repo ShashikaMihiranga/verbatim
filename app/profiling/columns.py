@@ -14,6 +14,16 @@ from typing import Any
 
 import pandas as pd
 
+def _segment_max_distinct(n: int) -> int:
+    """Segment's distinct-value ceiling scales with row count instead of staying fixed at 12 - a column
+    with 15-20 distinct, heavily-repeated values in a 1,000+-row dataset is exactly as categorical as one
+    with <=12 distinct values in a small dataset; a cap that never grows was blind to dataset scale.
+    Floor 12 (today's behaviour, unchanged for every existing small-dataset case), ceiling 30 (past that,
+    a heatmap/filter with this many groups stops being a useful "small number of groups" breakdown
+    regardless of how repetitive the underlying text is - SPEC.md section 3's own "2 to 12" framing)."""
+    return max(12, min(30, round(n / 80)))
+
+
 KINDS = ["open_text", "short_text", "score", "date", "segment", "numeric", "yes_no", "id_or_junk"]
 KIND_LABELS = {
     "open_text": "Open-ended text",
@@ -280,7 +290,7 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
         reason = "Every value is different and there are no words in it, so it looks like an ID or reference code."
         return out()
 
-    if 2 <= distinct <= 12 and distinct <= 0.5 * n:
+    if 2 <= distinct <= _segment_max_distinct(n) and distinct <= 0.5 * n:
         kind = "segment"
         conf = 0.9 if med_words <= 3 else 0.7
         reason = f"{distinct} different answers repeated across rows, so it can split the answers into groups."

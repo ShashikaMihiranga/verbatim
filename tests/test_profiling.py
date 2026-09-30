@@ -8,6 +8,7 @@ import pytest
 
 from app.profiling import LoadError, profile_file
 from app.profiling.claude_hook import collect_samples, refine_profile
+from app.profiling.columns import _segment_max_distinct, profile_column
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -37,6 +38,32 @@ def test_messy_csv():
     for c in profile["columns"]:
         assert 0 <= c["confidence"] <= 1 and c["reason"] and 1 <= len(c["samples"]) <= 5
     assert any("blank" in n for n in profile["notes"])  # cleaning is reported, not silent
+
+
+def test_segment_max_distinct_scales_with_row_count():
+    assert _segment_max_distinct(100) == 12  # floor, unchanged from before this fix
+    assert _segment_max_distinct(1597) == 20  # round(1597/80)
+    assert _segment_max_distinct(10_000) == 30  # ceiling
+
+
+def test_profile_column_classifies_low_diversity_large_column_as_segment():
+    """Pin for the real bug this fixes: a 1,597-row column with only 19 distinct, long, heavily-repeated
+    category-breadcrumb strings (98.8% of rows are one of 19 exact values) used to fall through the old
+    fixed 12-value segment cap straight to open_text, get run through embed+cluster theme discovery, and
+    produce meaningless near-duplicate "themes" with nothing left to sub-split. Must classify segment."""
+    breadcrumbs = [f"Amazon Devices,Home,Category {i},Sub Category {i},Electronics Features" for i in range(19)]
+    values = [breadcrumbs[i % 19] for i in range(1597)]
+    result = profile_column("categories", values, total_rows=1597)
+    assert result["kind"] == "segment"
+
+
+def test_profile_column_small_dataset_segment_ceiling_unchanged():
+    """Regression pin: the floor stays exactly 12 for small datasets, same as before this fix - 15
+    distinct values in a 100-row dataset must NOT become segment (falls through to open_text/short_text
+    exactly as it always has)."""
+    values = [f"answer number {i % 15} with some words in it" for i in range(100)]
+    result = profile_column("notes", values, total_rows=100)
+    assert result["kind"] != "segment"
 
 
 def test_cp1252_and_tab(tmp_path):

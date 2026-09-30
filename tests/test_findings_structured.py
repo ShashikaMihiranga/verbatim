@@ -497,7 +497,7 @@ def test_pick_structured_columns_respects_position_order(session):
     session.commit()
 
     picked = pick_structured_columns(ds.id, session)
-    assert picked == {"score": "Score1", "segment": "Segment1", "date": "Date1"}
+    assert picked == {"score": ["Score1", "Score2"], "segment": ["Segment1"], "date": ["Date1"]}
 
 
 def test_pick_structured_columns_skips_switched_off_columns(session):
@@ -509,7 +509,7 @@ def test_pick_structured_columns_skips_switched_off_columns(session):
     session.commit()
 
     picked = pick_structured_columns(ds.id, session)
-    assert picked["score"] == "Score2"
+    assert picked["score"] == ["Score2"]
 
 
 def test_pick_structured_columns_none_when_no_matching_kind(session):
@@ -518,7 +518,7 @@ def test_pick_structured_columns_none_when_no_matching_kind(session):
     session.commit()
 
     picked = pick_structured_columns(ds.id, session)
-    assert picked == {"score": None, "segment": None, "date": None}
+    assert picked == {"score": [], "segment": [], "date": []}
 
 
 # -------------------------------------------------------------------- build_structured_context
@@ -538,7 +538,7 @@ def test_build_structured_context_returns_none_score_when_scale_step_missing():
     plan = CleaningPlan(steps=[], settings={}, columns={})  # no check_score_range step at all
 
     context = build_structured_context(
-        clean_df, plan, themes, nodes, {"score": "Score"}, floor=2,
+        clean_df, plan, themes, nodes, {"score": ["Score"]}, floor=2,
     )
     assert context.score is None
     assert context.score_column_name == ""
@@ -550,7 +550,7 @@ def test_build_structured_context_builds_score_from_confirmed_scale():
     clean_df = pd.DataFrame({"Score": [3, 4, 9, 9, 2, 7, 8, 9, 5, 10]})
     plan = _plan_with_score_step("Score", [0, 10])
 
-    context = build_structured_context(clean_df, plan, themes, nodes, {"score": "Score"}, floor=2)
+    context = build_structured_context(clean_df, plan, themes, nodes, {"score": ["Score"]}, floor=2)
     assert context.score is not None
     assert context.score_column_name == "Score"
     assert context.score.name == "Score"
@@ -565,6 +565,38 @@ def test_build_structured_context_ignores_absent_columns():
 
     context = build_structured_context(clean_df, plan, themes, nodes, {}, floor=2)
     assert context == StructuredContext()
+
+
+def test_build_structured_context_falls_back_to_the_next_candidate_when_the_first_produces_nothing():
+    """The core new behaviour this stream adds: pick_structured_columns now hands over every confirmed
+    candidate of a kind, not just the first in column-position order, and build_structured_context must
+    actually try the second one when the first's data fails to survive suppression - not just always use
+    whichever column happened to be confirmed/uploaded first."""
+    n = 300
+    rows = range(n)
+    # BadSegment: a single group covering every row - build_segment_data needs >=2 surviving groups, so
+    # this candidate must fail and NOT become context.segment.
+    bad_segment = ["OnlyGroup" for _ in rows]
+    # GoodSegment: the same 170/130 split _big_dataset() already uses elsewhere in this file, well clear
+    # of every suppression floor - this candidate must be the one actually used.
+    good_segment = ["North" if i < 170 else "South" for i in rows]
+    clean_df = pd.DataFrame({"BadSegment": bad_segment, "GoodSegment": good_segment})
+
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 100, -0.1, list(range(150, 250))),
+        make_theme("Other", 50, 0.0, list(range(250, 300))),
+    ]
+    nodes = theme_nodes(themes, total_answered=300)
+    plan = CleaningPlan(steps=[], settings={}, columns={})
+    columns = {"score": [], "segment": ["BadSegment", "GoodSegment"], "date": []}
+
+    context = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
+
+    assert context.segment is not None
+    assert context.segment_column_name == "GoodSegment"
+    groups_by_label = {g.label: g.n for g in context.segment.groups}
+    assert groups_by_label == {"North": 170, "South": 130}
 
 
 # -------------------------------------------------------------------- integration: full build_report_data
@@ -593,7 +625,7 @@ def _big_dataset():
 def test_build_structured_context_builds_all_three_from_realistic_data():
     clean_df, themes, plan = _big_dataset()
     nodes = theme_nodes(themes, total_answered=300)
-    columns = {"score": "Score", "segment": "Segment", "date": "Date"}
+    columns = {"score": ["Score"], "segment": ["Segment"], "date": ["Date"]}
 
     context = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
 
@@ -616,7 +648,7 @@ def test_build_report_data_with_structured_renders_through_real_charts_module():
     3 new chart ids this stream wires up (byScore, heatmap, trend)."""
     clean_df, themes, plan = _big_dataset()
     nodes = theme_nodes(themes, total_answered=300)
-    columns = {"score": "Score", "segment": "Segment", "date": "Date"}
+    columns = {"score": ["Score"], "segment": ["Segment"], "date": ["Date"]}
     structured = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
 
     dataset = Dataset(project_id=1, filename="survey.csv", file_hash="0" * 64, row_count=300, profile={})
@@ -908,7 +940,7 @@ def test_candidate_findings_all_five_kinds_qualify_and_new_kinds_are_not_crowded
     clean_df, themes, plan = _all_five_kinds_dataset()
     total = sum(t.size for t in themes)
     nodes = theme_nodes(themes, total)
-    columns = {"score": "Score", "segment": "Segment", "date": "Date"}
+    columns = {"score": ["Score"], "segment": ["Segment"], "date": ["Date"]}
     structured = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
     assert structured.score is not None
     assert structured.segment is not None
