@@ -358,3 +358,59 @@
   union exactly equals the raw themes' union (1,597 of 1,597, no overlap, no undercount). A second, <=7-real-
   theme dataset (`Womens Clothing E-Commerce Reviews.csv`) was confirmed unaffected: 6 nodes, unchanged,
   each keeping its own real `theme_id`.
+
+## 2026-09-30 (finer HDBSCAN floor: why the merge step was dropped, and what actually fixed "Other")
+- Real complaint: many open-ended answers land in "Other" even though they read as clearly belonging to
+  an existing theme. Investigated empirically (not by inspection) against `Amazon_reviews.csv` (1,597
+  answers, then 11 real themes + 298/18.7% Other): measured every noise answer's distance to its nearest
+  real cluster's centroid - only 5% were anywhere near an existing theme's typical radius, ruling out
+  "soft-reassign noise to what already exists" as the fix. Re-clustering the noise ON ITS OWN with a finer
+  floor found 15 coherent new groups covering 92% of it (real near-duplicate review clusters, e.g. a
+  repeated "Fire HD 8 first impressions from a retired IT professional" review and a repeated "$99 tablet
+  vs. my iPad" review) - genuine small themes that never had a chance because `adaptive_min_cluster_size`
+  (`round(n/50)`, 32 for this dataset) is sized for the WHOLE dataset, not for how many distinct small
+  topics exist in it.
+- First attempt (planned and initially approved): lower `min_cluster_size` for a first HDBSCAN pass, then
+  re-consolidate fragments with a new embedding-space agglomerative merge step (`AgglomerativeClustering`
+  on fine-cluster centroids, percentile-based distance threshold). Both halves were needed in that design
+  because a bare floor-lowering, tested first, fragmented the biggest existing cluster ("Alexa smart
+  speaker satisfaction," 651 answers) into pieces as small as 135 for only an 18.7%->16.6% Other
+  improvement - a wash.
+- That design was built, tested, and then DROPPED after its own test caught a real problem: on a
+  synthetic fixture of 3 known, distinct groups, the merge step merged two of them together. Confirmed
+  independently on the real dataset too - it took the clean 651-member cluster and glued ~386 unrelated
+  answers from several other clusters onto it (651 -> 1,037). Every linkage method (average/complete/ward)
+  and every percentile tried did the same thing on both datasets: a percentile-based threshold over a
+  small, unevenly-spaced set of cluster centroids has no principled way to tell "these two are really the
+  same topic" from "these two just happen to be the closest pair available."
+- Root-caused the ORIGINAL fragmentation problem while debugging the merge step's failure, and found the
+  fix was elsewhere: HDBSCAN's `min_samples` (density strictness) was being scaled down TOGETHER with the
+  finer `min_cluster_size` (`adaptive_min_samples`'s existing coupling) - lowering the SIZE floor was also
+  loosening the DENSITY requirement, and it was the loosened density that let borderline points bleed
+  across real topic boundaries and let already-dense regions fragment. Decoupling them - `cluster_answers`
+  now takes a `finer_floor: bool` that lowers `min_cluster_size` (via new `adaptive_fine_min_cluster_size`,
+  `FINE_ADAPTIVE_DIVISOR=100`, ~1% of answers) but derives `min_samples` from what the STANDARD floor would
+  have been, never the finer one - solved both problems at once with no merge step needed at all: on the
+  same real dataset, 21 clusters (up from 11), Other 18.7% -> 10.1%, the "Alexa" cluster stayed fully
+  intact at 651 (zero fragmentation), and both real near-duplicate-review groups found during diagnosis
+  now surface as their own correctly-sized themes.
+- Considered (and rejected) using TypeSafe/Jev (`app/text_pipeline/jev_sentiment.py`) for the
+  cluster-consolidation judgment instead of embedding distance: its docs (`docs.typesafe.ai`) confirm it
+  offers only per-state structured-question primitives (Choice/Score/Noul), no embeddings or similarity/
+  clustering capability, and its cost/latency profile is built for high-volume per-row classification
+  (thousands of calls) - the opposite shape of this low-volume, one-batched-judgment task. This matches
+  and reconfirms this file's own 2026-09-25 Jev-trial entry, which already scoped Jev to sentiment only
+  and explicitly declined to extend it to theme merge/split flags for exactly this reason.
+- Any genuine "these two of the ~20 real clusters are actually the same topic" consolidation is left to
+  the pipeline's existing, already-shipped Claude-based mechanism (`labeling.py`'s `merge_with` + same-
+  label matching, applied by `merging.py`, from the 2026-09-30 theme-axis-mixing entry above) - a
+  one-batched-call judgment task Claude is already positioned for, not a new mechanism.
+- `finer_floor=True` only applies to `pipeline.embed_and_cluster_with_vectors`'s top-level clustering call;
+  `subthemes.py`'s own sub-theme pass is untouched (`finer_floor` defaults to `False`), deliberately kept
+  out of scope. Verified live via the real `/api/datasets/{id}/themes/build` endpoint (not just isolated
+  diagnostic scripts) on `Amazon_reviews.csv`: matches every isolated-diagnostic number above, with real
+  Claude labeling completing normally on 21 clusters in one batched call. A second, much larger real
+  dataset (`Womens Clothing E-Commerce Reviews.csv`, 22,641 answers) was confirmed unaffected by
+  construction, not just by testing: at that scale both `adaptive_fine_min_cluster_size` and
+  `adaptive_min_cluster_size` clamp to the same ceiling (50), and `min_samples` derives identically either
+  way, so `finer_floor=True` is a provable no-op there.

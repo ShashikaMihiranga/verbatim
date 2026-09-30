@@ -74,7 +74,9 @@ def embed_and_cluster_with_vectors(
 
     raw_vectors = client.embed(texts)
     vectors = np.asarray(raw_vectors, dtype="float32")
-    result = cluster_answers(raw_vectors, texts, row_indexes, min_cluster_size=min_cluster_size)
+    result = cluster_answers(
+        raw_vectors, texts, row_indexes, min_cluster_size=min_cluster_size, finer_floor=True,
+    )
     result.column = column
 
     embedded = EmbeddedAnswers(

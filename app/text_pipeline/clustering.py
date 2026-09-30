@@ -30,6 +30,36 @@ MIN_MIN_CLUSTER_SIZE = 5  # never require fewer than this many answers to call s
 MAX_MIN_CLUSTER_SIZE = 50  # never require more than this even for a huge dataset, or themes get too coarse
 ADAPTIVE_DIVISOR = 50  # roughly one theme-worth of answers per 50 answers total; see docs/DECISIONS.md
 
+# Used only when `cluster_answers(..., finer_floor=True)` - a first-pass `min_cluster_size` fine enough to
+# let small-but-real topics form at all, instead of being written off as noise purely for being smaller
+# than a floor sized for the WHOLE dataset (see docs/DECISIONS.md's 2026-09-30 entry for the real-dataset
+# numbers that motivated this). Roughly 1% of answers instead of `ADAPTIVE_DIVISOR`'s 2%.
+#
+# An earlier version of this fix also tried an embedding-space agglomerative "merge fragments back up"
+# step, on the assumption that a finer floor alone would fragment big, already-good clusters. That
+# assumption was wrong, and the merge step was DROPPED, not shipped - both findings confirmed empirically,
+# not by inspection - see docs/DECISIONS.md:
+#   1. The real fragmentation risk came from `min_samples` scaling down TOGETHER with the finer
+#      `min_cluster_size` (HDBSCAN's own default coupling, `adaptive_min_samples` inherits it) - a finer
+#      size floor also loosened the DENSITY requirement, which is what let already-good clusters fragment
+#      and let borderline points bleed across real topic boundaries. Keeping `min_samples` pinned to what
+#      the STANDARD (coarse) floor would have used - `min_samples` unchanged, only `min_cluster_size`
+#      lowered - fixed both problems at once: on a real 1,597-answer dataset, noise dropped 18.7% -> 10.1%
+#      with the biggest cluster staying fully intact (651, no fragmentation), and the specific near-
+#      duplicate-review groups this fix targets were recovered as real, correctly-sized clusters, all
+#      without any merge step.
+#   2. The agglomerative merge step, independently, was demonstrated unreliable on two unrelated datasets
+#      (a synthetic 3-known-group fixture and the same real dataset): a percentile-based distance
+#      threshold has no principled way to tell "these two small clusters are really one topic" from "these
+#      two clusters just happen to be the closest pair in a small, unevenly-spaced set" - it collapsed a
+#      clean 651-member cluster with ~386 unrelated answers from several distinct clusters on the real
+#      data, and merged two of three known-distinct groups on the synthetic one, across every linkage
+#      method and threshold tried. Any genuine same-topic consolidation among the finer clusters this
+#      floor now finds is left to the pipeline's existing, already-shipped Claude-based mechanism
+#      (`labeling.py`'s `merge_with` + same-label matching, applied by `merging.py`) - a judgment call
+#      well suited to a low-volume, one-batched-call task, not to a blind embedding-distance rule.
+FINE_ADAPTIVE_DIVISOR = 100
+
 # HDBSCAN's own default sets `min_samples` to `min_cluster_size`, which is unusually strict: it makes the
 # "how dense must a region be to not be noise" test just as demanding as the "how big must a group be to
 # report as a theme" test, and the two are answering different questions. Decoupling them (with a smaller,
@@ -68,6 +98,13 @@ def adaptive_min_cluster_size(n_answers: int) -> int:
     return max(MIN_MIN_CLUSTER_SIZE, min(MAX_MIN_CLUSTER_SIZE, round(n_answers / ADAPTIVE_DIVISOR)))
 
 
+def adaptive_fine_min_cluster_size(n_answers: int) -> int:
+    """Same shape as `adaptive_min_cluster_size` (`round(n/DIVISOR)` clamped to [5, 50]), but with
+    `FINE_ADAPTIVE_DIVISOR` - only used for `cluster_answers(..., finer_floor=True)`'s first HDBSCAN
+    pass, see that constant's own comment."""
+    return max(MIN_MIN_CLUSTER_SIZE, min(MAX_MIN_CLUSTER_SIZE, round(n_answers / FINE_ADAPTIVE_DIVISOR)))
+
+
 def adaptive_min_samples(min_cluster_size: int) -> int:
     """Pick HDBSCAN's `min_samples` from `min_cluster_size` rather than letting it default to
     `min_cluster_size` one-for-one (see the module-level comment above `MIN_SAMPLES_FLOOR`).
@@ -94,6 +131,14 @@ def adaptive_n_components(n_answers: int) -> int:
 
 def _euclidean(a: list[float], b: list[float]) -> float:
     return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+
+def _reduction_eligible(n: int, dims: int) -> bool:
+    """Shared by `_reduce_for_clustering` (skip UMAP below either threshold) and `cluster_answers` (only
+    use the finer floor in the same real-at-scale regime UMAP reduction itself is for) - one place for
+    both thresholds so the two conditions can never drift apart. See `_reduce_for_clustering`'s docstring
+    for why these specific numbers."""
+    return n >= MIN_ANSWERS_FOR_REDUCTION and dims >= MIN_DIMENSIONS_FOR_REDUCTION
 
 
 def _reduce_for_clustering(vectors: list[list[float]]) -> list[list[float]]:
@@ -128,7 +173,7 @@ def _reduce_for_clustering(vectors: list[list[float]]) -> list[list[float]]:
     """
     n = len(vectors)
     dims = len(vectors[0]) if vectors else 0
-    if n < MIN_ANSWERS_FOR_REDUCTION or dims < MIN_DIMENSIONS_FOR_REDUCTION:
+    if not _reduction_eligible(n, dims):
         return vectors
 
     n_components = adaptive_n_components(n)
@@ -149,8 +194,26 @@ def cluster_answers(
     texts: list[str],
     row_indexes: list[int],
     min_cluster_size: int | None = None,
+    finer_floor: bool = False,
 ) -> ClusterResult:
     """Cluster `vectors` (one per answer, same order as `texts` and `row_indexes`) into themes.
+
+    `finer_floor=True` (only `pipeline.embed_and_cluster_with_vectors`'s top-level call passes this -
+    `subthemes.py`'s own sub-theme pass leaves it `False`, deliberately out of scope, see
+    docs/DECISIONS.md) lowers `min_cluster_size` to `adaptive_fine_min_cluster_size` (when
+    `min_cluster_size` is not given explicitly), so small-but-real topics are not written off as noise
+    purely for being smaller than a floor sized for the whole dataset. Only takes effect in the same
+    real-at-scale regime `_reduce_for_clustering` itself requires (`_reduction_eligible`); below that,
+    this flag has no effect and every existing small-fixture test clusters exactly as before.
+
+    Crucially, `finer_floor=True` does NOT also loosen `min_samples` (HDBSCAN's density-strictness knob) -
+    `min_samples` is always derived from what the STANDARD, non-finer `min_cluster_size` would have been,
+    never from the finer one actually used for sizing. This is deliberate, and the fix for a real bug
+    found empirically (docs/DECISIONS.md's 2026-09-30 entry): `min_samples` scaling down together with a
+    finer size floor loosens the DENSITY requirement too, which is what let already-good clusters
+    fragment and let borderline points bleed across real topic boundaries when this was first tried.
+    Keeping density strictness pinned to the standard floor while only lowering the size requirement gets
+    the intended win (small real topics can now clear the bar) without that cost.
 
     `row_indexes[i]` is the original dataframe row that `texts[i]` / `vectors[i]` came from; it is carried
     through untouched so callers can map a cluster back to real rows even though blank/skipped rows were
@@ -161,10 +224,10 @@ def cluster_answers(
     see that function's docstring). HDBSCAN then clusters on the reduced vectors, not the raw ones; cluster
     centroids and each member's `distance` are computed in that same reduced space, so they stay consistent
     with what HDBSCAN actually saw. Whenever reduction actually runs, `min_samples` is also set from
-    `min_cluster_size` via `adaptive_min_samples` rather than left at HDBSCAN's own default (which ties it
-    to `min_cluster_size` one-for-one - unusually strict; see the module-level comment above
-    `MIN_SAMPLES_FLOOR`). When reduction is skipped (small and/or low-dimensional input), `min_samples`
-    stays at HDBSCAN's own original default too, so small inputs cluster exactly as this module always has.
+    `adaptive_min_samples` rather than left at HDBSCAN's own default (which ties it to `min_cluster_size`
+    one-for-one - unusually strict; see the module-level comment above `MIN_SAMPLES_FLOOR`). When reduction
+    is skipped (small and/or low-dimensional input), `min_samples` stays at HDBSCAN's own original default
+    too, so small inputs cluster exactly as this module always has.
 
     HDBSCAN labels answers it cannot confidently place as noise (label -1); those become `ClusterResult.noise`,
     never dropped. A cluster HDBSCAN does find that is smaller than `min_cluster_size` (this can happen because
@@ -181,12 +244,20 @@ def cluster_answers(
     n = len(vectors)
     if not (len(texts) == len(row_indexes) == n):
         raise ValueError("vectors, texts and row_indexes must be the same length.")
-    if min_cluster_size is None:
-        min_cluster_size = adaptive_min_cluster_size(n)
-    min_cluster_size = max(2, min_cluster_size)  # HDBSCAN itself requires at least 2
-
     if n == 0:
         return ClusterResult(column="", clusters=[], noise=[], total_answers=0)
+
+    dims = len(vectors[0])
+    fine_pass = finer_floor and min_cluster_size is None and _reduction_eligible(n, dims)
+    # The value min_samples' strictness is derived from below (see the comment further down): when the
+    # caller gives an explicit min_cluster_size, THAT is the strictness reference too, exactly as before
+    # this fix existed - finer_floor only ever changes anything when min_cluster_size is left adaptive.
+    min_samples_reference = min_cluster_size
+    if min_cluster_size is None:
+        min_cluster_size = adaptive_fine_min_cluster_size(n) if fine_pass else adaptive_min_cluster_size(n)
+        min_samples_reference = adaptive_min_cluster_size(n)  # always the STANDARD adaptive value, never the fine one
+    min_cluster_size = max(2, min_cluster_size)  # HDBSCAN itself requires at least 2
+    min_samples_reference = max(2, min_samples_reference)
 
     clustering_vectors = _reduce_for_clustering(vectors)
     reduction_applied = clustering_vectors is not vectors
@@ -194,8 +265,10 @@ def cluster_answers(
     # up in the same real-world scenario the reduction step fixes - real, high-dimensional embeddings at a
     # meaningful scale. Tying it to whether reduction actually ran keeps small/low-dimensional inputs
     # (every existing small-fixture test) clustering with HDBSCAN's own original default (`min_samples ==
-    # min_cluster_size`), unchanged from this module's behaviour before this fix.
-    min_samples = adaptive_min_samples(min_cluster_size) if reduction_applied else min_cluster_size
+    # min_cluster_size`), unchanged from this module's behaviour before this fix. Derived from
+    # `min_samples_reference`, NEVER from the actual (possibly finer) `min_cluster_size` used for sizing -
+    # see this function's own docstring for why that distinction is the whole fix.
+    min_samples = adaptive_min_samples(min_samples_reference) if reduction_applied else min_cluster_size
 
     model = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples, store_centers="centroid", copy=True)
     labels = model.fit_predict(clustering_vectors)

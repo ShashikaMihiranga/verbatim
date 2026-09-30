@@ -26,6 +26,7 @@ from app.text_pipeline.clustering import (
     MIN_ANSWERS_FOR_REDUCTION,
     MIN_DIMENSIONS_FOR_REDUCTION,
     _reduce_for_clustering,
+    adaptive_fine_min_cluster_size,
 )
 
 
@@ -172,6 +173,16 @@ def test_cluster_answers_min_cluster_size_is_adaptive_by_dataset_size():
     assert mid == round(1000 / 50)
 
 
+def test_adaptive_fine_min_cluster_size_is_finer_than_standard_and_bounded():
+    """Same floor/ceiling shape as adaptive_min_cluster_size, but a bigger divisor - only used for
+    cluster_answers(..., merge_fine_clusters=True)'s first pass, see docs/DECISIONS.md."""
+    assert adaptive_fine_min_cluster_size(40) == 5  # floor
+    assert adaptive_fine_min_cluster_size(6000) == 50  # ceiling
+    mid = adaptive_fine_min_cluster_size(1597)
+    assert mid == round(1597 / 100)
+    assert mid < adaptive_min_cluster_size(1597)  # strictly finer than the standard floor at the same n
+
+
 def test_cluster_answers_deterministic_given_same_input():
     battery, price, outliers = _fixture_texts()
     texts = battery + price + outliers
@@ -310,6 +321,72 @@ def test_cluster_answers_reduction_path_is_deterministic_given_same_input():
     labels2 = sorted(tuple(sorted(m.row for m in c.members)) for c in r2.clusters)
     assert labels1 == labels2
     assert {m.row for m in r1.noise} == {m.row for m in r2.noise}
+
+
+def _bigger_separable_fixture(seed: int = 11):
+    """Same shape/style as `_high_dimensional_fixture`, but at n=1597 (3 x 500 + 97 noise) - deliberately
+    matching the real dataset size `finer_floor` was calibrated against (docs/DECISIONS.md's 2026-09-30
+    entry), where the fine floor (round(1597/100)=16) lands well above `MIN_MIN_CLUSTER_SIZE`'s absolute
+    floor of 5. At the smaller `_high_dimensional_fixture()` size (n=195), the fine and standard floors
+    both clamp to that same absolute minimum, which would not fairly exercise this feature at all."""
+    rng_groups, rng_group_size, rng_noise = 3, 500, 97
+    rng = np.random.RandomState(seed)
+    centers = rng.normal(size=(rng_groups, HIGH_DIM_DIMS))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    vectors: list[list[float]] = []
+    true_groups: list[int] = []
+    for g in range(rng_groups):
+        for _ in range(rng_group_size):
+            v = centers[g] + rng.normal(scale=HIGH_DIM_NOISE_SCALE, size=HIGH_DIM_DIMS)
+            vectors.append((v / np.linalg.norm(v)).tolist())
+            true_groups.append(g)
+    for _ in range(rng_noise):
+        v = rng.normal(size=HIGH_DIM_DIMS)
+        vectors.append((v / np.linalg.norm(v)).tolist())
+        true_groups.append(-1)
+    return vectors, true_groups
+
+
+def _purity(result, row_indexes, true_group_of_row):
+    correct, total = 0, 0
+    for cluster in result.clusters:
+        member_true_groups = [true_group_of_row[m.row] for m in cluster.members]
+        total += len(member_true_groups)
+        most_common = max(set(member_true_groups), key=member_true_groups.count)
+        correct += sum(1 for g in member_true_groups if g == most_common)
+    return correct, total
+
+
+def test_cluster_answers_with_finer_floor_recovers_more_without_fragmenting_or_losing_purity():
+    """finer_floor=True's whole point: recover small-but-real structure that a dataset-wide floor would
+    write off as noise, WITHOUT the two failure modes an earlier, dropped design had (see
+    docs/DECISIONS.md's 2026-09-30 entry) - fragmenting already-good big groups, or degrading purity by
+    also loosening HDBSCAN's density strictness. Checked directly against the plain/standard path on the
+    identical fixture, not just in isolation."""
+    vectors, true_groups = _bigger_separable_fixture()
+    texts = [f"answer {i}" for i in range(len(vectors))]
+    row_indexes = list(range(len(vectors)))
+    true_group_of_row = dict(zip(row_indexes, true_groups))
+
+    standard = cluster_answers(vectors, texts, row_indexes)
+    finer = cluster_answers(vectors, texts, row_indexes, finer_floor=True)
+
+    for result in (standard, finer):
+        assert sum(len(c.members) for c in result.clusters) + len(result.noise) == result.total_answers
+        assert all(m.distance is not None for c in result.clusters for m in c.members)
+        assert all(c.centroid is not None for c in result.clusters)
+
+    # recovers at least as much real structure (no fewer answers left in noise)...
+    assert len(finer.noise) <= len(standard.noise)
+    # ...without fragmenting the 3 true groups into many small pieces...
+    assert len(finer.clusters) <= 5
+    # ...and without sacrificing purity to get there (the bug this pins: min_samples must stay pinned to
+    # the standard floor's strictness, not loosen along with the finer size floor).
+    standard_correct, standard_total = _purity(standard, row_indexes, true_group_of_row)
+    finer_correct, finer_total = _purity(finer, row_indexes, true_group_of_row)
+    assert finer_total > 0
+    assert finer_correct / finer_total > 0.85
+    assert finer_correct / finer_total >= (standard_correct / standard_total) - 0.05  # within noise of the standard path's own purity
 
 
 def test_adaptive_min_samples_is_smaller_than_min_cluster_size_and_bounded():
