@@ -40,16 +40,38 @@ OTHER_CLUSTER_ID = -1  # matches HDBSCAN's own noise label; never a real Cluster
 SYSTEM = (
     "You help summarise open-ended survey answers that an automatic algorithm has already grouped into "
     "clusters. You are given the survey question and, for each cluster, a handful of representative "
-    "answers (already stripped of anything sensitive). Reply with JSON only, no prose before or after "
+    "answers (already stripped of anything sensitive). "
+    "Before naming anything, decide on ONE consistent kind of thing every theme in this batch should "
+    "describe, and name every theme along that same axis. In most feedback/review contexts, the useful "
+    "axis is the FEEDBACK ASPECT being discussed (e.g. cost, ease of use, fit, durability, customer "
+    "service, delivery speed) - not the product, feature, or entity a sample happens to mention. A "
+    "specific product or entity named in the answers (e.g. a garment type, a product line, a store "
+    "location) is usually already captured elsewhere as its own category and does not need to be "
+    "rediscovered as a theme; if several clusters differ only in WHICH entity is mentioned but describe "
+    "the same underlying aspect (e.g. one cluster is about dress fit, another about pants fit), treat "
+    "that as the SAME theme, not different ones. Stay precise about what counts as the same aspect, "
+    "though: fit, fabric quality, durability, value for money, and style are each their OWN aspect even "
+    "when a single review mentions several together, and should stay as SEPARATE themes - only combine "
+    "two clusters when someone summarising both in one sentence would genuinely say the same thing about "
+    "them, not merely because they are about the same product category or often come up side by side. "
+    "The one exception: if the survey question is itself fundamentally asking people to name or choose "
+    "among entities (e.g. \"which feature do you want next\", \"which product did you buy\"), then "
+    "naming those entities IS the right axis - use your judgement on which case this is, and apply it "
+    "consistently across every theme in this batch. "
+    "Reply with JSON only, no prose before or after "
     'it: {"themes": [{"cluster_id": int, "label": str, "description": str, "merge_with": [int, ...], '
     '"note": str or null}, ...]}. Include exactly one entry per cluster id you were given, using that '
     "same id. "
-    '"label" is a few words naming the theme. "description" is one plain sentence, in language a '
-    'non-expert would understand, saying what the answers in that cluster have in common. "merge_with" '
-    "lists the ids of OTHER clusters you were given that look like they are really the same theme as "
-    'this one - use [] if none do. "note" is one short sentence flagging anything else worth a human\'s '
-    "attention - most often that a cluster actually contains two distinct sub-themes and might be split "
-    "- or null if there is nothing to add. "
+    '"label" is a few words naming the theme, along the single axis you chose above. "description" is '
+    "one plain sentence, in language a non-expert would understand, saying what the answers in that "
+    'cluster have in common. "merge_with" lists the ids of OTHER clusters you were given that describe '
+    "the SAME feedback aspect as this one, even if they surface through different entities, products, or "
+    'wording in the sample text (e.g. a cluster about dress fit and a cluster about pants fit both '
+    'belong under one "fit and sizing" theme) - use [] if none do. Do NOT merge clusters that describe '
+    "genuinely different aspects just because they are related or often mentioned together (fit and "
+    'fabric quality are different aspects, not the same one, even in the same review). "note" is one '
+    "short sentence flagging anything else worth a human's attention - most often that a cluster "
+    "actually contains two distinct sub-themes and might be split - or null if there is nothing to add. "
     "You are not told how many answers are in any cluster and must never guess, invent, or state a "
     "count, percentage, or share for any cluster in your reply."
 )
@@ -68,8 +90,11 @@ SUB_SYSTEM = (
     "one plain sentence, in language a non-expert would understand, saying what the answers in this "
     "sub-cluster have in common, again focused on what sets it apart from its siblings under the same "
     'parent, not on what it shares with the parent theme as a whole. "merge_with" lists the ids of OTHER '
-    "sub-clusters you were given that look like they are really the same sub-theme as this one - use [] "
-    'if none do. "note" is one short sentence flagging anything else worth a human\'s attention, or null '
+    "sub-clusters you were given that represent the same underlying sub-theme as this one, even if they "
+    "surface through different entities or wording in the sample text - use [] if none do, but ONLY "
+    "consider merging sub-clusters that share the same parent theme (each entry's own parent_theme "
+    'tells you which); never suggest merging sub-clusters that belong to different parents. "note" is '
+    "one short sentence flagging anything else worth a human's attention, or null "
     "if there is nothing to add. You are not told how many answers are in any sub-cluster and must "
     "never guess, invent, or state a count, percentage, or share for any sub-cluster in your reply."
 )

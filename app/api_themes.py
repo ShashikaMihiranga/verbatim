@@ -78,6 +78,7 @@ from .text_pipeline import (
     score_text,
     tone_split,
 )
+from .text_pipeline.merging import apply_merges, apply_sub_merges
 from .text_pipeline.subthemes import sub_cluster_themes
 
 router = APIRouter(prefix="/api")
@@ -321,6 +322,11 @@ def build_themes(
         result, embedded = embed_and_cluster_with_vectors(clean_df, plan, column, embedding_client)
         step("Naming each group")
         labels = label_clusters(result, question, claude_client)
+        # Claude's reply already flags clusters it thinks are really the same theme (SYSTEM prompt, see
+        # labeling.py) - apply_merges actually consolidates them (no new LLM call) before anything else
+        # reads `result`/`labels`, so sub-clustering below splits each merged theme's full combined
+        # membership, not just one pre-merge cluster's slice.
+        result, labels = apply_merges(result, labels)
         step("Finding sub-themes")
         sub_clusters = sub_cluster_themes(result, embedded)
         step("Naming sub-themes")
@@ -336,6 +342,7 @@ def build_themes(
             # this pipeline.
             log.warning("sub-theme labeling failed for dataset %s column %r: %s", dataset_id_, column, e)
             sub_labels = {}
+        sub_clusters, sub_labels = apply_sub_merges(sub_clusters, sub_labels)
         step("Scoring tone")
         if use_jev:
             scores = score_column_with_jev(clean_df, plan, column, jev_client)

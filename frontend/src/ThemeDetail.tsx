@@ -30,7 +30,11 @@ function SubThemeRow({ id, themeId, sub }: { id: number; themeId: number; sub: S
 // report page's overview block.
 export default function ThemeDetail({ id, theme }: { id: number; theme: ThemeCard }) {
   const [open, setOpen] = useState(false)
-  const unassignedPct = Math.max(0, 100 - theme.sub_themes.reduce((sum, s) => sum + s.size_pct, 0))
+  // theme.size_pct and each sub-theme's size_pct are both "% of ALL answered" (the whole dataset), not
+  // "% of this theme" - see app/chart_data.py's SubTheme.share docstring and app/api_themes.py's
+  // _theme_dict, which compute both against the identical `total`. The remainder is therefore this
+  // theme's own share minus its sub-themes' shares, not 100 minus them.
+  const unassignedPct = Math.max(0, theme.size_pct - theme.sub_themes.reduce((sum, s) => sum + s.size_pct, 0))
   return (
     <div className="th-detail">
       <div className="th-top">

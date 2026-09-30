@@ -893,6 +893,15 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
         header_pct = 34  # a fixed share of this cell's own height reserved for its label, not a computed
                           # "how tall did the label actually render" pixel value - see docstring above.
         if subs:
+            # A theme's stored sub-themes are only required to cover >= MIN_SUBTHEME_COVERAGE (50%) of
+            # its own answers (app/text_pipeline/subthemes.py) - deliberate, documented design, not a
+            # bug. But squarify() always fills 100% of the reserved sub-area with whatever `subs` it's
+            # given, so without this, a theme covered by only half its own answers LOOKS fully covered.
+            # A synthetic remainder entry gets real proportional space instead, rendered distinctly (not
+            # one of MIX's tints) below. Skipped when the gap rounds to ~0 - not worth a cell for noise.
+            remainder = round(share - sum(sp for _, sp in subs), 1)
+            if remainder > 0.5:
+                subs = subs + [("__remainder__", remainder)]
             sub_w, sub_h = rw - 10, rh * (100 - header_pct) / 100 - 5
             if sub_w > 20 and sub_h > 20:
                 sr = squarify(subs, 0, 0, sub_w, sub_h)
@@ -905,16 +914,24 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
                     # wrapping is left entirely to the browser's natural text flow.
                     s_line_h = 14 * 1.2
                     s_max_lines = max(1, int((sh - 4) // s_line_h))
+                    if sn == "__remainder__":
+                        # Muted, never one of MIX's theme-tinted colors, and the label text itself says
+                        # what it is - colour is never the only carrier (CLAUDE.md's design rules).
+                        bg = "color-mix(in srgb, var(--muted) 18%, var(--surface))"
+                        label_text = f"{sp:g}% not in a sub-theme"
+                    else:
+                        bg = f"color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"
+                        label_text = f'{esc(sn)} <span style="font-weight:600">{sp:g}%</span>'
                     sub_cells += (
                         f'<div style="position:absolute;left:{sx / sub_w * 100:.2f}%;top:{sy / sub_h * 100:.2f}%;'
                         f'width:{sw / sub_w * 100:.2f}%;height:{sh / sub_h * 100:.2f}%;padding:1.5px">'
                         f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
-                        f'background:color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface));'
+                        f'background:{bg};'
                         f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
                         f'<span style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2;'
                         f'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;'
                         f'-webkit-line-clamp:{s_max_lines};-webkit-box-orient:vertical">'
-                        f'{esc(sn)} <span style="font-weight:600">{sp:g}%</span></span>'
+                        f'{label_text}</span>'
                         f'</div></div>')
                 sub_html = f'<div style="position:absolute;left:0;top:{header_pct}%;width:100%;height:{100 - header_pct}%">{sub_cells}</div>'
 

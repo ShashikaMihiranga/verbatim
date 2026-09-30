@@ -239,3 +239,88 @@
 - **`overflow-wrap: break-word` added defensively** on both label levels, new because the old server-side pixel-wrap never needed it (it pre-computed exact line breaks) - protects against a single unusually long word overflowing a very narrow cell, not just a long phrase. **The percentage now renders in its own bold span** (`font-weight:600`) within a lighter-weight name (`font-weight:500`), matching the prototype's visual hierarchy more closely than the previous uniform-weight text - a deliberate small improvement made while already touching this code, confirmed against the prototype's own screenshot.
 - **`overflow:hidden` on both cell levels' wrapper divs is unchanged** - still the outer safety net guaranteeing a label can never bleed into a sibling cell, even though `-webkit-line-clamp`'s own ellipsis-on-truncation makes hitting that limit rare now.
 - **Verified live against the real Railway deployment**, not just locally: earlier the same day, a report on that deployment had zero sub-themes stored (built before sub-theme clustering existed) - rebuilding themes on it produced real sub-themes, which is what first exposed the container-query approach's over-aggressive fallback (many sub-cells showing only a bare percentage even though their cell was clearly tall enough for a wrapped name). After this fix, the same real fragment (fetched from the local dev API for the equivalent locally-tested dataset, embedded in a repro page using `ThemeChart.tsx`'s exact wrapper markup) shows every previously percent-only cell's real name again, wrapped and bold-percentage-suffixed, at both normal and a stress-tested narrow width, with clean ellipsis truncation and no overflow into sibling cells.
+
+## 2026-09-30 (theme-axis mixing: a consistent naming axis, real cluster merging, two related bugs)
+- **The problem**: on the Women's Clothing E-Commerce Reviews dataset (the same one that exposed the
+  2026-09-27 "96% noise" HDBSCAN bug, and whose UMAP fix was never re-verified end-to-end against it
+  until now), top-level themes mixed two inconsistent dimensions - some named after product categories
+  ("Dress fit, fabric, and design details"), others after feedback topics - scattering "fit" across many
+  differently-named themes and leaving 37.9% in "Other". Root cause, confirmed by reading every relevant
+  file directly: nothing in `embeddings.py` (raw Voyage embeddings, no task framing) or `clustering.py`
+  (pure unsupervised HDBSCAN+UMAP) steers clustering toward a consistent axis, and `labeling.py`'s
+  cluster-naming prompt gave Claude no instruction to keep one axis - even though `label_clusters` already
+  sends every cluster's samples in one batched call, so Claude already had everything needed to
+  self-correct, it just was never told to. Confirmed separately that the app already correctly keeps
+  category-like columns (e.g. "Division Name") out of clustering entirely via the existing `segment`
+  column role (`app/profiling/columns.py`, `app/text_pipeline/pipeline.py`) - the bug was never
+  architectural leakage, just open-text clustering independently rediscovering entity structure from the
+  review text's own vocabulary.
+- **A second finding changed the shape of the fix**: Claude's labeling reply already includes
+  `merge_with` (clusters it thinks are really the same theme) - confirmed via `grep -rn "merge_with"
+  app/*.py` that it was parsed, validated, and never consumed anywhere downstream. Same for `note`. Both
+  were fully dead data. New module `app/text_pipeline/merging.py` (`merge_groups`, `apply_merges`,
+  `apply_sub_merges`) actually consolidates flagged clusters - Union-Find over `merge_with` treated as
+  undirected edges (one side flagging is enough; under-merging is worse than over-merging here, a
+  deliberate choice), no new LLM call (a merged theme's label/description/note are inherited from the
+  LARGEST original cluster in the group, matching `CLAUDE.md`'s cheap-first principle). Wired into
+  `app/api_themes.py::build_themes`'s `_work` right after `label_clusters`/`label_sub_clusters` respectively,
+  before either cluster shape is used again, so sub-clustering and storage both see the merged result with
+  zero changes needed at either call site. Sub-cluster merging is scoped to `merge_groups`/`_merge_one_level`
+  run independently within each parent's own sub-cluster list (never across parents - structurally
+  impossible, not just prompted against), and re-applies `subthemes.py`'s own "≥2 surviving groups" gate
+  post-merge, dropping a parent's sub-themes entirely if merging leaves fewer than 2.
+- **Two related, independently-confirmed problems, included in the same pass at the user's request**:
+  `MIN_SUBTHEME_COVERAGE=0.50` (documented, intentional - a parent's sub-themes only need to cover ≥50%
+  of its answers) meant `treemap_html`'s sub-cells could visually imply full coverage when only half was
+  real, since `squarify()` always fills 100% of the reserved sub-area regardless - fixed by appending a
+  synthetic `("__remainder__", ...)` entry to `subs` before squarify when the gap exceeds 0.5 points,
+  rendered muted (`color-mix(in srgb, var(--muted) 18%, var(--surface))`, never a `--t1..--t7` tint) with
+  its own "N% not in a sub-theme" label. Required a matching fix to the sub-cell loop's `MIX[k]` indexing
+  (`MIX = [46, 36, 27]`, exactly 3 elements) - a naive 4th synthetic entry on a theme with the max 3 real
+  sub-themes would have raised `IndexError` without an explicit `sn == "__remainder__"` branch that skips
+  the `MIX` lookup entirely, caught and pinned by a dedicated regression test before it could ship. Also
+  fixed `frontend/src/ThemeDetail.tsx`'s "N% fit no sub-theme" line, which used `100 - sum(sub_themes
+  size_pct)` when both a theme's and its sub-themes' `size_pct` are "% of ALL answered" (confirmed in
+  `app/api_themes.py::_theme_dict` and `app/chart_data.py`'s own docstring) - the correct remainder is
+  `theme.size_pct - sum(...)`, not `100 - sum(...)`; wrong in production whenever a theme's own share
+  wasn't near 100%, i.e. almost always. Existing test fixtures encoded the old wrong mental model (sub-theme
+  shares summing near 100 against a ~26% parent, which can't happen with real data) and were corrected.
+- **"Measure, don't assume" caught two real problems a prompt-writing pass alone would not have**, both
+  found by rebuilding themes for real against the same dataset that exposed the original bug (not a
+  synthetic fixture): (1) `merge_with` alone was insufficient - Claude reliably named many clusters
+  IDENTICALLY along the new consistent axis (10 of 13 themes all literally "Fit and sizing") without
+  exhaustively cross-referencing all of them against each other via `merge_with`, leaving confusing
+  duplicate-labeled boxes instead of one consolidated theme. Fixed by having `_merge_one_level` also treat
+  two clusters sharing the exact same label (case/whitespace-insensitive) as an implicit merge edge,
+  independent of `merge_with` - a same-labeled pair is useless to show separately regardless of why Claude
+  didn't cross-reference it. (2) The first fix for (1), combined with the SYSTEM prompt's original "prefer
+  merging when in doubt" wording, then over-corrected: a second real rebuild collapsed 74.4% of the
+  dataset into ONE "Fit and sizing" super-theme, swallowing genuinely distinct aspects (fabric quality,
+  durability, style) that happened to be fit-adjacent. Fixed by recalibrating the SYSTEM prompt: replaced
+  "prefer merging when in doubt" with explicit criteria (only merge when a one-sentence summary of both
+  clusters would genuinely be the same sentence; fit, fabric quality, durability, value, and style are
+  each their OWN aspect even when one review mentions several) and the equivalent tightening of the
+  `merge_with` instruction. A third real rebuild after this produced 6 genuinely distinct, axis-consistent
+  themes (Fit and sizing 70.1%, Other 25.6%, Versatility and style 2.2%, Fabric care and durability 1.1%,
+  Fabric quality 0.7%, Fabric opacity and transparency 0.3%) with real, specific sub-themes under the
+  dominant theme (e.g. "Oversized and roomy sizing", "Fitted torso with selective sizing considerations",
+  "Intentionally oversized silhouette") - no entity mixing, no duplicate names, real differentiation
+  preserved. "Fit and sizing"'s continued dominance (~70%) is treated as a legitimate finding about this
+  specific dataset (correctly consolidating what was previously fragmented by garment type), not
+  evidence of remaining over-merging, since the surviving themes are genuinely distinct aspects, not
+  near-duplicates.
+- **"Other" (25.6%, 5803 answers) stayed IDENTICAL across all three real rebuilds** (10-theme,
+  2-theme-collapsed, and final 6-theme runs) - direct, repeated confirmation that "Other" bucket size is
+  governed entirely by `clustering.py`'s HDBSCAN density/min-cluster-size noise decisions, a separate
+  mechanism from axis-mixing/labeling, exactly as predicted during planning. Not addressed in this pass -
+  flagged as real, separate follow-up work if the "Other" percentage itself needs to come down, not
+  something a labeling-prompt change can move.
+- **New tests**: `tests/test_text_pipeline_merging.py` (pure graph-logic unit tests, no network - 18
+  cases covering `merge_groups`'s Union-Find semantics, `apply_merges`/`apply_sub_merges`'s member/size
+  consolidation, label inheritance, id renumbering, the same-label merge safety net and its
+  case/whitespace-insensitivity, Other exclusion, cross-parent isolation, and the below-2-groups drop
+  gate); `tests/test_api_themes.py` gained two real end-to-end job tests (one forcing a top-level merge
+  via a custom fake Claude reply asserting every cluster merges into one stored `Theme` row, one forcing a
+  sub-cluster merge under the existing big-fixture machinery); `tests/test_charts_data.py` gained the
+  remainder-cell tests described above; `frontend/src/ThemeDetail.test.tsx` gained a case with a small
+  sub-theme share against a small parent share, the realistic shape the old formula got wrong.

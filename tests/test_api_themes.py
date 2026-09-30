@@ -776,6 +776,94 @@ def test_build_themes_with_subthemes_end_to_end(env):
     ).status_code == 404
 
 
+def _fake_claude_reply_merge_all(prompt: str) -> str:
+    """Same shape as `_fake_claude_reply`, but every cluster flags every OTHER cluster it was given as
+    the same theme - proving `apply_merges` (app/text_pipeline/merging.py) actually consolidates real
+    clusters into one stored Theme row, not just gives them similar names. Robust to however many
+    clusters a given fake embedding fixture happens to produce."""
+    payload = json.loads(prompt)
+    cluster_ids = [c["cluster_id"] for c in payload["clusters"]]
+    themes = [
+        {"cluster_id": cid, "label": f"Theme {cid}", "description": f"About cluster {cid}.",
+         "merge_with": [other for other in cluster_ids if other != cid], "note": None}
+        for cid in cluster_ids
+    ]
+    return json.dumps({"themes": themes})
+
+
+def test_build_themes_job_actually_merges_clusters_claude_flags_as_the_same_theme(env):
+    """merge_with used to be parsed and validated but never consumed - see app/text_pipeline/merging.py's
+    own docstring. When Claude flags every real cluster as the same theme, the real pipeline now stores
+    ONE consolidated Theme row (combined size, combined answer_refs), not several separate ones."""
+    install_fakes()
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply_merge_all)
+    did = upload_csv(env, theme_df())
+    applied = clean_and_apply(env, did)
+    rows_out = applied["report"]["rows_out"]
+
+    job = build_themes_job(env, did)
+    assert job["status"] == "done", job
+
+    listed = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()
+    themes = listed["themes"]
+    real_themes = [t for t in themes if t["label"] != "Other"]
+    other_size = sum(t["size"] for t in themes if t["label"] == "Other")
+
+    assert len(real_themes) == 1  # was >= 2 (reliability + support) without merging - see the round-trip test above
+    assert real_themes[0]["size"] == rows_out - other_size
+    assert set(real_themes[0]["tone"]) == {"neg", "neu", "pos"}
+    assert abs(sum(real_themes[0]["tone"].values()) - 100) < 0.01
+
+
+def _fake_claude_reply_merge_first_two_subclusters(prompt: str) -> str:
+    """Same shape as `_fake_claude_reply`, but for the SUB-theme-labeling call specifically (identified
+    by `parent_theme` on its cluster entries, same detection `_fake_claude_reply_sub_labeling_fails`
+    uses) flags flat sub-cluster id 0 as the same sub-theme as flat id 1 - proving `apply_sub_merges`
+    actually consolidates real sub-clusters, and correctly drops a parent whose sub-themes merge down to
+    fewer than 2 groups, end to end."""
+    payload = json.loads(prompt)
+    if payload["clusters"] and "parent_theme" in payload["clusters"][0]:
+        themes = [
+            {"cluster_id": c["cluster_id"], "label": f"Sub {c['cluster_id']}",
+             "description": f"About sub-cluster {c['cluster_id']}.",
+             "merge_with": [1] if c["cluster_id"] == 0 else [], "note": None}
+            for c in payload["clusters"]
+        ]
+        return json.dumps({"themes": themes})
+    return _fake_claude_reply(prompt)
+
+
+def test_build_themes_job_actually_merges_subclusters_claude_flags_as_the_same_subtheme(env):
+    """Companion to the top-level merge test above, for sub-themes: forcing sub-clusters 0 and 1 (under
+    the one big, real-sub-structure parent) to merge either leaves fewer, larger sub-themes than the
+    unmerged baseline (>= 2 kept, see test_build_themes_with_subthemes_end_to_end) or correctly drops the
+    parent to sub_themes == [] if merging leaves fewer than 2 groups - both are valid, both exercise real
+    code, neither is a crash or a stale, un-consolidated pair of near-duplicate sub-themes."""
+    df, vectors_by_text = big_theme_df_and_vectors()
+    app.dependency_overrides[get_embedding_client] = lambda: FakeFamilyEmbeddingClient(vectors_by_text)
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply_merge_first_two_subclusters)
+    app.dependency_overrides[get_jev_client_factory] = lambda: (lambda: FakeJevClient(("pos", 0.8)))
+
+    did = upload_csv(env, df)
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+
+    listed = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()
+    real_themes = [t for t in listed["themes"] if t["label"] != "Other"]
+    big = max(real_themes, key=lambda t: t["size"])
+    assert big["size"] >= 100  # same big parent as the unmerged baseline test
+
+    subs = big["sub_themes"]
+    assert len(subs) <= 2  # merging 2 of the (>=2, <=3) baseline sub-clusters can only reduce the count
+    if subs:
+        total_sub_size = sum(s["size"] for s in subs)
+        assert total_sub_size / big["size"] >= 0.5  # subthemes.py's own coverage gate, unaffected by merging
+        for i, s in enumerate(subs):
+            assert s["index"] == i
+            assert s["size"] > 0
+
+
 def test_sub_theme_labeling_failure_falls_back_to_no_sub_themes_not_a_failed_job(env):
     """Plan decision 10: an untrusted/broken reply from the SUB-theme-labeling call specifically (not the
     main labeling call) must not fail the whole theme build - the job still reaches "done" with themes

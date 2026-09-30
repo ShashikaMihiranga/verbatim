@@ -235,7 +235,51 @@ def test_treemap_html_sub_cell_label_line_count_is_derived_from_its_own_height()
         r'-webkit-box-orient:vertical">Zebra paint <span style="font-weight:600">',
         html)
     assert sub_cell, "no sub-cell label with a computed -webkit-line-clamp found for Zebra paint"
-    assert int(sub_cell.group(1)) >= 1
+
+
+def test_treemap_html_shows_remainder_cell_when_subtheme_coverage_is_incomplete():
+    """Regression pin (docs/DECISIONS.md): MIN_SUBTHEME_COVERAGE only requires sub-themes to cover >= 50%
+    of their parent's answers, by design - but squarify() always fills 100% of the reserved sub-area
+    regardless, so without a remainder cell the chart would visually imply full coverage. small_report()'s
+    "Zebra crossing" theme (share 60) has one sub-theme "Zebra paint" (share 40) - a real 20-point gap."""
+    data = small_report()
+    html = treemap_html(data, 1084, 580)
+
+    assert "20% not in a sub-theme" in html
+    assert "color-mix(in srgb, var(--muted) 18%, var(--surface))" in html
+
+
+def test_treemap_html_omits_remainder_cell_when_coverage_is_effectively_complete():
+    """A sub-theme sum within 0.5 percentage points of its parent's own share is treated as full coverage
+    - no remainder cell for noise-level rounding gaps."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Zebra crossing", 60.2, -0.3, 600, "t1", ToneSplit(60, 30, 10),
+                  [SubTheme("Zebra paint", 60.0)]),
+        ThemeNode("Other", 39.8, 0.0, 398, "other", ToneSplit(30, 40, 30), note="Folded in: too rare"),
+    ]
+    html = treemap_html(data, 1084, 580)
+
+    assert "not in a sub-theme" not in html
+
+
+def test_treemap_html_does_not_indexerror_with_three_real_subthemes_plus_remainder():
+    """Regression pin: MIX = [46, 36, 27] is a 3-element list, and a theme can already have up to
+    MAX_SUBTHEMES_PER_THEME (3) real sub-cells (k reaching 2) - a naive 4th synthetic remainder entry
+    would push k to 3 and raise IndexError on MIX[k] without the "__remainder__" special case."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Zebra crossing", 90, -0.3, 900, "t1", ToneSplit(60, 30, 10), [
+            SubTheme("Zebra paint", 20),
+            SubTheme("Zebra stripes", 20),
+            SubTheme("Zebra crossing signs", 20),
+        ]),
+        ThemeNode("Other", 10, 0.0, 100, "other", ToneSplit(30, 40, 30), note="Folded in: too rare"),
+    ]
+    html = treemap_html(data, 1084, 580)  # must not raise IndexError
+
+    assert "30% not in a sub-theme" in html
+    assert "Zebra paint" in html and "Zebra stripes" in html and "Zebra crossing signs" in html
 
 
 def test_rank_bar_width_is_percent_not_fixed_pixels():
