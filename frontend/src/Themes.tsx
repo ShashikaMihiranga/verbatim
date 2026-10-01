@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { getProfile } from './api'
-import type { DatasetView } from './api'
+import type { ColumnProfile, DatasetView, Kind } from './api'
 import { buildThemes, getThemeAnswers, getThemes, getThemesChart } from './themesApi'
 import type { ThemeAnswer, ThemeCard, ThemeChartResponse } from './themesApi'
 import { buildReport, getReport } from './reportApi'
@@ -17,6 +17,54 @@ import './themes.css'
 import './report.css'
 
 const PAGE_SIZE = 20
+
+// How "mostly unique" a column's answered values are - distinct values as a share of answered (non-
+// missing) rows. Real free text (genuine survey answers) sits close to 1; a column that LOOKS like open
+// text by word count but is actually repeated per-row metadata (product dimensions, category breadcrumbs,
+// names, prices - all seen in real datasets, see docs/TODO.md) sits close to 0, often many hundreds of
+// rows sharing one identical value.
+function uniqueness(c: ColumnProfile, rowCount: number): number {
+  const answered = Math.max(1, rowCount - c.missing)
+  return c.distinct / answered
+}
+
+// Below this, a column reads as repeated metadata, not real answers, regardless of word count - matches
+// the backend's own existing cutoff for the same signal (app/profiling/columns.py's open_text confidence:
+// `conf = ... else 0.65` below 0.3 uniqueness), reused here rather than inventing a second threshold.
+const UNIQUENESS_FLOOR = 0.3
+
+// Picks which confirmed (or, if not yet confirmed, auto-guessed) open_text column the report is built
+// from. There is still no UI letting a user choose this directly (docs/TODO.md) - this is the automatic
+// fallback every report goes through. It used to be "the first open_text column in upload-column order",
+// which reliably picked whichever repeated-metadata column happened to be uploaded first (a dataset's own
+// column order has no relationship to which column is actually free text) - confirmed live, more than
+// once, on a real dataset.
+//
+// Two-step pick, both using fields the backend already returns per column (no new endpoint needed):
+// 1. Drop any candidate below UNIQUENESS_FLOOR - these are the repeated-metadata columns the fix targets.
+// 2. Among what's left, prefer the one with the longest typical answer (`median_words`) - confirmed on a
+//    real dataset that uniqueness alone isn't enough to tell two genuinely-free-text columns apart: a
+//    review's short title can have a HIGHER uniqueness ratio than its own full-text body (titles are
+//    varied short phrases; bodies reuse more boilerplate despite being longer), even though the body is
+//    the richer, more meaningful column to actually analyse. If every candidate is below the floor (no
+//    genuinely free-text column exists at all), falls back to the most unique one anyway - still better
+//    than picking blind.
+export function pickOpenTextColumn(profile: {
+  columns: ColumnProfile[]
+  row_count: number
+  confirmed?: { columns: Record<string, { kind: Kind; off?: boolean }> }
+}): string | null {
+  const conf = profile.confirmed
+  const candidates = profile.columns.filter(
+    (c) => (conf?.columns[c.name]?.kind ?? c.kind) === 'open_text' && !conf?.columns[c.name]?.off,
+  )
+  if (candidates.length === 0) return null
+
+  const qualifying = candidates.filter((c) => uniqueness(c, profile.row_count) >= UNIQUENESS_FLOOR)
+  const pool = qualifying.length > 0 ? qualifying : candidates
+  const rank = qualifying.length > 0 ? (c: ColumnProfile) => c.median_words : (c: ColumnProfile) => uniqueness(c, profile.row_count)
+  return pool.reduce((best, c) => (rank(c) > rank(best) ? c : best)).name
+}
 
 function Progress() {
   const items = ['Upload', 'Check columns', 'Cleaning review', 'Report']
@@ -184,10 +232,7 @@ export default function Themes() {
     getProfile(id)
       .then(async (d) => {
         setDs(d)
-        const conf = d.profile.confirmed
-        const col =
-          d.profile.columns.find((c) => (conf?.columns[c.name]?.kind ?? c.kind) === 'open_text' && !conf?.columns[c.name]?.off)
-            ?.name ?? null
+        const col = pickOpenTextColumn(d.profile)
         setColumn(col)
         if (!col) return
 

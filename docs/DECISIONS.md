@@ -506,3 +506,44 @@
   api_key` correctly self-skips via its own existing, documented `skipif` once a real key is visible in
   the test process too; same 5 pre-existing unrelated auth/security failures as every other entry this
   session).
+
+## 2026-10-01 (report-subject auto-pick: uniqueness, then answer length - no picker UI yet, but the blind
+## first-in-order pick was itself a real, repeating bug)
+- User hit the same symptom a third time on a real dataset, this time via the `dimension` column (product
+  physical dimensions - "4.8 in x 6.6 in x 3.2 in", 100% one value, 1 theme, no sub-themes): the Report
+  screen's auto-pick (`frontend/src/Themes.tsx`) chose whichever confirmed `open_text` column came FIRST
+  in the spreadsheet's own upload-column order, with zero quality signal - a dataset's column order has no
+  relationship to which column is actually free text, so this reliably surfaced whichever repeated-
+  metadata column (categories, dimension, name, prices, ...) happened to sort earliest.
+- Fix, two-step, both using signals the backend already computes per column:
+  1. `pickOpenTextColumn` (new, exported, unit-tested) filters confirmed/guessed `open_text` candidates to
+     those with `distinct / answered >= 0.3` ("uniqueness" - reuses the exact threshold
+     `app/profiling/columns.py`'s own `open_text` confidence scoring already uses for the same signal, not
+     a new number). This alone fixes the reported bug: `categories`/`name`/`prices`/`dimension` all score
+     well under 0.3 on the real dataset (0.01-0.04), `reviews.text`/`reviews.title` both clear it (0.66/
+     0.80).
+  2. Among whatever clears that floor, prefers the LONGEST typical answer (`median_words`, a genuinely new
+     field - `app/profiling/columns.py`'s `out()` now returns it for every column, not just the open_text/
+     short_text branches that happened to already compute it locally for their own reason text). Needed
+     because uniqueness alone doesn't reliably separate two genuinely-free-text columns: confirmed on the
+     real dataset that `reviews.title` (short, varied phrases - "Great buy!", "Terrible") scores a HIGHER
+     raw uniqueness ratio (0.80) than `reviews.text` itself (0.66, longer but reuses more boilerplate
+     phrasing across different reviews) - without the length tie-break, the fix would have "worked" but
+     still have landed on the thinner, less meaningful column.
+- `median_words` was already computed internally (`profile_column`'s `wcounts`/`med_words`, used for the
+  `open_text`/`short_text` kind decision and reason text) but never returned to callers - moved its
+  computation to the top of `profile_column` (before any `out()` call, so every kind returns it, not just
+  the branches that already happened to need it locally) rather than adding a second computation.
+- Verified directly against the real dataset, twice: via the already-stored (stale, pre-fix) profile
+  first - confirmed it lacks `median_words` entirely, the same "profiling runs once at upload, never
+  recomputed" limitation already documented for the 2026-09-30 segment-detection fix, not a new gap; then
+  via `profile_column` called fresh on the same real column data, confirming the exact real numbers quoted
+  above and that the two-step pick lands on `reviews.text` - the actually-correct answer - not
+  `reviews.title`.
+- New tests: `tests/test_profiling.py` (unchanged - `median_words` is additive, no existing assertion
+  depended on the returned dict's exact key set); `frontend/src/themes.test.tsx` (new file -
+  `pickOpenTextColumn` covering: no open_text candidates, a single candidate, the real dimension-vs-
+  reviews.text case, a confirmed-kind override, a switched-off column, the real reviews.title-vs-
+  reviews.text length tie-break, and the floor-fallback case where nothing clears 0.3 uniqueness at all).
+- Still not built (unchanged from the 2026-09-30 TODO entry): a real column-picker UI. This fix makes the
+  automatic fallback meaningfully better, not a replacement for letting a user choose directly.

@@ -30,6 +30,7 @@ export interface ColumnProfile {
   unit: string | null
   distinct: number
   missing: number
+  median_words: number
   samples: string[]
   sensitive: boolean
   sensitive_reason: string | null

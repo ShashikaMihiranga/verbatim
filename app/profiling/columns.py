@@ -162,6 +162,13 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
     missing = total - n
     toks = _tokens(name)
     lname = name.lower()
+    # Computed here (not just where open_text/short_text use it below) so every returned column - any
+    # kind - carries it: the frontend's open-text auto-pick (Themes.tsx::pickOpenTextColumn) uses it as a
+    # tie-break between multiple genuinely-unique open_text candidates (prefer the richer, longer-answer
+    # one), which needs this on every open_text candidate's own profile, not just whichever branch below
+    # happens to already compute it for its own reason text.
+    wcounts = [_words(v) for v in non_missing[:5000]]
+    med_words = statistics.median(wcounts) if wcounts else 0
 
     sens = _sensitive_by_name(name) or _sensitive_by_values(cnt, n)
     kind, conf, reason, unit = "id_or_junk", 0.9, "", None
@@ -172,6 +179,7 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
             "name": name, "position": position, "kind": kind, "confidence": round(conf, 2), "reason": reason,
             "unit": unit, "distinct": distinct, "missing": missing, "samples": _samples(cnt, bool(sens)),
             "sensitive": bool(sens), "sensitive_reason": sens, "is_question": is_question,
+            "median_words": round(med_words, 1),
         }
 
     if n == 0:
@@ -279,8 +287,6 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
         return out()
 
     id_hint = any(t in _ID_TOKENS for t in toks) or lname.endswith("id")
-    wcounts = [_words(v) for v in non_missing[: 5000]]
-    med_words = statistics.median(wcounts) if wcounts else 0
     uniq_ratio = distinct / n
 
     if distinct == n and n >= 3 and med_words <= 1 and (
