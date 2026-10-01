@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +18,21 @@ from .charts import FRAMES, render
 from .config import get_settings
 from .ratelimit import RateLimitMiddleware
 from .security import SecurityHeadersMiddleware
+
+# `Settings` (config.py) uses pydantic-settings' own `env_file=".env"` to populate ITS fields (env,
+# database_url, clerk_*) - but that loading is private to that one model, it never touches the process's
+# actual os.environ. Every other config value in this app (VOYAGE_API_KEY, ANTHROPIC_API_KEY,
+# TYPESAFE_API_KEY, ALLOW_DEV_USER, ...) is read via plain os.environ.get(...) in whichever module needs
+# it (embeddings.py, findings.py, jev_sentiment.py, auth.py), so none of those ever saw .env's values
+# unless the launching shell had already exported them itself - confirmed to be why local embedding/
+# labeling calls silently never reached Voyage/Claude when the server was started without first running
+# `source .env` by hand. python-dotenv was already a listed dependency for exactly this; it just was never
+# called. load_dotenv() populates the real process environment (unlike pydantic-settings' private
+# loading), so every os.environ.get(...) call anywhere benefits, with no other module needing a change.
+# Safe in production: it never overrides a variable that's already set (Railway's own dashboard-configured
+# env vars win), and does nothing at all when no .env file exists (true on every deploy - .env is
+# git-ignored, never shipped).
+load_dotenv()
 
 _dev = get_settings().env == "dev"
 app = FastAPI(

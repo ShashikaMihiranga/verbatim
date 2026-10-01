@@ -477,3 +477,32 @@
   `tests/test_findings_structured.py` (the 3 existing `pick_structured_columns` tests updated for the new
   `list[str]` return shape, plus a new test with two confirmed segment columns where the first fails
   suppression and the second succeeds, asserting the report actually falls back to and uses the second).
+
+## 2026-10-01 (.env was never actually loaded - VOYAGE_API_KEY/ANTHROPIC_API_KEY silently invisible unless
+## the launching shell had already exported them)
+- User reported Voyage API usage never showed up, despite `VOYAGE_API_KEY` sitting in `.env`. Root cause:
+  `app/config.py`'s `Settings` uses pydantic-settings' own `env_file=".env"` to populate ITS OWN fields
+  (`env`, `database_url`, `clerk_*`) - but that loading is private to that one model; it never writes
+  anything into the process's real `os.environ`. Every other credential in this app (`VOYAGE_API_KEY`,
+  `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`, `ALLOW_DEV_USER`) is read via plain `os.environ.get(...)` in
+  whichever module needs it (`embeddings.py`, `findings.py`, `jev_sentiment.py`, `app/auth.py`) - none of
+  which ever saw `.env`'s values unless the shell that started uvicorn had separately, manually exported
+  them first (`source .env`). `python-dotenv` was already listed in `requirements.txt` for exactly this
+  reason, but `load_dotenv()` was never actually called anywhere in the app.
+- Confirmed the exact failure mode directly: in a clean environment (`env -i`, nothing but `PATH`/`HOME`)
+  matching what a plain `uvicorn app.main:app --reload` would see, `VOYAGE_API_KEY` was unset before the
+  fix - meaning `get_embedding_client()` (`app/api_themes.py`) would hit `EmbeddingNotConfigured` and
+  every "Build themes" request would fail with a clear 503 before any background work even started,
+  whenever the server was launched any way other than first manually sourcing `.env`.
+- Fix: `load_dotenv()` (one call, `app/main.py`, right after imports, before `get_settings()` is first
+  called) - populates the REAL process environment (unlike pydantic-settings' private model-only
+  loading), so every existing `os.environ.get(...)` call anywhere in the app benefits with no other module
+  needing a change. Safe by construction in production: `load_dotenv()`'s default never overrides an
+  already-set variable (Railway's own dashboard-configured env vars still win), and does nothing at all
+  when no `.env` file exists (true on every real deploy - `.env` is git-ignored, never shipped).
+- Verified directly: re-ran the same clean-environment (`env -i`) check after the fix - `VOYAGE_API_KEY`
+  and `ANTHROPIC_API_KEY` are now both populated purely from importing `app.main`, no manual export
+  needed. Full backend suite still green (586 passed, 1 now-skipped - `test_voyage_client_raises_without_
+  api_key` correctly self-skips via its own existing, documented `skipif` once a real key is visible in
+  the test process too; same 5 pre-existing unrelated auth/security failures as every other entry this
+  session).
