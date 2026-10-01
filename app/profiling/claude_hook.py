@@ -1,8 +1,8 @@
 """Optional Claude refinement of a column profile.
 
 No-op unless ANTHROPIC_API_KEY is set (or a client is passed in, for tests).
-One call to a small model with headers plus up to 30 sample values per column,
-never the full data. Sensitive columns send the header only, no values.
+One call with headers plus up to 30 sample values per column, never the full data.
+Sensitive columns send the header only, no values.
 The `anthropic` SDK is imported lazily and is not a hard requirement.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 
 from .columns import KINDS
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"  # one tier up from claude-haiku-4-5 - see labeling.py's own comment
 MAX_SAMPLES = 30
 
 SYSTEM = (
@@ -74,6 +74,9 @@ def refine_profile(profile: dict[str, Any], samples: dict[str, list[str]], clien
             model=model or os.environ.get("VERBATIM_CLAUDE_MODEL", DEFAULT_MODEL),
             max_tokens=1500,
             system=SYSTEM,
+            # thinking disabled - see labeling.py::AnthropicClaudeClient.complete's own comment: a
+            # structured-JSON task, and adaptive thinking competes with the reply itself for max_tokens.
+            thinking={"type": "disabled"},
             messages=[{"role": "user", "content": _build_prompt(profile, samples)}],
         )
         text = "".join(getattr(b, "text", "") for b in msg.content)

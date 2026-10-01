@@ -28,7 +28,9 @@ from typing import Any, Protocol, runtime_checkable
 
 from .schema import Cluster, ClusterResult, ThemeLabel
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"  # one tier up from claude-haiku-4-5: this is one batched call per
+# build regardless of dataset size (never per-row), so the extra cost buys better naming/merging
+# judgement where it matters most - see docs/DECISIONS.md's dated entry for why this was raised.
 MAX_TOKENS = 4096
 DEFAULT_SAMPLES_PER_CLUSTER = 20  # SPEC.md: "About 15 to 25 representative answers per cluster"
 DEFAULT_SAMPLES_PER_SUBCLUSTER = 12  # a sub-cluster is already a slice of one theme; fewer samples suffice
@@ -128,8 +130,8 @@ class AnthropicClaudeClient:
     """Real Claude client. Lazy-imports `anthropic` (not a hard requirement - see
     `app/profiling/claude_hook.py`), reads `ANTHROPIC_API_KEY` from the environment and raises
     `ClaudeNotConfigured` before ever touching the network if it is unset. Model defaults to
-    `claude-haiku-4-5`, override with `VERBATIM_CLAUDE_MODEL` (the same env var `claude_hook.py` uses -
-    one small model for both optional Claude steps unless told otherwise)."""
+    `DEFAULT_MODEL` above, override with `VERBATIM_CLAUDE_MODEL` (the same env var `claude_hook.py` and
+    `sentiment.py` use - one model for every optional Claude step unless told otherwise)."""
 
     def __init__(self, model: str | None = None) -> None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -146,10 +148,17 @@ class AnthropicClaudeClient:
         self.model = model or os.environ.get("VERBATIM_CLAUDE_MODEL", DEFAULT_MODEL)
 
     def complete(self, system: str, prompt: str) -> str:
+        # thinking explicitly disabled: this is a structured-JSON-only task (the system prompt already
+        # spells out exact rules), never open-ended reasoning, and newer models' adaptive thinking competes
+        # with the actual reply for the same max_tokens budget - confirmed directly against the real API
+        # (claude-sonnet-5 upgrade, docs/DECISIONS.md's dated entry): a real labeling prompt spent its
+        # entire 4096-token budget on an (unrequested) thinking block and returned NO text at all,
+        # surfacing as "Claude's reply did not contain any JSON" - not a formatting problem, a budget one.
         msg = self._client.messages.create(
             model=self.model,
             max_tokens=MAX_TOKENS,
             system=system,
+            thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
         )
         return "".join(getattr(block, "text", "") for block in msg.content)

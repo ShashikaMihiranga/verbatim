@@ -32,7 +32,7 @@ from ..chart_data import ToneSplit
 from .jev_sentiment import JevClient
 from .schema import AnswerScore
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"  # one tier up from claude-haiku-4-5 - see labeling.py's own comment
 MAX_DISAGREEMENTS_SHOWN = 20  # SpotCheckReport.disagreements is for display, never the full raw sample
 
 # ---------------------------------------------------------------------------------------------------------
@@ -486,6 +486,9 @@ def spot_check(scores: list[AnswerScore], client: ClaudeClient = None, sample_si
         model=os.environ.get("VERBATIM_CLAUDE_MODEL", DEFAULT_MODEL),
         max_tokens=4000,
         system=SYSTEM_PROMPT,
+        # thinking disabled - see labeling.py::AnthropicClaudeClient.complete's own comment: a structured-
+        # JSON task, and adaptive thinking competes with the reply itself for the same max_tokens budget.
+        thinking={"type": "disabled"},
         messages=[{"role": "user", "content": json.dumps({"answers": payload})}],
     )
     text = "".join(getattr(b, "text", "") for b in msg.content)

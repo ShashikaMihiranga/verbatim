@@ -547,3 +547,38 @@
   reviews.text length tie-break, and the floor-fallback case where nothing clears 0.3 uniqueness at all).
 - Still not built (unchanged from the 2026-09-30 TODO entry): a real column-picker UI. This fix makes the
   automatic fallback meaningfully better, not a replacement for letting a user choose directly.
+
+## 2026-10-01 (raised the default Claude model to claude-sonnet-5, and the real bug that surfaced doing it)
+- User asked to try a "slightly better" Claude model. All three optional Claude steps (theme/sub-theme
+  labeling `labeling.py`, a sentiment spot-check sample `sentiment.py`, column-kind refinement at upload
+  `claude_hook.py`) already shared one `VERBATIM_CLAUDE_MODEL`-overridable `DEFAULT_MODEL`, defaulting to
+  `claude-haiku-4-5` - none of the three are high-volume (labeling is one batched call per build
+  regardless of dataset size; the other two are a small sample/once-per-upload), so raising the shared
+  default one tier to `claude-sonnet-5` is cheap either way. Changed `DEFAULT_MODEL` in all three files.
+- **Real regression found immediately by testing against the real API, not assumed away**: a real
+  theme-build labeling call (21 clusters, a genuinely large prompt - 170,175 input tokens of representative
+  answer samples) failed outright with `"Claude's reply did not contain any JSON."`. Root-caused by
+  inspecting the raw API response object directly (`stop_reason`, `usage`, content block types) rather than
+  guessing from the error message: `claude-sonnet-5` engaged extended thinking ADAPTIVELY for this large,
+  complex prompt - `output_tokens_details.thinking_tokens` was 4096, the ENTIRE `max_tokens=4096` budget,
+  leaving zero tokens for the actual reply. The single returned content block was `type: "thinking"`, not
+  `"text"` - genuinely no text to parse, not a formatting problem. `claude-haiku-4-5` apparently never
+  engaged this for the same prompt shape, so the bug was invisible until the model was actually raised and
+  actually tested against something the size of a real dataset, not a toy prompt.
+- Fix: `thinking={"type": "disabled"}` added to all three `messages.create()` calls. None of these three
+  tasks are open-ended reasoning - every one already gets an explicit, prescriptive system prompt spelling
+  out the exact JSON shape wanted; thinking was never useful here, only competing with the reply itself for
+  the same token budget. Confirmed this does NOT break the existing "model wraps its JSON in a markdown
+  code fence anyway" tolerance (`labeling.py::_extract_json`'s regex fallback, `claude_hook.py`'s matching
+  `_parse_json`) - Sonnet 5 does still sometimes fence its reply even when told not to, but the existing
+  fallback already handles that correctly; it was never the actual problem here, confirmed by testing the
+  real extracted text through the real parser, not a standalone `json.loads`.
+- Verified end to end, twice: first the real `label_clusters` function directly against the real 21-cluster
+  dataset (22 labels including Other, real `merge_with` suggestions, sensible names) with `thinking`
+  disabled; then a full real build-themes job through the actual API, including the separate sub-theme
+  labeling call - 16 final themes, several with real sub-themes populated (2/3/3/3 - unlike the degenerate
+  `categories` case from the day before, this is the REAL open-text column and sub-clustering is finding
+  genuine structure), Other at 10.1% (matching the 2026-09-30 HDBSCAN fix's own verified number exactly,
+  confirming the model change didn't regress clustering quality - clustering itself never touches Claude).
+  Full backend suite still green throughout (586 passed, 1 skipped, same 5 pre-existing unrelated
+  failures).
