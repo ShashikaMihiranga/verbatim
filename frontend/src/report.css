@@ -42,6 +42,12 @@
    for a chart's own minimum readable layout, or for the handful of charts (reachable only via the
    internal /frame/{id} design-review gallery) that stay fixed-pixel because nothing rewrote them. */
 .rp-chart-scroll { max-width: 100%; overflow-x: auto; }
+/* .rp-chart's inline width:100% only fills .rp-chart-scroll up to its own maxWidth cap (ThemeChart.tsx's
+   design-width prop) - once that cap is narrower than the scroll container (any screen wider than the
+   chart's own design, which is the common case once .rp-chart-scroll is widened past .page below),
+   margin:auto is what centers it instead of leaving it flush against the container's left edge with
+   empty space to the right. */
+.rp-chart { margin: 0 auto; }
 .rp-chart svg { display: block; overflow: visible; max-width: 100%; }
 
 /* Lets .rp-chart-scroll grow past .page's normal 960px reading column, so a genuinely fluid chart (see
