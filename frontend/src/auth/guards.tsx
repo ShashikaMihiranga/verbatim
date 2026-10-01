@@ -3,7 +3,7 @@ import { useLayoutEffect } from 'react'
 import type { ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { registerAuthBridge } from '../authFetch'
-import { clerkConfigured } from '../authConfig'
+import { clerkConfigured, devUserAllowed } from '../authConfig'
 import { Logo } from './ui'
 import './auth.css'
 
@@ -45,6 +45,9 @@ function ClerkGuard({ children }: { children: ReactNode }) {
 
 // Signed-out visitors go to /sign-in. Without a Clerk key nothing is signed in, so it also redirects.
 export function RequireAuth({ children }: { children: ReactNode }) {
+  // Local-only escape hatch (see authConfig.ts's own comment): skips Clerk entirely, before even
+  // checking clerkConfigured, so it works whether or not a real Clerk key also happens to be set.
+  if (devUserAllowed) return <>{children}</>
   if (!clerkConfigured) return <Navigate to="/sign-in" replace />
   return <ClerkGuard>{children}</ClerkGuard>
 }

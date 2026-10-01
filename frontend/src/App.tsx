@@ -8,7 +8,7 @@ import Themes from './Themes'
 import Upload from './Upload'
 import Landing from './home/Landing'
 import './auth/auth.css'
-import { clerkConfigured } from './authConfig'
+import { clerkConfigured, devUserAllowed } from './authConfig'
 import ForgotPasswordPage from './auth/ForgotPasswordPage'
 import SignInPage from './auth/SignInPage'
 import SignUpPage from './auth/SignUpPage'
@@ -60,7 +60,13 @@ function Shell() {
         <Link to="/upload">Upload</Link>
         <Link to="/report">Report</Link>
         <span className="spacer" />
-        {clerkConfigured ? <ClerkAccount /> : <Link to="/sign-in">Sign in</Link>}
+        {devUserAllowed ? (
+          <span className="muted who">Dev user (Clerk bypassed)</span>
+        ) : clerkConfigured ? (
+          <ClerkAccount />
+        ) : (
+          <Link to="/sign-in">Sign in</Link>
+        )}
       </nav>
       <Outlet />
     </div>
@@ -88,7 +94,10 @@ export default function App() {
       {clerkConfigured && <ClerkBridge />}
       <Routes>
         {authRoutes}
-        <Route path="/" element={clerkConfigured ? <ClerkHome /> : <Landing />} />
+        <Route
+          path="/"
+          element={clerkConfigured ? <ClerkHome /> : devUserAllowed ? <Navigate to="/upload" replace /> : <Landing />}
+        />
         <Route element={<Shell />}>
           <Route path="/projects" element={guard(<Projects />)} />
           <Route path="/upload" element={guard(<Upload />)} />
