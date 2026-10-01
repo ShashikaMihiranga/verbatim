@@ -13,10 +13,10 @@ import type { ProjectSummary } from './projectsApi'
 //
 // `ProjectRow` renders react-router `Link`s, which need a router context - `MemoryRouter` is this repo's
 // own precedent for that (see `home/home.test.tsx`), not a new pattern introduced here.
-function renderList(projects: ProjectSummary[]): string {
+function renderList(projects: ProjectSummary[], onDelete: (p: ProjectSummary) => void = () => {}): string {
   return renderToStaticMarkup(
     <MemoryRouter>
-      <ProjectsList projects={projects} />
+      <ProjectsList projects={projects} onDelete={onDelete} />
     </MemoryRouter>,
   )
 }
@@ -85,6 +85,17 @@ describe('ProjectsList', () => {
     expect(html).not.toContain('47973')
     expect(html).not.toContain('47,973')
     expect(html).toContain('about ') // approximate, never presented as a precise figure
+  })
+
+  it('renders a Delete button per row, accessibly labelled and not nested inside the row link', () => {
+    const html = renderList([project({ id: 7, question: 'Why did you churn?' })])
+    expect(html).toContain('aria-label="Delete Why did you churn?"')
+    // the delete button is a <button>, siblings with (not nested inside) the row's own <a href="...">
+    // link - a <button> inside an <a> would be invalid HTML and would also trigger navigation on click.
+    const anchorEnd = html.indexOf('</a>')
+    const buttonStart = html.indexOf('<button')
+    expect(anchorEnd).toBeGreaterThan(-1)
+    expect(buttonStart).toBeGreaterThan(anchorEnd)
   })
 })
 

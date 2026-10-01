@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getProjects } from './projectsApi'
+import { deleteProject, getProjects } from './projectsApi'
 import type { ProjectStatus, ProjectSummary } from './projectsApi'
 import './upload.css'
 import './projects.css'
@@ -39,24 +39,45 @@ function whenUploaded(iso: string): string {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-export function ProjectRow({ project }: { project: ProjectSummary }) {
+// `onDelete` is a plain callback, not a fetch call made here - Delete is a `<button>` sitting OUTSIDE the
+// row's own `<Link>` (a sibling, not nested inside it) so clicking it never also triggers navigation; the
+// stateful confirm-then-call-the-API logic lives in the default export below, matching this file's
+// existing split (ProjectsList/ProjectRow stay pure/presentational, Projects owns state and effects).
+export function ProjectRow({
+  project,
+  onDelete,
+}: {
+  project: ProjectSummary
+  onDelete: (project: ProjectSummary) => void
+}) {
   const title = project.question || project.filename
   return (
-    <Link to={linkFor(project)} className="pr-row">
-      <div className="pr-main">
-        <div className="pr-title">{title}</div>
-        <div className="pr-sub muted">
-          {roundedRowCount(project.row_count)} &middot; uploaded {whenUploaded(project.created_at)}
+    <div className="pr-row">
+      <Link to={linkFor(project)} className="pr-link">
+        <div className="pr-main">
+          <div className="pr-title">{title}</div>
+          <div className="pr-sub muted">
+            {roundedRowCount(project.row_count)} &middot; uploaded {whenUploaded(project.created_at)}
+          </div>
         </div>
-      </div>
-      <span className={`pr-status pr-status-${project.status.replace(/\s+/g, '-')}`}>
-        {STATUS_LABEL[project.status]}
-      </span>
-    </Link>
+        <span className={`pr-status pr-status-${project.status.replace(/\s+/g, '-')}`}>
+          {STATUS_LABEL[project.status]}
+        </span>
+      </Link>
+      <button type="button" className="pr-delete" aria-label={`Delete ${title}`} onClick={() => onDelete(project)}>
+        Delete
+      </button>
+    </div>
   )
 }
 
-export function ProjectsList({ projects }: { projects: ProjectSummary[] }) {
+export function ProjectsList({
+  projects,
+  onDelete,
+}: {
+  projects: ProjectSummary[]
+  onDelete: (project: ProjectSummary) => void
+}) {
   if (projects.length === 0) {
     return (
       <p className="muted">
@@ -67,7 +88,7 @@ export function ProjectsList({ projects }: { projects: ProjectSummary[] }) {
   return (
     <div className="pr-list">
       {projects.map((p) => (
-        <ProjectRow key={p.id} project={p} />
+        <ProjectRow key={p.id} project={p} onDelete={onDelete} />
       ))}
     </div>
   )
@@ -83,6 +104,21 @@ export default function Projects() {
       .catch((e: Error) => setError(e.message))
   }, [])
 
+  // Confirms (native dialog - this is a permanent delete, per DELETE /api/datasets/{id}'s own docstring:
+  // "deletes one dataset and its Column/Theme/Finding/Report rows"), then removes the row from local state
+  // on success rather than a full re-fetch - one fewer round trip, and getProjects() would return the same
+  // list minus this row anyway.
+  function handleDelete(project: ProjectSummary) {
+    const title = project.question || project.filename
+    const ok = window.confirm(
+      `Delete "${title}"? This permanently removes the upload, its cleaning, themes and report so you can re-upload and try again. This cannot be undone.`,
+    )
+    if (!ok) return
+    deleteProject(project.id)
+      .then(() => setProjects((prev) => (prev ?? []).filter((p) => p.id !== project.id)))
+      .catch((e: Error) => setError(e.message))
+  }
+
   return (
     <>
       <div className="head">
@@ -91,9 +127,13 @@ export default function Projects() {
           New project
         </Link>
       </div>
-      {error && <div className="err" role="alert">{error}</div>}
+      {error && (
+        <div className="err" role="alert">
+          {error}
+        </div>
+      )}
       {!error && projects === null && <p className="muted">Looking at your projects...</p>}
-      {projects !== null && <ProjectsList projects={projects} />}
+      {projects !== null && <ProjectsList projects={projects} onDelete={handleDelete} />}
     </>
   )
 }
