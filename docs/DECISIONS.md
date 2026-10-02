@@ -681,3 +681,45 @@
   genuinely readable boxes. Full backend suite green (579 passed, 1 skipped, same pre-existing unrelated
   failures), including the existing golden-frame hash tests (none needed regenerating - no existing
   fixture's "Other" share exceeded 5%, so this change is additive-only for every case tested before today).
+
+## 2026-10-02 (treemap -> icicle: switch layout per-report when names won't fit the packed squares)
+- Follow-up to the same day's "Other" area-cap fix, same user-reported root cause: the treemap's packed
+  squares still clip long/numerous names even with "Other" capped, because squarify packs boxes by AREA
+  in 2 dimensions - a small-share box is both short AND narrow. User supplied two design references
+  (`design/screens/treemap.dc.html`, `design/screens/icicle.dc.html`) and asked for the icicle layout
+  (every box gets the chart's full row height, only width varies) specifically for long names in small
+  boxes, keeping the denser treemap when names are short enough to fit.
+- **Not a universal swap** - a new per-report decision, `app.charts._prefers_icicle(data, w, h)`, runs the
+  exact same `squarify` layout `treemap_html` itself would use (cheap, pure Python) purely to check
+  whether any resulting theme or sub-theme box is too narrow for even a short fragment of its own name
+  (`_too_narrow_for`, reusing `fit_label`'s own average-character-width convention). `f_treemap` and
+  `f_overview` each call it with their OWN reference size (580px vs 320px tall) and pick `icicle_html` or
+  `treemap_html` independently - confirmed against a real 14-theme dataset that the smaller hero chart can
+  legitimately need icicle while the taller standalone chart still fits treemap; this is correct,
+  size-aware behaviour, not an inconsistency to "fix."
+- **New `icicle_html`**: a fluid rewrite of the layout idea the legacy, unused `f_icicle` (fixed-pixel SVG,
+  one of the "3 dead chart functions" `treemap_html`'s own docstring already named) sketched - not a reuse
+  of that dead code. Themes sit in one row (full chart height, width = share), sub-themes in a second row
+  directly below their parent's own x-span (not the full chart width - keeps nested sub-themes correctly
+  aligned under a possibly `_treemap_areas`-redistributed parent box). "Other"'s width is capped the same
+  way `treemap_html`'s area is (literally the same function reused - width and area are the same thing
+  once every box shares one fixed row height).
+- **A real bug found and fixed by testing live, not assumed away**: the first version capped each cell's
+  `-webkit-line-clamp` by HEIGHT alone. Icicle's whole point is generous height, so a genuinely narrow
+  column (long name, tiny share) had room for 20-30 lines - enough for the browser to spell the ENTIRE name
+  one character per line, vertically ("V" / "e" / "r" / "s" / ...), confirmed live on the real dataset that
+  originally showed the bug. Fixed with a width-informed 3-tier label: full name+% only when the column fits
+  at least ~6 chars/line (the same threshold `_prefers_icicle` uses to decide icicle is needed at all);
+  percent-only when narrower than that but the percentage itself fits one line; nothing at all (box
+  colour/size still carry information, and `data-theme` still resolves a click) when even the percentage
+  wouldn't fit without wrapping character-by-character. `max_lines` is additionally capped at 6 regardless
+  of available height, so a narrow column degrades via line-clamp's own ellipsis rather than an
+  ever-taller stack of near-empty lines.
+- Verified live via `claude-in-chrome` against the real dataset that showed the original clipping bug
+  (Women's Clothing, dataset 2): both the standalone "What are the themes?" chart and the overview hero
+  chart now render as icicle, "Other 25.6%" and "Fit and sizing 70.1%" read cleanly, and the several
+  previously single-letter-clipped small themes now show as clean, text-free colour strips instead of
+  "P...", "B", "U...". Confirmed the EV sample fixture (every golden-frame test's own data) still stays on
+  treemap - its own names have enough room at the full reference size, so none of the 63 chart tests
+  (15 new) needed a golden-file regeneration. Full backend suite green (594 passed, 1 skipped, same
+  pre-existing unrelated failures).

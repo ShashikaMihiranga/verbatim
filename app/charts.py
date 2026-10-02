@@ -314,7 +314,12 @@ OVERVIEW_TREEMAP_H = 320
 
 def f_overview(data: ReportData):
     stats = data.overview.stats
-    chart = treemap_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H)
+    # Same decision function as f_treemap (see _prefers_icicle's own docstring), but called with THIS
+    # chart's own, smaller reference size - this hero chart can legitimately need icicle even when the
+    # taller standalone "What are the themes?" chart below still has enough room for treemap.
+    chart = (icicle_html if _prefers_icicle(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H) else treemap_html)(
+        data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H,
+    )
     st = '<div style="display:flex;margin-top:36px">'
     for i, (l, n, note) in enumerate(stats):
         bd = "border-left:1px solid var(--line);padding-left:24px;" if i else ""
@@ -1014,7 +1019,173 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
     return f'<div style="position:relative;width:100%;height:{h}px">{"".join(cells)}</div>'
 
 
+def _too_narrow_for(name: str, box_w: float, fs: float = 15) -> bool:
+    """Rough, decision-only estimate of whether a box this wide, at the chart's reference width, could
+    show even its own first word on one line - used solely to choose between the treemap and icicle
+    layouts (`_prefers_icicle` below), never to compute an actual render (the real render always leaves
+    width-wise wrapping to the browser's own text flow - see `treemap_html`'s own docstring for why
+    precise server-side width wrapping is deliberately avoided there; this is a coarser, one-time estimate
+    used only to pick a layout)."""
+    if not name or name == "__remainder__":
+        return False
+    first_word = name.split()[0]
+    wpc = fs * 0.53  # same average-character-width convention fit_label() already uses
+    chars_per_line = (box_w - 12) / wpc
+    return chars_per_line < min(len(first_word), 6)
+
+
+def _prefers_icicle(data: ReportData, w: int = 1084, h: int = 580) -> bool:
+    """True when the treemap's packed-square layout would leave at least one theme or sub-theme box too
+    narrow to show even a short fragment of its own name - confirmed live on a real dataset: long theme
+    names ("Versatility and style appeal") and several small sub-themes collapsed to single-letter boxes
+    ("P...", "B", "U..."). `icicle_html` (below) reads far better in that case, since every box gets the
+    chart's full row height and only its WIDTH varies. `treemap_html` stays the default (denser, matches
+    the original design) when every name already has enough room.
+
+    Runs the exact same squarify layout `treemap_html` itself would use, purely to make this one yes/no
+    decision - draws nothing, cheap pure-Python math, no re-render."""
+    rows_data = treemap_rows(data)
+    drawable = [r for r in rows_data if r[1] > 0]
+    if not drawable:
+        return False
+    areas = _treemap_areas(drawable)
+    rects = squarify([(n, areas[n]) for n, _, _, _, _ in drawable], 0, 0, w, h)
+    for name, share, sent, cnt, col in drawable:
+        rx, ry, rw, rh = rects[name]
+        if _too_narrow_for(name, rw):
+            return True
+        subs = subs_of(data, name)
+        if not subs:
+            continue
+        sub_w, sub_h = rw - 10, rh * (100 - 34) / 100 - 5
+        if sub_w <= 20 or sub_h <= 20:
+            return True
+        sr = squarify(subs, 0, 0, sub_w, sub_h)
+        for sn, sp in subs:
+            _, _, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
+            if _too_narrow_for(sn, sw) or sh < 28:
+                return True
+    return False
+
+
+def _icicle_cell(label_name: str, share: float, col: str, x: float, y: float, box_w: float, box_h: float,
+                  total_w: float, total_h: float, *, theme_name: str, is_sub: bool, mix_k: int = 0) -> str:
+    if box_w <= 0 or box_h <= 0:
+        return ""
+    is_remainder = label_name == "__remainder__"
+    fs = 14 if is_sub else 15
+    # A column's HEIGHT is always generous here (the whole point of this layout), but its WIDTH can still
+    # be genuinely tiny (a 1%-share theme is ~1% of the chart's width no matter which layout draws it).
+    # Capping `max_lines` by height alone let a very narrow column spell its entire name one character per
+    # line, vertically - technically no information lost, but worse to read than treemap's own quick
+    # ellipsis truncation (confirmed live, a real dataset showed exactly this). `chars_per_line` (same
+    # estimate `_too_narrow_for` uses) caps how many lines are even worth attempting: a column too narrow
+    # for a short real word shows its percentage only, never a wall of single letters.
+    wpc = fs * 0.53
+    chars_per_line = (box_w - 12) / wpc
+    pct_only = f"{share:g}%"
+    if is_remainder:
+        label_text = f"{share:g}% not in a sub-theme"
+    elif chars_per_line < 3:
+        # Too narrow even for the bare percentage to sit on one line without itself wrapping
+        # character-by-character ("2." / "2" / "%") - no text at all reads better than that. The box's
+        # own size/colour still carries real information; a click still resolves it via `data-theme`.
+        label_text = ""
+    elif chars_per_line < max(len(pct_only), 6):
+        # Below 6 chars/line (the same threshold `_too_narrow_for` uses to decide a box needs icicle in
+        # the first place) a real multi-word name just wraps badly even with plenty of height - the bare
+        # percentage is the honest, readable alternative, not a half-shown name.
+        label_text = pct_only
+    elif is_sub:
+        label_text = f'{esc(label_name)} <span style="font-weight:600">{share:g}%</span>'
+    else:
+        label_text = f'{esc(label_name)} <span style="font-weight:600">{share}%</span>'
+    if is_remainder:
+        bg = "color-mix(in srgb, var(--muted) 18%, var(--surface))"
+        text_color = "var(--ink)"
+    elif is_sub:
+        bg = f"color-mix(in srgb,var(--{col}) {MIX[mix_k % len(MIX)] + 12}%,var(--surface))"
+        text_color = "var(--ink)"
+    else:
+        bg = f"var(--{col})"
+        text_color = TH_ON[col]
+    line_h = fs * 1.25
+    # Never more than 6 lines even when height would allow more - 6 lines of this column's own (narrow)
+    # width is already a generous amount of text; beyond that, line-clamp's own ellipsis is the right
+    # degrade, not an ever-taller stack of near-empty lines.
+    max_lines = min(6, max(1, int((box_h - 16) // line_h)))
+    return (
+        f'<div data-theme="{esc(theme_name)}" style="position:absolute;left:{x / total_w * 100:.2f}%;'
+        f'top:{y / total_h * 100:.2f}%;width:{box_w / total_w * 100:.2f}%;height:{box_h / total_h * 100:.2f}%;'
+        f'padding:1.5px">'
+        f'<div style="width:100%;height:100%;border-radius:4px;overflow:hidden;background:{bg};'
+        f'display:flex;align-items:center;justify-content:center;text-align:center;padding:6px">'
+        f'<span style="font-size:{fs}px;font-weight:500;color:{text_color};line-height:1.25;'
+        f'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;'
+        f'-webkit-line-clamp:{max_lines};-webkit-box-orient:vertical">{label_text}</span>'
+        f'</div></div>'
+    )
+
+
+def icicle_html(data: ReportData, w: int, h: int) -> str:
+    """Row-based alternative to `treemap_html`'s packed squares, chosen per-report by `_prefers_icicle`
+    above: every theme gets the chart's FULL row height (only its WIDTH varies, by share), and sub-themes
+    sit in a second full-height row directly below their parent theme's own x-span - far more room for a
+    long name to wrap than a small packed square gets. Mirrors `treemap_html`'s own fluid conventions
+    exactly (CSS %, `-webkit-line-clamp` computed from each box's own known height, `esc()`-escaped
+    labels, `data-theme` attributes for click/hover) - this is a new, live-report-quality rendering of the
+    layout idea the legacy fixed-pixel `f_icicle` (below) sketched, not a reuse of that dead code.
+
+    "Other"'s box WIDTH is capped the same way `treemap_html`'s box AREA is (`_treemap_areas`, reused
+    as-is - width and area are the same thing once every box shares one fixed row height), for the same
+    reason: it is frequently the single largest box for reasons unrelated to being the most worth reading.
+    """
+    rows_data = treemap_rows(data)
+    drawable = [r for r in rows_data if r[1] > 0]
+    if not drawable:
+        return f'<div style="position:relative;height:{h}px"></div>'
+    areas = _treemap_areas(drawable)
+
+    has_subs = any(subs_of(data, name) for name, *_ in drawable)
+    if has_subs:
+        gap = 8
+        theme_row_h = h * 0.58
+        sub_row_top = theme_row_h + gap
+        sub_row_h = h - sub_row_top
+    else:
+        theme_row_h = h
+        sub_row_top = h
+        sub_row_h = 0
+
+    cells = []
+    x = 0.0
+    for name, share, sent, cnt, col in drawable:
+        box_w = areas[name] / 100 * w
+        cells.append(_icicle_cell(name, share, col, x, 0.0, box_w, theme_row_h, w, h,
+                                   theme_name=name, is_sub=False))
+
+        subs = subs_of(data, name)
+        if subs and sub_row_h > 20 and box_w > 20:
+            # Same "incomplete sub-theme coverage" synthetic remainder treemap_html's nested sub-layout
+            # uses, for the same reason - see that function's own comment.
+            remainder = round(share - sum(sp for _, sp in subs), 1)
+            sub_entries = subs + ([("__remainder__", remainder)] if remainder > 0.5 else [])
+            sub_total = sum(sp for _, sp in sub_entries)
+            if sub_total > 0:
+                sx = x
+                for k, (sn, sp) in enumerate(sub_entries):
+                    sub_w = sp / sub_total * box_w
+                    cells.append(_icicle_cell(sn, sp, col, sx, sub_row_top, sub_w, sub_row_h, w, h,
+                                               theme_name=name, is_sub=True, mix_k=k))
+                    sx += sub_w
+        x += box_w
+    return f'<div style="position:relative;width:100%;height:{h}px">{"".join(cells)}</div>'
+
+
 def f_treemap(data: ReportData):
+    if _prefers_icicle(data, 1084, 580):
+        tm = icicle_html(data, 1084, 580)
+        return frame("What are the themes?", "Width is share of answered. Sub-themes sit below their theme.", tm, 800)
     tm = treemap_html(data, 1084, 580)
     return frame("What are the themes?", "Block area is share of answered. Sub-themes sit inside their theme.", tm, 800)
 

@@ -10,7 +10,10 @@ from app.chart_data import (
     QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode,
     ToneSplit, TrendData, TrendSeries,
 )
-from app.charts import FRAMES, _treemap_areas, render, rows, treemap_html, treemap_rows
+from app.charts import (
+    FRAMES, _prefers_icicle, _too_narrow_for, _treemap_areas, f_overview, f_treemap, icicle_html, render,
+    rows, treemap_html, treemap_rows,
+)
 from app.main import app
 
 client = TestClient(app)
@@ -338,6 +341,168 @@ def test_treemap_html_does_not_indexerror_with_three_real_subthemes_plus_remaind
 
     assert "30% not in a sub-theme" in html
     assert "Zebra paint" in html and "Zebra stripes" in html and "Zebra crossing signs" in html
+
+
+# -------------------------------------------------------------------- icicle layout (chosen per-report
+# when the treemap's packed squares would leave a label too narrow to read - see _prefers_icicle)
+
+def test_prefers_icicle_false_when_every_name_has_room():
+    """small_report()'s own themes (short names, generous shares, one short sub-theme) must stay on the
+    denser treemap layout - this is the "names can get it short, use the treemap" case."""
+    data = small_report()
+    assert _prefers_icicle(data, 1084, 580) is False
+
+
+def test_prefers_icicle_true_when_several_real_themes_squeeze_a_small_ones_sub_themes():
+    """The real, reported case (confirmed via direct squarify geometry, not guessed): several competing
+    real themes (matching the actual shares that produced the bug: a dominant 43.2%/26.8% pair, then
+    smaller ones) leave a 3.7%-share theme's own sub-theme row too narrow for a long-named sub-theme -
+    this must flip to icicle. Each real theme's box, and the sub-theme squeeze specifically, was verified
+    directly against `squarify`'s own output before writing this assertion."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Dress fit and sizing", 43.2, -0.1, 432, "t1", ToneSplit(40, 30, 30)),
+        ThemeNode("Versatility and style appeal", 26.8, 0.1, 268, "t2", ToneSplit(30, 30, 40)),
+        ThemeNode("Sweater fit and comfort", 6.0, 0.0, 60, "t3", ToneSplit(30, 30, 40)),
+        ThemeNode("Jacket and coat fit", 3.7, 0.0, 37, "t4", ToneSplit(30, 30, 40), [
+            SubTheme("Jacket sleeve and size adjustments", 2.8),
+            SubTheme("Coats: warmth and fit considerations", 0.9),
+        ]),
+        ThemeNode("Other", 20.3, 0.0, 203, "other", ToneSplit(30, 40, 30), note="Folded in: too rare"),
+    ]
+    assert _prefers_icicle(data, 1084, 580) is True
+
+
+def test_prefers_icicle_true_when_a_small_theme_has_a_dominant_rival():
+    """A tiny-share theme next to a near-total-dominant one gets squarify's full-height sliver of a box -
+    even a modestly long name can't fit. Verified directly against squarify's own geometry (~22px wide)."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Fit and sizing", 98.0, -0.1, 980, "t1", ToneSplit(40, 30, 30)),
+        ThemeNode("Versatility and style appeal", 2.0, 0.1, 20, "t2", ToneSplit(30, 30, 40)),
+    ]
+    assert _prefers_icicle(data, 1084, 580) is True
+
+
+def test_too_narrow_for_short_name_in_a_reasonably_wide_box_is_false():
+    assert _too_narrow_for("Cost", 120) is False
+
+
+def test_too_narrow_for_long_first_word_in_a_tiny_box_is_true():
+    assert _too_narrow_for("Versatility and style", 15) is True
+
+
+def test_too_narrow_for_remainder_placeholder_is_never_flagged():
+    assert _too_narrow_for("__remainder__", 5) is False
+
+
+def test_icicle_html_draws_every_theme_full_row_height_only_width_varies():
+    """The defining property of the icicle layout vs the treemap: every theme box spans the SAME height
+    (the chart's own theme-row height), differing only in width - never nested/packed by area."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Theme A", 60.0, 0.1, 600, "t1", ToneSplit(10, 10, 80)),
+        ThemeNode("Theme B", 40.0, 0.1, 400, "t2", ToneSplit(10, 10, 80)),
+    ]
+    html = icicle_html(data, 1000, 400)
+
+    heights = sorted(set(re.findall(r'height:(\d+\.\d\d)%;padding:1\.5px', html)))
+    assert len(heights) == 1  # one shared row height - no sub-themes here, so it's the full 100%
+    assert heights[0] == "100.00"
+
+
+def test_icicle_html_theme_row_width_is_proportional_to_share():
+    data = small_report()
+    data.themes = [
+        ThemeNode("Theme A", 75.0, 0.1, 750, "t1", ToneSplit(10, 10, 80)),
+        ThemeNode("Theme B", 25.0, 0.1, 250, "t2", ToneSplit(10, 10, 80)),
+    ]
+    html = icicle_html(data, 1000, 400)
+
+    a_idx = html.find('data-theme="Theme A"')
+    b_idx = html.find('data-theme="Theme B"')
+    a_width = re.search(r'width:(\d+\.\d\d)%', html[a_idx:]).group(1)
+    b_width = re.search(r'width:(\d+\.\d\d)%', html[b_idx:]).group(1)
+    assert float(a_width) == pytest.approx(75.0, abs=0.5)
+    assert float(b_width) == pytest.approx(25.0, abs=0.5)
+
+
+def test_icicle_html_other_width_is_capped_same_as_treemap_area_cap():
+    data = small_report()
+    data.themes = _other_colored_themes()  # Theme A 50, Theme B 20, merged Other 30
+
+    html = icicle_html(data, 1000, 400)
+
+    other_idx = html.find('data-theme="Other"')
+    other_width = float(re.search(r'width:(\d+\.\d\d)%', html[other_idx:]).group(1))
+    assert other_width == pytest.approx(5.0, abs=0.5)  # capped, not its real 30%
+    assert "30%" in html  # the label still shows the real, uncapped share (narrow box -> percent-only)
+
+
+def test_icicle_html_sub_themes_sit_in_a_second_row_under_their_parent():
+    data = small_report()
+    data.themes = [
+        ThemeNode("Theme A", 80.0, 0.1, 800, "t1", ToneSplit(10, 10, 80), [
+            SubTheme("Sub one", 50.0), SubTheme("Sub two", 30.0),
+        ]),
+        ThemeNode("Theme B", 20.0, 0.1, 200, "t2", ToneSplit(10, 10, 80)),
+    ]
+    html = icicle_html(data, 1000, 400)
+
+    assert html.count('data-theme="Theme A"') == 3  # the theme's own box + its 2 real sub-boxes
+    assert "Sub one" in html and "Sub two" in html
+    sub_one_idx = html.find("Sub one")
+    sub_one_top = re.search(r'top:(\d+\.\d\d)%', html[:sub_one_idx][::-1])
+    # top of the sub-row must be strictly below (greater %) than the theme row's own top (0%)
+    theme_a_top = re.search(r'top:(\d+\.\d\d)%', html[html.find('data-theme="Theme A"'):])
+    assert theme_a_top.group(1) == "0.00"
+
+
+def test_icicle_html_remainder_cell_when_subtheme_coverage_is_incomplete():
+    data = small_report()
+    data.themes = [
+        ThemeNode("Theme A", 80.0, 0.1, 800, "t1", ToneSplit(10, 10, 80), [SubTheme("Sub one", 40.0)]),
+    ]
+    html = icicle_html(data, 1000, 400)
+    assert "not in a sub-theme" in html
+
+
+def test_icicle_html_no_crash_on_zero_drawable_rows():
+    data = small_report()
+    data.themes = [ThemeNode("Empty", 0.0, 0.0, 0, "t1", ToneSplit(0, 100, 0))]
+    html = icicle_html(data, 1000, 400)
+    assert "position:relative" in html and 'data-theme' not in html
+
+
+def test_f_treemap_switches_to_icicle_when_prefers_icicle(monkeypatch):
+    import app.charts as charts_mod
+    monkeypatch.setattr(charts_mod, "_prefers_icicle", lambda data, w, h: True)
+    html, _, _ = charts_mod.f_treemap(small_report())
+    assert "Width is share of answered" in html  # the icicle-specific subtitle, not the treemap one
+
+
+def test_f_treemap_keeps_treemap_when_not_prefers_icicle(monkeypatch):
+    import app.charts as charts_mod
+    monkeypatch.setattr(charts_mod, "_prefers_icicle", lambda data, w, h: False)
+    html, _, _ = charts_mod.f_treemap(small_report())
+    assert "Block area is share of answered" in html
+
+
+def test_f_overview_and_f_treemap_each_decide_independently_for_their_own_size():
+    """f_overview's hero chart (320px tall) and f_treemap's standalone chart (580px tall) each call
+    `_prefers_icicle` with their OWN reference size, not a shared decision - confirmed against a real
+    dataset (14 themes, long names) that the smaller hero chart can legitimately need icicle while the
+    taller standalone chart still has enough room for treemap. Both must render without error either way -
+    this pins that behaviour, not "always agree"."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Fit and sizing", 90.0, -0.1, 900, "t1", ToneSplit(40, 30, 30)),
+        ThemeNode("Versatility and style appeal across many different outfits", 10.0, 0.1, 100, "t2",
+                   ToneSplit(30, 30, 40)),
+    ]
+    overview_html, _, _ = f_overview(data)
+    treemap_html_out, _, _ = f_treemap(data)
+    assert "data-theme" in overview_html and "data-theme" in treemap_html_out  # both rendered fine
 
 
 def test_rank_bar_width_is_percent_not_fixed_pixels():
