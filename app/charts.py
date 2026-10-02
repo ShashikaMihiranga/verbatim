@@ -872,6 +872,35 @@ MIX = [46, 36, 27]
 def frame(title, sub, inner, h, extra_top=24):
     return (f'<div style="padding:56px 48px">{hdr(title, sub)}<div style="height:{extra_top}px"></div>{inner}</div>'), 1180, h
 
+OTHER_MAX_TREEMAP_AREA = 5.0  # see _treemap_areas below
+
+
+def _treemap_areas(rows_data) -> dict[str, float]:
+    """The box AREA each treemap row gets, as opposed to its real reported `share` (still shown verbatim
+    in the cell's own label text - this function never changes what number is printed, only how much
+    space each box occupies). "Other" is a catch-all bucket (folded-in rank-8+ themes plus genuinely
+    unclustered noise, see `app.findings.theme_nodes`'s own merge note) that is frequently the single
+    largest real-world row by a wide margin (confirmed live: 25.6% on a real dataset) - every real theme's
+    own box, and therefore its label, got squeezed into whatever sliver was left, clipping names/sub-theme
+    labels that the viewer actually wants to read. Capping "Other"'s own AREA at `OTHER_MAX_TREEMAP_AREA`
+    (5%) once it exceeds that share, and handing the freed area to every other row in proportion to its
+    own existing share, fixes exactly that: "Other" still reads its true percentage in its label, it just
+    never visually dominates the layout. A dataset where "Other" is already <= 5% is untouched - nothing
+    to cap, nothing to redistribute, areas equal real shares exactly as before this fix."""
+    other = next((r for r in rows_data if r[4] == "other"), None)
+    rest_total = sum(r[1] for r in rows_data if r[4] != "other")
+    # Nothing to redistribute the freed area TO (every row is "other") - leave it at its real,
+    # uncapped area rather than shrinking the total area represented for no gain.
+    others_excess = max(0.0, other[1] - OTHER_MAX_TREEMAP_AREA) if (other and rest_total > 0) else 0.0
+    areas: dict[str, float] = {}
+    for name, share, _, _, col in rows_data:
+        if col == "other":
+            areas[name] = share - others_excess
+        else:
+            areas[name] = share + others_excess * (share / rest_total)
+    return areas
+
+
 # ---- treemap
 def treemap_html(data: ReportData, w: int, h: int) -> str:
     """The treemap's own markup (no `frame()` wrapper) - `f_treemap` below calls this at its own
@@ -906,7 +935,8 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
     # it even with the other, non-zero items present. A 0%-share theme draws no box at all; it is simply
     # not in this filtered view, not an error.
     drawable = [r for r in rows_data if r[1] > 0]
-    rects = squarify([(n, s) for n, s, _, _, _ in drawable], 0, 0, w, h)
+    areas = _treemap_areas(drawable)
+    rects = squarify([(n, areas[n]) for n, _, _, _, _ in drawable], 0, 0, w, h)
     if not rects:
         # Every theme has a zero share (e.g. a Filters-feature combination that matches zero rows entirely,
         # SPEC.md section 5) - an empty box, not a crash (see squarify's own comment for why `rects` can

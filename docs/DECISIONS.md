@@ -653,3 +653,31 @@
   "Clear filters" round-trips the report back to byte-identical original numbers. Full backend suite green
   (575 passed, 1 skipped, same pre-existing unrelated `.env`/Clerk-dependent auth/security failures) and
   full frontend suite green (62 passed) plus a clean `tsc -b && vite build`.
+
+## 2026-10-02 (treemap: cap "Other"'s box area at 5%, stop it clipping real themes)
+- User-reported, confirmed live on the real Women's Clothing dataset (id 2): "Other" at 25.6% of answers
+  was getting 25.6% of the treemap's AREA too, squeezing every other real theme's box down to a sliver -
+  "Versatility and style" (2.2% real share) was unreadable, several sub-theme labels clipped entirely.
+  "Other" is a catch-all (rank-8+ real themes folded in, plus genuinely unclustered noise -
+  `app.findings.theme_nodes`'s own merge note) and is frequently the single largest box for reasons that
+  have nothing to do with it being the most informative one to look at - the real themes are the ones a
+  viewer actually wants to read.
+- Fix: new `app.charts._treemap_areas(rows_data) -> dict[name, area]`, called once in `treemap_html`
+  right before `squarify`. When "Other"'s real share exceeds `OTHER_MAX_TREEMAP_AREA` (5.0), its AREA is
+  capped at 5% and the freed area is redistributed to every other row in proportion to its own existing
+  share (not evenly) - a dataset where "Other" is already <= 5% is untouched, areas equal real shares
+  exactly as before this fix ("if it's less, adjust their size" = leave them alone, per the request).
+  Total area is exactly conserved (only redistributed, never dropped) - verified algebraically and in
+  `test_treemap_areas_caps_other_above_five_percent_and_redistributes`. The cell's own LABEL still prints
+  "Other"'s real, uncapped percentage (`share`, untouched) - only the box's visual proportion changes,
+  never the number reported (`test_treemap_html_other_label_still_shows_its_true_share_despite_the_area_cap`).
+  Edge case: a report where EVERY row is "Other" (nothing to redistribute the freed area to) leaves it
+  fully uncapped - shrinking the total represented area for no visual gain would be worse, not better.
+  One function, one call site - both `f_treemap` (standalone) and `f_overview`'s hero treemap get the fix
+  automatically, since both call `treemap_html`.
+- Verified live via `claude-in-chrome` against the real dataset that originally showed the bug: "Other"
+  now draws as a small, proportionate box in both the standalone "What are the themes?" chart and the
+  overview hero chart, while "Versatility and style" and the other previously-clipped real themes now get
+  genuinely readable boxes. Full backend suite green (579 passed, 1 skipped, same pre-existing unrelated
+  failures), including the existing golden-frame hash tests (none needed regenerating - no existing
+  fixture's "Other" share exceeded 5%, so this change is additive-only for every case tested before today).

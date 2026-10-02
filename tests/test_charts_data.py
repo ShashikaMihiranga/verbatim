@@ -10,7 +10,7 @@ from app.chart_data import (
     QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode,
     ToneSplit, TrendData, TrendSeries,
 )
-from app.charts import FRAMES, render, rows, treemap_html, treemap_rows
+from app.charts import FRAMES, _treemap_areas, render, rows, treemap_html, treemap_rows
 from app.main import app
 
 client = TestClient(app)
@@ -166,6 +166,64 @@ def test_treemap_html_draws_exactly_one_other_box_for_merged_themes():
     assert 'data-theme="Theme X"' not in html
     assert 'data-theme="Theme Y"' not in html
     assert "30.0%" in html  # merged share rendered in the label
+
+
+# -------------------------------------------------------------------- "Other" box-area cap (not clipping)
+
+def test_treemap_areas_caps_other_above_five_percent_and_redistributes():
+    """"Other" at 30% (merged from _other_colored_themes()'s Theme X/Y plus the real noise bucket) must get
+    only 5% of the treemap's AREA, not its real 30% share - the freed 25 points go to Theme A/Theme B in
+    proportion to their own existing shares (50/20, i.e. 5:2), not evenly."""
+    data = small_report()
+    data.themes = _other_colored_themes()
+    rows_data = treemap_rows(data)
+
+    areas = _treemap_areas(rows_data)
+
+    assert areas["Other"] == pytest.approx(5.0)
+    assert areas["Theme A"] == pytest.approx(50 + 25 * (50 / 70))  # ~67.857
+    assert areas["Theme B"] == pytest.approx(20 + 25 * (20 / 70))  # ~27.143
+    assert sum(areas.values()) == pytest.approx(100.0)  # total area is conserved, only redistributed
+
+
+def test_treemap_areas_leaves_other_unchanged_at_or_below_the_cap():
+    """"Other" already at or under 5% needs no capping or redistribution - areas equal real shares exactly,
+    matching this fix's "if it's less, adjust their size [i.e. leave them alone]" behaviour."""
+    data = small_report()  # small_report()'s own Other is 10 of 1000 = unused here; build explicit shares
+    data.themes = [
+        ThemeNode("Theme A", 80.0, 0.1, 800, "t1", ToneSplit(10, 10, 80)),
+        ThemeNode("Theme B", 15.0, 0.1, 150, "t2", ToneSplit(10, 10, 80)),
+        ThemeNode("Other", 5.0, 0.0, 50, "other", ToneSplit(30, 30, 40), note="Folded in: too rare"),
+    ]
+    rows_data = treemap_rows(data)
+
+    areas = _treemap_areas(rows_data)
+
+    assert areas == {"Theme A": pytest.approx(80.0), "Theme B": pytest.approx(15.0), "Other": pytest.approx(5.0)}
+
+
+def test_treemap_areas_no_redistribution_target_leaves_other_uncapped():
+    """A report with ONLY a merged "Other" bucket (no real theme survived at all) has nowhere to give the
+    freed area to - capping it would just shrink the total area represented for no visual gain, so it
+    keeps its real, full share instead."""
+    data = small_report()
+    data.themes = [ThemeNode("Other", 100.0, 0.0, 1000, "other", ToneSplit(30, 30, 40))]
+    rows_data = treemap_rows(data)
+
+    areas = _treemap_areas(rows_data)
+
+    assert areas == {"Other": pytest.approx(100.0)}
+
+
+def test_treemap_html_other_label_still_shows_its_true_share_despite_the_area_cap():
+    """The area cap (above) must never change what the label actually PRINTS - "Other" still reads its
+    real 30% in text, its box is just not allowed to visually dominate the layout."""
+    data = small_report()
+    data.themes = _other_colored_themes()
+
+    html = treemap_html(data, 1084, 580)
+
+    assert "30.0%" in html  # the real, uncapped share is still what the label shows
 
 
 def test_treemap_rows_noop_with_zero_other_colored_themes():
