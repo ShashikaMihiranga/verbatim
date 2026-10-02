@@ -339,7 +339,10 @@ def f_overview(data: ReportData):
 # ---------- rank ----------
 def rank_rows(data, mobile=False, selected=None, hover=None):
     o = ""
-    mx = max(t.share for t in data.themes)
+    # Every theme can have a zero share at once - e.g. the Filters feature (SPEC.md section 5) narrowed to
+    # a combination that matches zero rows. `mx = 1` makes every bar's width compute to 0 instead of
+    # dividing by zero; a visually empty set of bars, not a crash.
+    mx = max((t.share for t in data.themes), default=0) or 1
     for name, share, sent, cnt, col in rows(data):
         sel = name == selected
         op = DIM if (selected and not sel) else 1
@@ -490,6 +493,13 @@ def f_byscore(data: ReportData):
 
 # ---------- heatmap ----------
 def ramp_mix(v, overall):
+    if overall == 0:
+        # A row's overall share can be genuinely 0 under the Filters feature (SPEC.md section 5) - a
+        # theme with zero rows in the current filtered view (`v` is then necessarily 0 too, same cause).
+        # `build_segment_data` already skips a zero-overall row for its OWN highlight-ratio math (same
+        # reason, see its docstring); this is the matching guard for this cell's colour-ramp math - the
+        # same flat "no particular skew" floor `r <= 1` already returns at `r == 0`, not a crash.
+        return 8
     r = v / overall
     if r <= 1:
         return 8 + 22 * r
@@ -826,6 +836,12 @@ def fit_label(x, y, w, h, name, pct, fs, color, rot=True):
 
 def squarify(items, x, y, w, h):
     total = sum(v for _, v in items)
+    if total <= 0:
+        # Every item has a zero (or negative, never expected) share - e.g. the Filters feature (SPEC.md
+        # section 5) can legitimately narrow a report down to zero matching rows. Render no boxes at all
+        # rather than dividing by zero; `treemap_html`'s own per-cell label logic already handles a rect
+        # tuple cleanly, so an empty treemap is just a blank area, not a crash.
+        return {}
     scale = w * h / total
     rem = [(k, v * scale) for k, v in items]
     rects = {}
@@ -883,9 +899,21 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
     back to its parent theme with a single `closest('[data-theme]')` lookup (see
     `frontend/src/ThemeChart.tsx`); `closest()` is DOM-structure-based and does not care that this is now
     a `<div>` tree instead of nested `<svg><g>` groups."""
-    rects = squarify([(n, s) for n, s, _, _, _ in treemap_rows(data)], 0, 0, w, h)
+    rows_data = treemap_rows(data)
+    # squarify's own layout math (`worst()`) divides by each row's smallest item, so a zero-share theme -
+    # unreachable before the Filters feature, now a real case: a filter combination can legitimately leave
+    # one theme with 0 matching rows while others still have some (SPEC.md section 5) - would still crash
+    # it even with the other, non-zero items present. A 0%-share theme draws no box at all; it is simply
+    # not in this filtered view, not an error.
+    drawable = [r for r in rows_data if r[1] > 0]
+    rects = squarify([(n, s) for n, s, _, _, _ in drawable], 0, 0, w, h)
+    if not rects:
+        # Every theme has a zero share (e.g. a Filters-feature combination that matches zero rows entirely,
+        # SPEC.md section 5) - an empty box, not a crash (see squarify's own comment for why `rects` can
+        # come back `{}`).
+        return f'<div style="position:relative;height:{h}px"></div>'
     cells = []
-    for idx, (name, share, sent, cnt, col) in enumerate(treemap_rows(data)):
+    for idx, (name, share, sent, cnt, col) in enumerate(drawable):
         rx, ry, rw, rh = rects[name]
 
         subs = subs_of(data, name)

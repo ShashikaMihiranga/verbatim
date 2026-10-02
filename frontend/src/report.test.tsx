@@ -50,6 +50,10 @@ function makeReport(overrides: Partial<ReportResponse> = {}): ReportResponse {
     // so this is the honest single-chip default every other test below implicitly exercises too - see
     // the dedicated multi-chip test for the richer case.
     columns_used: [{ name: 'Why', role: 'open-ended text' }],
+    // Filters feature (SPEC.md section 5): the honest "nothing confirmed" default, matching columns_used
+    // above - see report-filters.test.tsx for the richer case with real option values.
+    filter_options: { segment: null, score_band: null, date_range: null },
+    filters_applied: { segment: null, score_band: null, date_from: null, date_to: null },
     ...overrides,
   }
 }
@@ -130,5 +134,24 @@ describe('ReportView', () => {
   it('shows no exact record counts anywhere in the summary line', () => {
     const html = renderToStaticMarkup(<ReportView report={makeReport()} datasetId={1} />)
     expect(html).not.toMatch(/\b\d{2,3},\d{3}\b|\b\d{4,6} (responses|answers|rows)\b/i)
+  })
+
+  it('places the filter bar after the "Columns used" chips and before "What stands out"', () => {
+    const report = makeReport({
+      filter_options: { segment: { column: 'Region', groups: ['North', 'South'] }, score_band: null, date_range: null },
+    })
+    const html = renderToStaticMarkup(
+      <ReportView report={report} datasetId={1} filters={{}} onFiltersChange={() => {}} />,
+    )
+    const chipsIdx = html.indexOf('Columns used')
+    const filterIdx = html.indexOf('rp-filters')
+    const standoutIdx = html.indexOf('What stands out')
+    expect(chipsIdx).toBeLessThan(filterIdx)
+    expect(filterIdx).toBeLessThan(standoutIdx)
+  })
+
+  it('renders no filter bar when onFiltersChange is not provided (no-filter-state caller)', () => {
+    const html = renderToStaticMarkup(<ReportView report={makeReport()} datasetId={1} />)
+    expect(html).not.toContain('rp-filters')
   })
 })

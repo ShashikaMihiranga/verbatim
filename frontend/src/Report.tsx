@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { AnswerList } from './Themes'
-import type { ReportBlock, ReportResponse } from './reportApi'
+import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse } from './reportApi'
 import type { ThemeCard } from './themesApi'
+import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
 import './themes.css'
@@ -60,6 +61,8 @@ export default function ReportView({
   report,
   datasetId,
   themes,
+  filters,
+  onFiltersChange,
 }: {
   report: ReportResponse
   datasetId: number
@@ -70,6 +73,11 @@ export default function ReportView({
   // themes handy (e.g. a future standalone embed) still renders a perfectly good report, just without a
   // theme-detail panel under the overview chart.
   themes?: ThemeCard[]
+  // Filters feature (SPEC.md section 5). Both optional: a caller with nothing to filter on (or that
+  // hasn't wired filter state at all) still renders a perfectly good, unfiltered report - the filter bar
+  // itself already hides whenever `report.filter_options` has every field `null` (see ReportFilters).
+  filters?: ReportFiltersValue
+  onFiltersChange?: (next: ReportFiltersValue) => void
 }) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
@@ -91,6 +99,14 @@ export default function ReportView({
           </span>
         ))}
       </div>
+
+      {onFiltersChange && (
+        <ReportFilters
+          options={report.filter_options}
+          value={filters ?? {}}
+          onChange={onFiltersChange}
+        />
+      )}
 
       {findings.length > 0 && (
         <div className="rp-standout">

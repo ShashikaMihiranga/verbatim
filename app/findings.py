@@ -212,7 +212,9 @@ def _theme_color(rank_index: int) -> str:
     return tokens[rank_index] if rank_index < len(tokens) else "other"
 
 
-def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
+def theme_nodes(
+    themes: list[Theme], total_answered: int, filter_rows: set[int] | None = None,
+) -> list[ThemeNode]:
     """Converts stored `Theme` rows into colour-assigned `ThemeNode`s: real themes largest-first get
     "t1".."t7" tokens via `_theme_color` (only the first 7 real themes get their own node - see below),
     "Other" (if present) always goes last with the "other" token. `children` is built straight from
@@ -242,7 +244,17 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
     "other" colour."""
     real = [t for t in themes if t.label != OTHER_LABEL]
     other = next((t for t in themes if t.label == OTHER_LABEL), None)
-    ranked_real = sorted(real, key=lambda t: t.size, reverse=True)
+
+    def _eff_size(t: Theme) -> int:
+        # Filters feature (SPEC.md section 5): under a filter, "size" means "rows that are both in this
+        # theme AND pass the filter" - never the stored, dataset-wide `t.size`. A theme that's largest
+        # overall can legitimately rank lower (or vanish) once a filter is active; that's correct, not a
+        # bug. Byte-identical to `t.size` when no filter is active.
+        if filter_rows is None:
+            return t.size
+        return len(set(t.answer_refs or []) & filter_rows)
+
+    ranked_real = sorted(real, key=_eff_size, reverse=True)
     kept_real, overflow_real = ranked_real[:7], ranked_real[7:]
 
     def _children(t: Theme) -> list[SubTheme]:
@@ -252,6 +264,12 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
         # SHARE (not stored size) rounds to 0.0% on a very large dataset would crash squarify's divide-by-
         # zero - so the `share > 0` filter is applied to the COMPUTED share below, after rounding, not to
         # the stored `size` (which is always > 0 for anything that was actually kept and stored).
+        #
+        # Filters feature: a sub-theme's own size has no per-row record to intersect against `filter_rows`
+        # (only the parent `Theme.answer_refs` does) - rather than inventing a new approximation, sub-
+        # themes are simply dropped while a filter is active (documented scope cut, see the Filters plan).
+        if filter_rows is not None:
+            return []
         children: list[SubTheme] = []
         for s in (t.sub_themes or [])[:3]:
             share = round(s["size"] / total_answered * 100, 1) if total_answered else 0.0
@@ -260,14 +278,17 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
         return children
 
     def _node(t: Theme, color: str) -> ThemeNode:
-        share = round(t.size / total_answered * 100, 1) if total_answered else 0.0
+        refs = sorted(set(t.answer_refs or []) & filter_rows) if filter_rows is not None \
+            else sorted(t.answer_refs or [])
+        count = len(refs) if filter_rows is not None else t.size
+        share = round(count / total_answered * 100, 1) if total_answered else 0.0
         tone = t.tone or {}
         return ThemeNode(
             name=t.label, share=share, sentiment=t.sentiment if t.sentiment is not None else 0.0,
-            count=t.size, color=color,
+            count=count, color=color,
             tones=ToneSplit(neg=tone.get("neg", 0.0), neu=tone.get("neu", 100.0), pos=tone.get("pos", 0.0)),
             children=_children(t),
-            answer_refs=sorted(t.answer_refs or []), theme_id=t.id,
+            answer_refs=refs, theme_id=t.id,
         )
 
     def _merge_into_other(overflow: list[Theme], other: Theme | None) -> ThemeNode:
@@ -277,22 +298,36 @@ def theme_nodes(themes: list[Theme], total_answered: int) -> list[ThemeNode]:
         (`app.findings_structured.build_score_data` et al.) still count every merged answer correctly.
         `theme_id` stays a real id (not None) when exactly one theme is being folded - the common case of
         a dataset with <=7 real themes and just the noise cluster, byte-identical to this function's
-        pre-merge behaviour."""
+        pre-merge behaviour.
+
+        Filters feature: when `filter_rows` is active, every merged theme's `answer_refs` is first
+        intersected with `filter_rows`, and `total_count`/sentiment/tone are all recomputed from those
+        filtered refs rather than the stored `t.size` - so the folded "Other" node's numbers stay
+        consistent with every other (filtered) node."""
         merged = overflow + ([other] if other is not None else [])
-        total_count = sum(t.size for t in merged)
+        # Keyed by position, not `t.id` - unpersisted `Theme` rows (e.g. in tests) all have `id is None`,
+        # which would collide as dict keys and silently drop every merged theme but the last.
+        if filter_rows is not None:
+            merged_refs = [sorted(set(t.answer_refs or []) & filter_rows) for t in merged]
+            sizes = [len(refs) for refs in merged_refs]
+        else:
+            merged_refs = [sorted(t.answer_refs or []) for t in merged]
+            sizes = [t.size for t in merged]
+        total_count = sum(sizes)
         share = round(total_count / total_answered * 100, 1) if total_answered else 0.0
-        sentiment = sum((t.sentiment or 0.0) * t.size for t in merged) / total_count if total_count else 0.0
+        sentiment = sum((t.sentiment or 0.0) * s for t, s in zip(merged, sizes)) / total_count \
+            if total_count else 0.0
         tone_totals = {"neg": 0.0, "neu": 0.0, "pos": 0.0}
-        for t in merged:
+        for t, s in zip(merged, sizes):
             tone = t.tone or {}
             for k in tone_totals:
-                tone_totals[k] += tone.get(k, 0.0) * t.size
+                tone_totals[k] += tone.get(k, 0.0) * s
         tones = ToneSplit(
             neg=round(tone_totals["neg"] / total_count, 1) if total_count else 0.0,
             neu=round(tone_totals["neu"] / total_count, 1) if total_count else 100.0,
             pos=round(tone_totals["pos"] / total_count, 1) if total_count else 0.0,
         )
-        answer_refs = sorted({r for t in merged for r in (t.answer_refs or [])})
+        answer_refs = sorted({r for refs in merged_refs for r in refs})
         theme_id = merged[0].id if len(merged) == 1 else None
 
         if overflow:
@@ -361,6 +396,7 @@ def build_report_data(
     *,
     answer_lengths: list[int] | None = None,
     structured: StructuredContext | None = None,
+    filter_rows: set[int] | None = None,
 ) -> ReportData:
     """Converts stored `Theme` rows for one dataset + column into the `ReportData` shape
     `app/charts.py`'s renderers already understand.
@@ -390,10 +426,27 @@ def build_report_data(
     until that wiring lands.
     `answer_map`/`frequency`/`phrases`/`quotes` are placeholders for the same reason: none of this
     stream's chosen chart ids (`overview`, `treemap`/`rank`/`sentsun`, `quality`) read them.
+
+    `filter_rows` (Filters feature, SPEC.md section 5) restricts `themes`/`score`/`segment`/`trend` to the
+    given row-index set; `total_rows`/`quality`/`answer_lengths` stay dataset-wide regardless (they
+    describe the whole upload, not a themed subset - a deliberate scope boundary, not an oversight). Theme
+    counts/shares/ranking need the FILTERED total to compute correct shares, but that total is itself only
+    known after filtering - so `theme_nodes` runs twice when a filter is active: once to learn the filtered
+    total, once more (now that it's known) to produce correctly-shared nodes. No second code path, no
+    change to the unfiltered call below.
     """
-    total_answered = _total_answered(themes)
-    overall = _overall_sentiment(themes, total_answered)
-    nodes = theme_nodes(themes, total_answered)
+    if filter_rows is None:
+        total_answered = _total_answered(themes)
+        overall = _overall_sentiment(themes, total_answered)
+        nodes = theme_nodes(themes, total_answered)
+    else:
+        nodes = theme_nodes(themes, total_answered=1, filter_rows=filter_rows)  # pass 1: learn the total
+        total_answered = sum(n.count for n in nodes)
+        nodes = theme_nodes(themes, total_answered, filter_rows=filter_rows)  # pass 2: correct shares
+        # Same count-weighted-average-of-the-aggregate approximation `_overall_sentiment` uses, just over
+        # the filtered nodes' counts (no per-row sentiment exists to recompute exactly - see
+        # findings_structured.py's module-level sentiment-approximation note).
+        overall = sum(n.sentiment * n.count for n in nodes) / total_answered if total_answered else 0.0
 
     selected_theme = nodes[0].name if nodes else ""
     hover_theme = nodes[1].name if len(nodes) > 1 else selected_theme

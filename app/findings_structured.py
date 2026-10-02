@@ -43,7 +43,7 @@ from .models import Column, Theme
 __all__ = [
     "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
     "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
-    "pick_structured_columns", "build_structured_context",
+    "pick_structured_columns", "build_structured_context", "resolve_filter_rows",
     "segment_skew_candidates", "score_correlation_candidates", "trend_shift_candidates",
 ]
 
@@ -389,6 +389,17 @@ class StructuredContext:
     trend: TrendData | None = None
     trend_column_name: str = ""
 
+    # Raw (pre-band/pre-cap), per-row values behind whichever candidate column won each role, stashed here
+    # purely so `resolve_filter_rows` (below) can turn a filter request into a row-index set without
+    # re-reading the cleaned dataframe a third time. `None` when that role has no winning column - mirrors
+    # the corresponding `*_column_name == ""` case exactly. Only meaningful on an UNFILTERED context (the
+    # one `_render_report` builds first, see `app/api_report.py`) - populated harmlessly but never read
+    # again on a second, already-filtered `build_structured_context` call.
+    score_raw_by_row: dict[int, float] | None = None
+    score_scale: tuple[int, int] | None = None
+    segment_raw_by_row: dict[int, str] | None = None
+    date_raw_by_row: dict[int, date] | None = None
+
 
 def theme_answer_rows(themes: list["Theme"]) -> list[int]:
     """Every cleaned-dataframe row index that belongs to ANY theme (i.e. every open-ended answer that got
@@ -625,7 +636,7 @@ def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]
 
 def build_structured_context(
     clean_df, plan: "CleaningPlan", themes: list["Theme"], nodes: list["ThemeNode"],
-    columns: dict[str, list[str]], floor: int,
+    columns: dict[str, list[str]], floor: int, filter_rows: set[int] | None = None,
 ) -> StructuredContext:
     """Top-level B2 assembly: for each of "score"/"segment"/"date", tries every confirmed candidate column
     of that kind (`columns[kind]`, `pick_structured_columns`'s own position-ordered list) in turn, resolving
@@ -635,9 +646,17 @@ def build_structured_context(
     survives suppression. A candidate that is absent, fails to resolve a scale/date spread, or produces no
     chart-worthy data after suppression is simply skipped in favour of the next one; if every candidate for
     a kind fails, that field is left out of the returned `StructuredContext` (stays at its `None`/`""`
-    default) - never raises."""
+    default) - never raises.
+
+    `filter_rows`, when not `None`, restricts every candidate's row universe to rows also in that set
+    (the Filters feature's entire mechanism - see `resolve_filter_rows` below: every downstream per-kind
+    loop already iterates `for r in rows`, so narrowing `rows` once here is enough to filter score/segment/
+    trend consistently, with zero changes to `build_score_data`/`build_segment_data`/`build_trend_data`
+    themselves)."""
     context = StructuredContext()
     rows = theme_answer_rows(themes)
+    if filter_rows is not None:
+        rows = [r for r in rows if r in filter_rows]
 
     for score_col in columns.get("score", []):
         step = next(
@@ -658,6 +677,8 @@ def build_structured_context(
         if score_data is not None:
             context.score = score_data
             context.score_column_name = score_col
+            context.score_raw_by_row = raw_by_row
+            context.score_scale = scale
             break
 
     for segment_col in columns.get("segment", []):
@@ -678,6 +699,7 @@ def build_structured_context(
         if segment_data is not None:
             context.segment = segment_data
             context.segment_column_name = segment_col
+            context.segment_raw_by_row = raw_seg_capped
             break
 
     for date_col in columns.get("date", []):
@@ -707,9 +729,63 @@ def build_structured_context(
         if trend_data is not None:
             context.trend = trend_data
             context.trend_column_name = date_col
+            context.date_raw_by_row = parsed_by_row
             break
 
     return context
+
+
+def resolve_filter_rows(
+    structured: StructuredContext,
+    segment: str | None,
+    score_band: str | None,
+    date_from: date | None,
+    date_to: date | None,
+) -> set[int] | None:
+    """Turns a Filters request (SPEC.md section 5: "a global filter (segment, score band, date range)")
+    into the row-index set `build_structured_context`'s `filter_rows` param expects, using the raw per-row
+    dicts an UNFILTERED `StructuredContext` already stashed (`score_raw_by_row`/`segment_raw_by_row`/
+    `date_raw_by_row`, set by `build_structured_context` above). Returns `None` only when every argument is
+    `None` - the caller's signal to skip filtering entirely (byte-identical to today's behaviour). Multiple
+    active constraints are AND'd together (one combined filter, not three independent ones - matching
+    SPEC's single "a global filter" wording, not "filters").
+
+    A constraint naming a column that never resolved to a chart-worthy result (its `*_raw_by_row` is
+    `None`) yields an empty set for that constraint rather than being silently ignored - "filter by a
+    segment group that isn't actually shown anywhere" should honestly produce "no rows match," not quietly
+    fall back to unfiltered."""
+    if segment is None and score_band is None and date_from is None and date_to is None:
+        return None
+
+    rows: set[int] | None = None
+
+    def _intersect(candidate: set[int]) -> None:
+        nonlocal rows
+        rows = candidate if rows is None else (rows & candidate)
+
+    if segment is not None:
+        if structured.segment_raw_by_row is None:
+            _intersect(set())
+        else:
+            _intersect({r for r, v in structured.segment_raw_by_row.items() if v == segment})
+
+    if score_band is not None:
+        if structured.score_raw_by_row is None or structured.score_scale is None:
+            _intersect(set())
+        else:
+            band_by_row = apply_bands(structured.score_raw_by_row, band_score(structured.score_scale))
+            _intersect({r for r, label in band_by_row.items() if label == score_band})
+
+    if date_from is not None or date_to is not None:
+        if structured.date_raw_by_row is None:
+            _intersect(set())
+        else:
+            _intersect({
+                r for r, d in structured.date_raw_by_row.items()
+                if (date_from is None or d >= date_from) and (date_to is None or d <= date_to)
+            })
+
+    return rows if rows is not None else set()
 
 
 # ==================================================================== B3 - new candidate-finding kinds

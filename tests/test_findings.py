@@ -328,6 +328,89 @@ def test_theme_nodes_merges_overflow_even_with_no_noise_cluster_present():
     assert nodes[-1].note == "Folded in: Extra."
 
 
+# ==================================================================== theme_nodes with filter_rows (Filters feature)
+
+def test_theme_nodes_filter_rows_recomputes_count_and_share():
+    themes = [
+        make_theme(1, "Cost", 100, 0.2, answer_refs=list(range(0, 100))),
+        make_theme(2, "Speed", 50, -0.1, answer_refs=list(range(100, 150))),
+    ]
+    # Filter keeps all 100 "Cost" rows but only 10 of "Speed"'s 50 rows.
+    filter_rows = set(range(0, 100)) | set(range(100, 110))
+    nodes = theme_nodes(themes, total_answered=110, filter_rows=filter_rows)
+
+    by_name = {n.name: n for n in nodes}
+    assert by_name["Cost"].count == 100
+    assert by_name["Speed"].count == 10
+    assert by_name["Speed"].answer_refs == list(range(100, 110))
+    assert by_name["Cost"].share == pytest.approx(round(100 / 110 * 100, 1))
+    assert by_name["Speed"].share == pytest.approx(round(10 / 110 * 100, 1))
+
+
+def test_theme_nodes_filter_rows_can_change_ranking():
+    """A theme that's largest overall can rank lower once a filter removes most of its rows - this is
+    correct behaviour, not a bug (SPEC.md: filtering recomputes "theme counts")."""
+    themes = [
+        make_theme(1, "BigOverall", 100, 0.0, answer_refs=list(range(0, 100))),
+        make_theme(2, "SmallOverall", 20, 0.0, answer_refs=list(range(100, 120))),
+    ]
+    # Filter keeps only 2 of BigOverall's rows but all 20 of SmallOverall's.
+    filter_rows = set(range(0, 2)) | set(range(100, 120))
+
+    unfiltered = theme_nodes(themes, total_answered=120)
+    assert [n.name for n in unfiltered] == ["BigOverall", "SmallOverall"]
+
+    filtered = theme_nodes(themes, total_answered=22, filter_rows=filter_rows)
+    assert [n.name for n in filtered] == ["SmallOverall", "BigOverall"]
+    assert filtered[0].count == 20
+    assert filtered[1].count == 2
+
+
+def test_theme_nodes_filter_rows_drops_sub_themes():
+    sub = [make_sub_theme("Fit", 30, 0.1)]
+    themes = [make_theme(1, "Cost", 100, 0.0, answer_refs=list(range(100)), sub_themes=sub)]
+    unfiltered = theme_nodes(themes, total_answered=100)
+    assert unfiltered[0].children  # sanity: sub-themes populate without a filter
+
+    filtered = theme_nodes(themes, total_answered=100, filter_rows=set(range(50)))
+    assert filtered[0].children == []  # documented scope cut: sub-themes drop under a filter
+
+
+def test_theme_nodes_filter_rows_none_is_byte_identical_to_omitting_it():
+    themes = [make_theme(i, f"T{i}", 100 - i, 0.1 * i, answer_refs=[i]) for i in range(1, 10)]
+    omitted = theme_nodes(themes, total_answered=500)
+    explicit_none = theme_nodes(themes, total_answered=500, filter_rows=None)
+    assert omitted == explicit_none
+
+
+def test_theme_nodes_filter_rows_merges_overflow_consistently():
+    """The "Other" merge path under a filter: every folded theme's answer_refs/count/sentiment/tone are
+    recomputed from the filtered intersection, not the stored t.size. Kept themes each get 10 answer_refs,
+    all inside the filter, so their effective size (10) stays well above the overflow pair's (<=2) and
+    ranking is unaffected by the filter - isolating this test to the merge-arithmetic behaviour alone."""
+    kept = [
+        make_theme(i, f"T{i}", 100 - i, 0.0, answer_refs=list(range(i * 10, i * 10 + 10)))
+        for i in range(1, 8)
+    ]
+    overflow = [
+        make_theme(8, "Fabric quality", 20, -0.4, answer_refs=[80, 81, 82, 83]),
+        make_theme(9, "Delivery speed", 15, 0.2, answer_refs=[90, 91]),
+    ]
+    other = make_theme(10, "Other", 10, 0.0, answer_refs=[100, 101])
+    all_themes = kept + overflow + [other]
+    kept_rows = {r for t in kept for r in t.answer_refs}
+    # Filter keeps all of kept's refs, half of Fabric quality's, none of Delivery speed's, both of Other's.
+    filter_rows = kept_rows | {80, 81} | {100, 101}
+
+    nodes = theme_nodes(all_themes, total_answered=10, filter_rows=filter_rows)
+    assert [n.name for n in nodes[:7]] == [f"T{i}" for i in range(1, 8)]  # ranking unaffected, as designed
+    merged = nodes[-1]
+    assert merged.name == "Other"
+    assert merged.count == 2 + 0 + 2  # 4
+    assert merged.answer_refs == [80, 81, 100, 101]
+    assert merged.sentiment == pytest.approx((-0.4 * 2 + 0.2 * 0 + 0.0 * 2) / 4, abs=1e-3)
+
+
 # ==================================================================== build_report_data + render() smoke test
 
 def test_build_report_data_renders_through_real_charts_module():

@@ -298,6 +298,100 @@ def test_rebuild_replaces_prior_report_not_duplicates(env):
     assert finding_kinds == sorted({"dominant_theme", "tone_contrast", "tone_contrast"})
 
 
+# ---------------------------------------------------------------- filters (segment / score band / date range)
+
+def survey_df_with_rating(n_reliability: int = 60, n_support: int = 20) -> pd.DataFrame:
+    """`survey_df()` plus a "Rating" column on an observable 0-10 scale, evenly spread across
+    `band_score`'s Low (0-6)/Middle (7-8)/High (9-10) bands, so a confirmed "score" kind survives both the
+    cleaning pipeline's own scale detection and (with `MIN_GROUP_SIZE` lowered) build_score_data's
+    suppression floor."""
+    df = survey_df(n_reliability, n_support)
+    n = len(df)
+    df["Rating"] = [[0, 7, 10][i % 3] for i in range(n)]  # includes 0 so scale detection locks to (0, 10)
+    return df
+
+
+def setup_filterable_report(env, monkeypatch, timeout=5.0) -> int:
+    """Uploads `survey_df_with_rating()`, confirms "Rating" as a score column, cleans, seeds
+    `notable_theme_specs()` (Reliability rows 0-59, Support rows 60-79 - matches this fixture's row
+    positions exactly), and builds the report. Lowers `MIN_GROUP_SIZE` to 5 so each ~27-row score band
+    clears the suppression floor without needing a much larger fixture."""
+    monkeypatch.setenv("MIN_GROUP_SIZE", "5")
+    install_fake_claude()
+    did = upload_csv(env, survey_df_with_rating())
+    profile = env.client.get(f"/api/datasets/{did}/profile").json()["profile"]
+    cols = [{"name": c["name"], "kind": c["kind"], "off": False} for c in profile["columns"]]
+    for c in cols:
+        if c["name"] == "Rating":
+            c["kind"] = "score"
+    r = env.client.patch(f"/api/datasets/{did}/columns", json={"columns": cols})
+    assert r.status_code == 200, r.text
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    job = build_report_job(env, did, timeout=timeout)
+    assert job["status"] == "done", job
+    return did
+
+
+def test_get_report_filter_options_present_for_a_confirmed_score_column(env, monkeypatch):
+    did = setup_filterable_report(env, monkeypatch)
+    body = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+
+    assert body["filter_options"]["score_band"] is not None
+    assert body["filter_options"]["score_band"]["column"] == "Rating"
+    assert set(body["filter_options"]["score_band"]["bands"]) == {"Low (0-6)", "Middle (7-8)", "High (9-10)"}
+    assert body["filter_options"]["segment"] is None  # no segment column confirmed in this fixture
+    assert body["filter_options"]["date_range"] is None
+    assert body["filters_applied"] == {
+        "segment": None, "score_band": None, "date_from": None, "date_to": None,
+    }
+
+
+def test_get_report_score_band_filter_changes_chart_html(env, monkeypatch):
+    did = setup_filterable_report(env, monkeypatch)
+    unfiltered = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    filtered = env.client.get(
+        f"/api/datasets/{did}/report", params={"column": Q, "score_band": "Low (0-6)"},
+    ).json()
+
+    assert filtered["filters_applied"]["score_band"] == "Low (0-6)"
+    unfiltered_html = " ".join(b["chart_html"] for b in unfiltered["blocks"])
+    filtered_html = " ".join(b["chart_html"] for b in filtered["blocks"])
+    assert unfiltered_html != filtered_html  # narrowing to one band visibly changes the rendered charts
+
+
+def test_get_report_unknown_filter_value_degrades_gracefully_not_an_error(env, monkeypatch):
+    """Filtering by a segment group when no segment column was ever confirmed must yield a real (empty)
+    result, not a 500 or a silent fall-back to unfiltered."""
+    did = setup_filterable_report(env, monkeypatch)
+    r = env.client.get(
+        f"/api/datasets/{did}/report", params={"column": Q, "segment": "NotARealGroup"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["filters_applied"]["segment"] == "NotARealGroup"
+
+
+def test_get_report_bad_date_format_is_422(env, monkeypatch):
+    did = setup_filterable_report(env, monkeypatch)
+    r = env.client.get(
+        f"/api/datasets/{did}/report", params={"column": Q, "date_from": "not-a-date"},
+    )
+    assert r.status_code == 422, r.text
+    assert "date_from" in r.json()["detail"]
+
+
+def test_get_report_no_filter_params_is_unchanged_from_before_filters_existed(env, monkeypatch):
+    """Regression guard: a request with no filter query params must produce the exact same
+    dataset_id/column/summary/blocks/columns_used as before this feature existed - only the two new
+    additive keys (filter_options/filters_applied) are new."""
+    did = setup_filterable_report(env, monkeypatch)
+    first = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    second = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    for key in ("dataset_id", "column", "question", "summary", "also_checked_nothing_notable",
+                "blocks", "columns_used"):
+        assert first[key] == second[key]
+
+
 # ---------------------------------------------------------------- errors
 
 def test_no_themes_yet_surfaces_as_job_error_not_a_synchronous_422(env):

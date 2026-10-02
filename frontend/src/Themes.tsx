@@ -5,7 +5,7 @@ import type { ColumnProfile, DatasetView, Kind } from './api'
 import { buildThemes, getThemeAnswers, getThemes, getThemesChart } from './themesApi'
 import type { ThemeAnswer, ThemeCard, ThemeChartResponse } from './themesApi'
 import { buildReport, getReport } from './reportApi'
-import type { ReportResponse } from './reportApi'
+import type { ReportFilters, ReportResponse } from './reportApi'
 import { getLatestJob, pollJob } from './jobsApi'
 import type { Job } from './jobsApi'
 import JobProgress from './JobProgress'
@@ -158,6 +158,7 @@ export default function Themes() {
   const [themesJob, setThemesJob] = useState<Job | null>(null)
   const [report, setReport] = useState<ReportResponse | null>(null)
   const [reportJob, setReportJob] = useState<Job | null>(null)
+  const [filters, setFilters] = useState<ReportFilters>({})
   const [manageThemes, setManageThemes] = useState(false)
   const [error, setError] = useState('')
   const [themesChart, setThemesChart] = useState<ThemeChartResponse | null>(null)
@@ -192,12 +193,32 @@ export default function Themes() {
   async function refreshReport() {
     if (!column) return
     try {
-      setReport(await getReport(id, column))
+      setReport(await getReport(id, column, filters))
       setReportJob(null)
     } catch (e) {
       setError((e as Error).message)
     }
   }
+
+  // Filters feature (SPEC.md section 5): changing the filter bar re-fetches the whole report with the new
+  // query params - same "control state -> useEffect -> refetch a whole section" idiom as the themesChart
+  // effect above. Guarded on `report` already being set so this never double-fetches alongside the
+  // initial-load effect below (which does its own first, unfiltered-by-construction `getReport` call).
+  useEffect(() => {
+    if (!column || !report) return
+    let cancelled = false
+    getReport(id, column, filters)
+      .then((r) => {
+        if (!cancelled) setReport(r)
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters])
 
   // Fetches the one-chart-at-a-glance treemap fragment for the browse view (Themes.tsx's own reply to the
   // "wall of cards" complaint - see docs/DECISIONS.md) once themes exist, and defaults the selected theme
@@ -261,7 +282,7 @@ export default function Themes() {
 
         let hasReport = false
         try {
-          setReport(await getReport(id, col))
+          setReport(await getReport(id, col, filters))
           hasReport = true
         } catch {
           /* no report built yet - fall through to the job lookup below */
@@ -402,7 +423,13 @@ export default function Themes() {
 
       {themes !== null && report && !manageThemes && (
         <>
-          <ReportView report={report} datasetId={id} themes={themes ?? undefined} />
+          <ReportView
+            report={report}
+            datasetId={id}
+            themes={themes ?? undefined}
+            filters={filters}
+            onFiltersChange={setFilters}
+          />
           <div className="foot">
             <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning}>
               {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}

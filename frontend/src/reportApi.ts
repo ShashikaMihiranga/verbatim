@@ -32,6 +32,31 @@ export interface ReportColumnUsed {
   role: string
 }
 
+// Filters feature (SPEC.md section 5: "a global filter (segment, score band, date range)"). Each field is
+// `null` when that role never resolved to a real chart-worthy column, exactly mirroring `ReportColumnUsed`'s
+// own honesty rule - a dropdown only ever offers values that already survived suppression server-side.
+export interface ReportFilterOptions {
+  segment: { column: string; groups: string[] } | null
+  score_band: { column: string; bands: string[] } | null
+  date_range: { column: string; min: string; max: string } | null
+}
+
+export interface ReportFiltersApplied {
+  segment: string | null
+  score_band: string | null
+  date_from: string | null
+  date_to: string | null
+}
+
+// What a caller passes to `getReport` - camelCase on this side, translated to the API's own snake_case
+// query params inside `getReport` below.
+export interface ReportFilters {
+  segment?: string
+  scoreBand?: string
+  dateFrom?: string
+  dateTo?: string
+}
+
 export interface ReportResponse {
   dataset_id: number
   column: string
@@ -40,6 +65,8 @@ export interface ReportResponse {
   also_checked_nothing_notable: boolean
   blocks: ReportBlock[]
   columns_used: ReportColumnUsed[]
+  filter_options: ReportFilterOptions
+  filters_applied: ReportFiltersApplied
 }
 
 async function asError(r: Response): Promise<Error> {
@@ -66,8 +93,13 @@ export async function buildReport(id: number, column: string): Promise<BuildStar
   return r.json()
 }
 
-export async function getReport(id: number, column: string): Promise<ReportResponse> {
-  const r = await authFetch(`/api/datasets/${id}/report?${new URLSearchParams({ column })}`)
+export async function getReport(id: number, column: string, filters?: ReportFilters): Promise<ReportResponse> {
+  const params = new URLSearchParams({ column })
+  if (filters?.segment) params.set('segment', filters.segment)
+  if (filters?.scoreBand) params.set('score_band', filters.scoreBand)
+  if (filters?.dateFrom) params.set('date_from', filters.dateFrom)
+  if (filters?.dateTo) params.set('date_to', filters.dateTo)
+  const r = await authFetch(`/api/datasets/${id}/report?${params}`)
   if (!r.ok) throw await asError(r)
   return r.json()
 }

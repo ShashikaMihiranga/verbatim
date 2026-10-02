@@ -31,6 +31,7 @@ from app.findings_structured import (
     build_structured_context,
     build_trend_data,
     pick_structured_columns,
+    resolve_filter_rows,
     score_correlation_candidates,
     segment_skew_candidates,
     theme_answer_rows,
@@ -639,6 +640,87 @@ def test_build_structured_context_builds_all_three_from_realistic_data():
     assert context.trend is not None
     assert context.trend.labels == ["Jan", "Feb", "Mar"]
     assert all(s.values for s in context.trend.series)
+
+
+def test_build_structured_context_filter_rows_restricts_rows():
+    """The core Filters mechanism: `filter_rows` narrows the row universe everything below is computed
+    from, with zero changes to build_score_data/build_segment_data/build_trend_data themselves. Drops only
+    _big_dataset()'s last 30 rows (the end of South/March) so both segment groups and all 3 trend periods
+    still clear their own suppression floors - isolating the test to "counts shrink correctly", not
+    "chart disappears"."""
+    clean_df, themes, plan = _big_dataset()
+    nodes = theme_nodes(themes, total_answered=300)
+    columns = {"score": ["Score"], "segment": ["Segment"], "date": ["Date"]}
+
+    filter_rows = set(range(270))  # North (0-169) untouched, South (170-299) trimmed to 170-269
+    context = build_structured_context(
+        clean_df, plan, themes, nodes, columns, floor=30, filter_rows=filter_rows,
+    )
+
+    assert context.segment is not None
+    groups_by_label = {g.label: g.n for g in context.segment.groups}
+    assert groups_by_label == {"North": 170, "South": 100}  # South shrank from 130 to 100
+
+    assert context.trend is not None
+    assert context.trend.labels == ["Jan", "Feb", "Mar"]
+    assert len(context.date_raw_by_row) == 270  # Mar shrank (200-269 only) but all 3 periods still survive
+
+
+# ==================================================================== resolve_filter_rows
+
+def _structured_for_filters() -> StructuredContext:
+    clean_df, themes, plan = _big_dataset()
+    nodes = theme_nodes(themes, total_answered=300)
+    columns = {"score": ["Score"], "segment": ["Segment"], "date": ["Date"]}
+    return build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
+
+
+def test_resolve_filter_rows_all_none_is_none():
+    structured = _structured_for_filters()
+    assert resolve_filter_rows(structured, None, None, None, None) is None
+
+
+def test_resolve_filter_rows_segment_only():
+    structured = _structured_for_filters()
+    rows = resolve_filter_rows(structured, "North", None, None, None)
+    assert rows == set(range(170))  # North is rows 0-169 in _big_dataset()
+
+
+def test_resolve_filter_rows_score_band_only():
+    structured = _structured_for_filters()
+    rows = resolve_filter_rows(structured, None, "High (9-10)", None, None)
+    # _big_dataset()'s score cycles [3, 7, 9][i % 3] - "High" (9-10) is every i % 3 == 2 row.
+    assert rows == {i for i in range(300) if i % 3 == 2}
+
+
+def test_resolve_filter_rows_date_range_inclusive_and_one_sided():
+    structured = _structured_for_filters()
+    jan_only = resolve_filter_rows(structured, None, None, date(2026, 1, 1), date(2026, 1, 31))
+    assert jan_only == set(range(100))
+
+    from_feb = resolve_filter_rows(structured, None, None, date(2026, 2, 1), None)
+    assert from_feb == set(range(100, 300))
+
+
+def test_resolve_filter_rows_combined_constraints_intersect_not_union():
+    structured = _structured_for_filters()
+    rows = resolve_filter_rows(structured, "North", "High (9-10)", None, None)
+    assert rows == {i for i in range(170) if i % 3 == 2}
+
+
+def test_resolve_filter_rows_unresolvable_column_yields_empty_set():
+    """A constraint naming a role that never resolved to real chart data must be a real empty set, not a
+    silent no-op fallback to unfiltered."""
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    clean_df = pd.DataFrame({"Score": [3, 4, 9, 9, 2, 7, 8, 9, 5, 10]})
+    plan = CleaningPlan(steps=[], settings={}, columns={})  # no check_score_range step
+    structured = build_structured_context(clean_df, plan, themes, nodes, {"score": ["Score"]}, floor=2)
+    assert structured.score is None  # sanity: this candidate never resolved
+
+    assert resolve_filter_rows(structured, None, "High", None, None) == set()
+    assert resolve_filter_rows(structured, "AnyGroup", None, None, None) == set()
+    assert resolve_filter_rows(structured, None, None, date(2020, 1, 1), None) == set()
 
 
 def test_build_report_data_with_structured_renders_through_real_charts_module():

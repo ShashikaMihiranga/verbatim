@@ -17,6 +17,15 @@
 }
 .rp-chip-note { color: var(--muted); font-weight: 400; margin-left: 6px; }
 
+/* Filters feature (SPEC.md section 5). Reuses .rp-chip's own tokens (--surface/--line, 32px height,
+   8px radius) rather than inventing new ones - a filter control is visually the same weight as the
+   "Columns used" chips directly above it. */
+.rp-filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+.rp-filter-select, .rp-filter-date {
+  height: 32px; padding: 0 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line);
+  font-size: 14px; font-family: inherit; color: var(--ink);
+}
+
 .rp-standout { margin-top: 40px; }
 .rp-standout-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
 .rp-standout-list { border-bottom: 1px solid var(--line); }
@@ -78,4 +87,5 @@
   .rp-head { flex-direction: column; align-items: flex-start; gap: 10px; }
   .rp-head-side { padding-top: 0; }
   .rp-section { margin-top: 36px; padding-top: 20px; }
+  .rp-filters { flex-direction: column; align-items: stretch; }
 }

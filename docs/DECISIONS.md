@@ -582,3 +582,74 @@
   confirming the model change didn't regress clustering quality - clustering itself never touches Claude).
   Full backend suite still green throughout (586 passed, 1 skipped, same 5 pre-existing unrelated
   failures).
+
+## 2026-10-02 (report-page "Filters": segment / score band / date range, SPEC.md section 5)
+- First of the 4 "Bigger unbuilt report features" (Filters, Theme editing, Sharing & roles, Export),
+  built in user-confirmed risk order. Mechanism: `GET /api/datasets/{id}/report` gains 4 optional query
+  params (`segment`, `score_band`, `date_from`, `date_to`, AND'd together, one combined filter not three
+  independent ones). `app.findings_structured.StructuredContext` now stashes the raw, pre-band/pre-cap
+  per-row dicts behind whichever score/segment/date column won each role
+  (`score_raw_by_row`/`score_scale`/`segment_raw_by_row`/`date_raw_by_row`); a new pure function
+  `resolve_filter_rows` turns a filter request into a row-index `set[int]` from those dicts (reusing
+  `band_score`/`apply_bands` as-is - no new banding logic). `build_structured_context` gained one
+  `filter_rows` param that narrows its row universe by one line (`rows = [r for r in rows if r in
+  filter_rows]`) - every downstream per-kind loop already iterated `for r in rows`, so this is the entire
+  filtering mechanism for score/segment/trend, with ZERO changes to `build_score_data`/
+  `build_segment_data`/`build_trend_data` themselves. `app.findings.theme_nodes` gained the matching
+  `filter_rows` param: node count/share/ranking/answer_refs intersect each theme's `answer_refs` against
+  `filter_rows` instead of reading `Theme.size` directly - ranking can legitimately change under a filter
+  (a theme largest overall can rank lower once most of its rows are filtered out), which is correct, not
+  a bug. `_render_report` always builds an UNFILTERED `StructuredContext` first (supplies
+  `filter_options` - real segment group names / score bands / date min-max, taken from already-
+  suppression-survived `segment.groups`/`score.bands` labels, never a fresh raw scan, so no offered
+  option ever immediately collapses to "not enough data"), then only builds a second, filtered one when
+  a filter param is actually present - a request with no filter params is architecturally unchanged from
+  before this feature (confirmed via a dedicated regression-pin test).
+- Explicit scope boundary (bounds blast radius, matches SPEC's literal "theme counts" wording): `quality`
+  (answer-length histogram) and `overview.stats`'s "Responses"/"Answered" tiles stay dataset-wide always -
+  they describe the whole upload, not a themed subset. Sub-theme `children` are dropped (`[]`) entirely
+  while a filter is active, rather than inventing a new per-row approximation for them (no per-row record
+  of a sub-theme's own membership exists to intersect against a filter, only the parent `Theme.answer_refs`
+  does). Filtered sentiment reuses the exact count-weighted-average-of-the-stored-aggregate approximation
+  already used for bands/periods (no per-row sentiment is persisted anywhere - 2026-09-25 entry).
+- **Two real pre-existing chart-rendering bugs found and fixed by testing against a real dataset, not
+  assumed away**: the Filters feature is the first thing in this codebase that can legitimately produce a
+  theme (or every theme) with a genuine ZERO share/count, and three different chart functions divided by a
+  sum/max/min of shares with no zero-guard, all unreachable before this feature:
+  1. `app.charts.squarify` divided by `total = sum(v for _, v in items)` with no zero guard - crashed with
+     `ZeroDivisionError` the moment every theme had 0 share (a filter matching zero rows entirely). Fixed:
+     returns `{}` (no boxes) when `total <= 0`; `treemap_html` renders an empty box in that case instead of
+     indexing into the (now possibly empty) `rects` dict.
+  2. Even with a non-zero total, `squarify`'s own `worst()` divides by `min(a for _, a in row)` - a single
+     *individual* zero-share theme (e.g. a filter leaves one theme with 0 matching rows while others still
+     have some) still crashed it. Fixed: `treemap_html` now excludes zero-share rows from what it hands to
+     `squarify` entirely (a 0%-share theme draws no box - it's simply not in this filtered view, not an
+     error) rather than trying to give `squarify` a zero-area item to lay out.
+  3. `app.charts.rank_rows`'s `mx = max(t.share for t in data.themes)` then `share / mx` crashed the same
+     way when every theme's share was 0. Fixed: `mx = max((t.share for t in data.themes), default=0) or 1`
+     - every bar computes to 0 width instead of dividing by zero.
+  4. `app.charts.ramp_mix` (the segment/age heatmap's per-cell colour) divides `v / overall`; `overall` is
+     a row's real overall share, which `build_segment_data`'s own docstring already documents CAN be 0 (it
+     already skips a zero-overall row for its own highlight-ratio math, for the same reason) - but nothing
+     skipped it for the colour-ramp math. Fixed: `ramp_mix` returns the same flat floor (`8`) `r == 0`
+     already returns, instead of dividing by zero, when `overall == 0`.
+  None of these were filter-specific bugs in the literal sense - they were always-latent zero-division
+  risk in chart math that real data had just never managed to trigger before, because no existing feature
+  could make a theme's share exactly 0 while the report still rendered at all. Found by testing every
+  filter combination (segment alone, score band alone, combined, and the all-filtered-out edge case)
+  against a real local dataset (`Womens Clothing E-Commerce Reviews.csv`, dataset id 2: real "Rating"
+  score column, "Division Name" segment column, 5 real themes) through the real API before considering the
+  feature done - not just the unit-test suite.
+- Frontend: `reportApi.ts`'s `getReport(id, column, filters?)` gained an optional 4th param (every
+  existing call site keeps compiling unchanged); new `ReportFilters.tsx` component (purely controlled, no
+  fetch of its own - matching this app's established "control state -> `useEffect` -> refetch a whole
+  section" idiom, reusing the exact shape `Themes.tsx`'s own `themesChart` effect already established);
+  `Report.tsx` renders it once, right after the "Columns used" chips and before "What stands out".
+- Verified live end to end via `claude-in-chrome` against the real dataset above: filter dropdowns
+  populate with real segment/score-band values (not placeholders); selecting a segment visibly changes the
+  treemap's own box widths (confirmed via raw HTML diff: "Fit and sizing" went from 70.10% to 57.74% width
+  when filtered to the "Initmates" segment); combining two filters at once fires exactly ONE
+  `GET /report?...` request (confirmed via `read_network_requests`) and zero Claude/Anthropic calls;
+  "Clear filters" round-trips the report back to byte-identical original numbers. Full backend suite green
+  (575 passed, 1 skipped, same pre-existing unrelated `.env`/Clerk-dependent auth/security failures) and
+  full frontend suite green (62 passed) plus a clean `tsc -b && vite build`.

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import date
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -55,7 +56,12 @@ from .findings import (
     build_report_data,
     theme_nodes,
 )
-from .findings_structured import StructuredContext, build_structured_context, pick_structured_columns
+from .findings_structured import (
+    StructuredContext,
+    build_structured_context,
+    pick_structured_columns,
+    resolve_filter_rows,
+)
 from .jobs import create_job, start_job
 from .models import Dataset, Finding, Report, Theme, User
 from .text_pipeline import ClaudeClient
@@ -103,7 +109,7 @@ def _answer_lengths_for(clean_df, column: str, themes: list[Theme]) -> list[int]
 
 
 def _structured_context_for(
-    db: Session, ds: Dataset, clean_df, plan, themes: list[Theme],
+    db: Session, ds: Dataset, clean_df, plan, themes: list[Theme], filter_rows: set[int] | None = None,
 ) -> StructuredContext:
     """B3 wiring: resolves this dataset's confirmed score/segment/date column candidates
     (`pick_structured_columns`, tried in order until one produces usable data - see
@@ -113,11 +119,24 @@ def _structured_context_for(
     `app.findings.candidate_findings` (the 3 new finding kinds) and `app.findings.build_report_data` (the
     `byScore`/`heatmap`/`trend` chart data) need. Never raises: a dataset with no usable score/segment/date
     column simply gets a `StructuredContext` with every field at its `None`/`""` default (see that
-    dataclass's own docstring)."""
-    total = sum(t.size for t in themes)
-    nodes = theme_nodes(themes, total)
+    dataclass's own docstring).
+
+    `filter_rows` (Filters feature): threaded into both `theme_nodes` (so node counts/answer_refs reflect
+    the filter) and `build_structured_context` (so the cross-tab row universe does too). `ThemeNode.share`
+    (read by `build_segment_data`'s "deviation from overall share" highlight) needs the FILTERED total to
+    be correct, which is itself only known after filtering - same two-pass shape
+    `app.findings.build_report_data` uses for the identical reason."""
+    if filter_rows is None:
+        total = sum(t.size for t in themes)
+        nodes = theme_nodes(themes, total)
+    else:
+        nodes = theme_nodes(themes, total_answered=1, filter_rows=filter_rows)
+        total = sum(n.count for n in nodes)
+        nodes = theme_nodes(themes, total, filter_rows=filter_rows)
     cols = pick_structured_columns(ds.id, db)
-    return build_structured_context(clean_df, plan, themes, nodes, cols, _suppression_min_group_size())
+    return build_structured_context(
+        clean_df, plan, themes, nodes, cols, _suppression_min_group_size(), filter_rows=filter_rows,
+    )
 
 
 def _latest_report_for_column(db: Session, dataset_id: int, column: str) -> Report | None:
@@ -130,19 +149,63 @@ def _latest_report_for_column(db: Session, dataset_id: int, column: str) -> Repo
     return None
 
 
-def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dict[str, Any]:
+def _filter_options_for(structured: StructuredContext) -> dict[str, Any]:
+    """Filter dropdown option values (Filters feature, SPEC.md section 5), built from an UNFILTERED
+    `StructuredContext`'s already-suppressed `segment.groups`/`score.bands` labels (not a fresh raw-value
+    scan) - every offered option is guaranteed to already be a group/band genuinely shown in that chart,
+    never one that would immediately collapse to "not enough data" if picked."""
+    segment_opts = None
+    if structured.segment is not None:
+        segment_opts = {
+            "column": structured.segment_column_name,
+            "groups": [g.label for g in structured.segment.groups],
+        }
+    score_opts = None
+    if structured.score is not None:
+        score_opts = {
+            "column": structured.score_column_name,
+            "bands": [b.label for b in structured.score.bands],
+        }
+    date_opts = None
+    if structured.trend is not None and structured.date_raw_by_row:
+        values = structured.date_raw_by_row.values()
+        date_opts = {
+            "column": structured.trend_column_name,
+            "min": min(values).isoformat(),
+            "max": max(values).isoformat(),
+        }
+    return {"segment": segment_opts, "score_band": score_opts, "date_range": date_opts}
+
+
+def _render_report(
+    db: Session, ds: Dataset, column: str, report: Report, *,
+    segment: str | None = None, score_band: str | None = None,
+    date_from: date | None = None, date_to: date | None = None,
+) -> dict[str, Any]:
     """Builds the JSON body for both routes below: one `build_report_data` call, reused for every block's
-    `render_parts()` (per app/findings.py's own instruction - never rebuilt per block)."""
+    `render_parts()` (per app/findings.py's own instruction - never rebuilt per block).
+
+    `segment`/`score_band`/`date_from`/`date_to` (Filters feature, SPEC.md section 5) are optional and
+    AND'd together. The UNFILTERED `StructuredContext` is always built first - it supplies `filter_options`
+    (so dropdown choices never shrink as a filter narrows the view) and the raw per-row dicts
+    `resolve_filter_rows` needs. Only when at least one filter arg is given is a second, filtered
+    `StructuredContext` built and used for the actual chart data - a dataset with no filter params active
+    behaves byte-for-byte like it did before this feature existed."""
     content = report.content or {}
     themes = list(db.scalars(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
     ).all())
     clean_df, plan = _load_clean_df(ds, db)
     structured = _structured_context_for(db, ds, clean_df, plan, themes)
+    filter_options = _filter_options_for(structured)
+    filter_rows = resolve_filter_rows(structured, segment, score_band, date_from, date_to)
+    if filter_rows is not None:
+        structured = _structured_context_for(db, ds, clean_df, plan, themes, filter_rows=filter_rows)
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
     question = content.get("question") or column
     report_data = build_report_data(
         ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths, structured=structured,
+        filter_rows=filter_rows,
     )
 
     blocks_content = content.get("blocks") or []
@@ -208,6 +271,12 @@ def _render_report(db: Session, ds: Dataset, column: str, report: Report) -> dic
         "also_checked_nothing_notable": bool(content.get("also_checked_nothing_notable")),
         "blocks": blocks_out,
         "columns_used": columns_used,
+        "filter_options": filter_options,
+        "filters_applied": {
+            "segment": segment, "score_band": score_band,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+        },
     }
 
 
@@ -291,10 +360,23 @@ def build_report(
     return {"job_id": job.id, "status": "running"}
 
 
+def _parse_filter_date(value: str | None, param_name: str) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(422, f"{param_name} must be an ISO date (YYYY-MM-DD), got {value!r}.")
+
+
 @router.get("/datasets/{dataset_id}/report")
 def get_report(
     dataset_id: int,
     column: str,
+    segment: str | None = None,
+    score_band: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ):
@@ -309,4 +391,9 @@ def get_report(
             raise HTTPException(404, "No themes have been built yet for this column. Build themes first.")
         raise HTTPException(404, "No report has been built yet for this column. Build the report first.")
 
-    return _render_report(db, ds, column, report)
+    parsed_from = _parse_filter_date(date_from, "date_from")
+    parsed_to = _parse_filter_date(date_to, "date_to")
+    return _render_report(
+        db, ds, column, report,
+        segment=segment, score_band=score_band, date_from=parsed_from, date_to=parsed_to,
+    )
