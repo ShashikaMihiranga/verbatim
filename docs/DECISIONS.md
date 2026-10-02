@@ -723,3 +723,26 @@
   treemap - its own names have enough room at the full reference size, so none of the 63 chart tests
   (15 new) needed a golden-file regeneration. Full backend suite green (594 passed, 1 skipped, same
   pre-existing unrelated failures).
+
+## 2026-10-02 (icicle: rotate a too-narrow label, matching the design reference, instead of hiding it)
+- User spotted a real gap by comparing against `design/screens/icicle.dc.html` directly: that reference
+  rotates a too-narrow sub-theme's label 90° (reads bottom-to-top) rather than wrapping it horizontally or
+  showing nothing - several of its own narrow columns ("Battery replacement cost 7.5%", "Current car is
+  fine 5.5%") are rotated. The icicle layout shipped earlier the same day did not do this - it degraded a
+  narrow column straight to percent-only or blank, losing the real name entirely in cases the reference
+  design shows readable.
+- Added a rotated tier to `_icicle_cell` between "horizontal wrapped name" and "percent-only/nothing": a
+  new `_icicle_rotated_label` renders the name + percent as ONE unwrapped line, CSS-rotated
+  `rotate(-90deg)` and centered - the icicle-layout analogue of the legacy fixed-pixel `fit_label()`'s own
+  `rotated()` fallback, rebuilt as a CSS transform instead of an SVG `<g transform>`. Used when a column is
+  too narrow for horizontal wrapping (<6 chars/line) but wide enough for one rotated line's own thickness
+  (`box_w >= fs*1.4+6`) and tall enough for the real string length once running along the box's height
+  (`len(text)*wpc <= box_h-16`, both measured, not guessed). Falls further to a rotated percent-only, then
+  horizontal percent-only, then nothing, only when each tier genuinely doesn't fit - still never spells a
+  name one character per line (the bug fixed earlier the same day) and still never overflows its own box.
+- Verified live via `claude-in-chrome` against the real dataset: "Versatility and style 2.2%" and
+  "Other 25.6%" now render as clean rotated text (previously blank strips), matching the reference design's
+  own treatment of comparably narrow columns; the 2 still-narrower strips correctly stay blank (too narrow
+  even for one rotated line - the reference design's own narrowest ~2% column shows no label either).
+  5 new tests (67 total in this file), full backend suite green (598 passed, 1 skipped, same pre-existing
+  unrelated failures), golden-frame snapshots unchanged.

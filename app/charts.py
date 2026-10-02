@@ -1074,32 +1074,6 @@ def _icicle_cell(label_name: str, share: float, col: str, x: float, y: float, bo
         return ""
     is_remainder = label_name == "__remainder__"
     fs = 14 if is_sub else 15
-    # A column's HEIGHT is always generous here (the whole point of this layout), but its WIDTH can still
-    # be genuinely tiny (a 1%-share theme is ~1% of the chart's width no matter which layout draws it).
-    # Capping `max_lines` by height alone let a very narrow column spell its entire name one character per
-    # line, vertically - technically no information lost, but worse to read than treemap's own quick
-    # ellipsis truncation (confirmed live, a real dataset showed exactly this). `chars_per_line` (same
-    # estimate `_too_narrow_for` uses) caps how many lines are even worth attempting: a column too narrow
-    # for a short real word shows its percentage only, never a wall of single letters.
-    wpc = fs * 0.53
-    chars_per_line = (box_w - 12) / wpc
-    pct_only = f"{share:g}%"
-    if is_remainder:
-        label_text = f"{share:g}% not in a sub-theme"
-    elif chars_per_line < 3:
-        # Too narrow even for the bare percentage to sit on one line without itself wrapping
-        # character-by-character ("2." / "2" / "%") - no text at all reads better than that. The box's
-        # own size/colour still carries real information; a click still resolves it via `data-theme`.
-        label_text = ""
-    elif chars_per_line < max(len(pct_only), 6):
-        # Below 6 chars/line (the same threshold `_too_narrow_for` uses to decide a box needs icicle in
-        # the first place) a real multi-word name just wraps badly even with plenty of height - the bare
-        # percentage is the honest, readable alternative, not a half-shown name.
-        label_text = pct_only
-    elif is_sub:
-        label_text = f'{esc(label_name)} <span style="font-weight:600">{share:g}%</span>'
-    else:
-        label_text = f'{esc(label_name)} <span style="font-weight:600">{share}%</span>'
     if is_remainder:
         bg = "color-mix(in srgb, var(--muted) 18%, var(--surface))"
         text_color = "var(--ink)"
@@ -1109,21 +1083,74 @@ def _icicle_cell(label_name: str, share: float, col: str, x: float, y: float, bo
     else:
         bg = f"var(--{col})"
         text_color = TH_ON[col]
-    line_h = fs * 1.25
-    # Never more than 6 lines even when height would allow more - 6 lines of this column's own (narrow)
-    # width is already a generous amount of text; beyond that, line-clamp's own ellipsis is the right
-    # degrade, not an ever-taller stack of near-empty lines.
-    max_lines = min(6, max(1, int((box_h - 16) // line_h)))
-    return (
+    outer_open = (
         f'<div data-theme="{esc(theme_name)}" style="position:absolute;left:{x / total_w * 100:.2f}%;'
         f'top:{y / total_h * 100:.2f}%;width:{box_w / total_w * 100:.2f}%;height:{box_h / total_h * 100:.2f}%;'
         f'padding:1.5px">'
         f'<div style="width:100%;height:100%;border-radius:4px;overflow:hidden;background:{bg};'
-        f'display:flex;align-items:center;justify-content:center;text-align:center;padding:6px">'
+        f'position:relative">'
+    )
+
+    # A column's HEIGHT is always generous here (the whole point of this layout), but its WIDTH can still
+    # be genuinely tiny (a 1%-share theme is ~1% of the chart's width no matter which layout draws it).
+    # The reference design (design/screens/icicle.dc.html) rotates a too-narrow label 90° rather than
+    # wrapping it horizontally - the icicle-layout analogue of the legacy fixed-pixel fit_label()'s own
+    # `rotated()` fallback, rebuilt here as one CSS transform on a single-line span instead of SVG. This
+    # shows real text (not just a number) in far less width than horizontal wrapping needs, while still
+    # avoiding the worse failure mode a pure line-clamp-by-height approach had: given enough height and no
+    # width check at all, a narrow column would spell its whole name one character per line, vertically
+    # (confirmed live on a real dataset) - rotation reads as one real line, never that.
+    wpc = fs * 0.53
+    chars_per_line = (box_w - 12) / wpc
+    pct_only = f"{share:g}%"
+    full_text_plain = f"{label_name} {pct_only}" if not is_remainder else f"{pct_only} not in a sub-theme"
+
+    if is_remainder:
+        body = _icicle_label(f"{share:g}% not in a sub-theme", fs, text_color)
+    elif chars_per_line >= 6:
+        label_text = (f'{esc(label_name)} <span style="font-weight:600">{pct_only}</span>' if is_sub
+                      else f'{esc(label_name)} <span style="font-weight:600">{share}%</span>')
+        body = _icicle_label(label_text, fs, text_color)
+    elif box_w >= fs * 1.4 + 6 and len(full_text_plain) * wpc <= box_h - 16:
+        # Rotated fits: the STRING's length (now running along the box's generous HEIGHT) clears that
+        # height, and the box is at least wide enough for one line's own thickness.
+        body = _icicle_rotated_label(f"{esc(label_name)} {pct_only}", fs, text_color)
+    elif box_w >= fs * 1.4 + 6 and len(pct_only) * wpc <= box_h - 16:
+        body = _icicle_rotated_label(pct_only, fs, text_color)
+    elif chars_per_line >= len(pct_only):
+        body = _icicle_label(pct_only, fs, text_color)
+    else:
+        # Too narrow even for the bare percentage on one line, rotated or not - no text at all reads
+        # better than a character-by-character wrap either way. The box's own size/colour still carries
+        # real information; a click still resolves it via `data-theme`.
+        body = ""
+    return outer_open + body + "</div></div>"
+
+
+def _icicle_label(label_text: str, fs: float, text_color: str) -> str:
+    """Horizontal, wrapped, line-clamped label - the normal case, used whenever a column is wide enough
+    that real multi-word wrapping reads better than rotating a single line (see `_icicle_cell`)."""
+    line_h = fs * 1.25
+    return (
+        f'<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;'
+        f'text-align:center;padding:6px">'
         f'<span style="font-size:{fs}px;font-weight:500;color:{text_color};line-height:1.25;'
         f'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;'
-        f'-webkit-line-clamp:{max_lines};-webkit-box-orient:vertical">{label_text}</span>'
-        f'</div></div>'
+        # Never more than 6 lines even when height would allow more - 6 lines of a narrow column's own
+        # width is already generous; beyond that, line-clamp's own ellipsis is the right degrade, not an
+        # ever-taller stack of near-empty lines.
+        f'-webkit-line-clamp:6;-webkit-box-orient:vertical">{label_text}</span></div>'
+    )
+
+
+def _icicle_rotated_label(text: str, fs: float, text_color: str) -> str:
+    """One-line label rotated -90° (reads bottom-to-top, matching design/screens/icicle.dc.html) for a
+    column too narrow for horizontal wrapping but tall enough for the whole line sideways. Callers must
+    have already confirmed the real string length fits the box's height - this never wraps or clamps."""
+    return (
+        f'<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) rotate(-90deg);'
+        f'transform-origin:center;white-space:nowrap;font-size:{fs}px;font-weight:500;color:{text_color};'
+        f'line-height:1.2">{text}</div>'
     )
 
 

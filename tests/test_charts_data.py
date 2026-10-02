@@ -11,8 +11,8 @@ from app.chart_data import (
     ToneSplit, TrendData, TrendSeries,
 )
 from app.charts import (
-    FRAMES, _prefers_icicle, _too_narrow_for, _treemap_areas, f_overview, f_treemap, icicle_html, render,
-    rows, treemap_html, treemap_rows,
+    FRAMES, _icicle_rotated_label, _prefers_icicle, _too_narrow_for, _treemap_areas, f_overview, f_treemap,
+    icicle_html, render, rows, treemap_html, treemap_rows,
 )
 from app.main import app
 
@@ -436,7 +436,66 @@ def test_icicle_html_other_width_is_capped_same_as_treemap_area_cap():
     other_idx = html.find('data-theme="Other"')
     other_width = float(re.search(r'width:(\d+\.\d\d)%', html[other_idx:]).group(1))
     assert other_width == pytest.approx(5.0, abs=0.5)  # capped, not its real 30%
-    assert "30%" in html  # the label still shows the real, uncapped share (narrow box -> percent-only)
+    assert "30%" in html  # the label still shows the real, uncapped share (narrow box -> rotated name+pct)
+
+
+# -------------------------------------------------------------------- icicle rotated-label fallback
+# (design/screens/icicle.dc.html rotates a too-narrow label 90° rather than wrapping it horizontally)
+
+def test_icicle_html_rotates_a_narrow_but_not_impossibly_narrow_columns_label():
+    """A column too narrow for horizontal wrapping (< 6 chars/line) but wide enough for one line's own
+    thickness, and tall enough for the full rotated string, shows the real name - rotated - not just a
+    bare percentage. Shares chosen to land squarely in the rotated tier (verified: ~54px wide at w=1000,
+    well past the ~27px rotation-thickness floor)."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Fit and sizing", 95.0, -0.1, 950, "t1", ToneSplit(40, 30, 30)),
+        ThemeNode("Versatility and style appeal", 5.0, 0.1, 50, "t2", ToneSplit(30, 30, 40)),
+    ]
+    html = icicle_html(data, 1000, 400)
+    idx = html.find('data-theme="Versatility and style appeal"')
+    cell = html[idx:idx + 700]
+    assert "rotate(-90deg)" in cell
+    assert "Versatility and style appeal" in cell
+    assert "5%" in cell
+    assert "-webkit-line-clamp" not in cell  # rotated text never wraps/clamps
+
+
+def test_icicle_html_too_narrow_even_to_rotate_falls_back_to_percent_or_nothing():
+    """A column narrower than one rotated line's own thickness can't rotate either - it must degrade
+    further (percent-only or nothing), never overflow its own box."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Fit and sizing", 98.0, -0.1, 980, "t1", ToneSplit(40, 30, 30)),
+        ThemeNode("Versatility and style appeal", 2.0, 0.1, 20, "t2", ToneSplit(30, 30, 40)),
+    ]
+    html = icicle_html(data, 1084, 580)
+    idx = html.find('data-theme="Versatility and style appeal"')
+    cell = html[idx:idx + 400]
+    assert "rotate(-90deg)" not in cell
+    # The box renders with no inner label div at all (empty body) - this narrow (2% of 1084px), neither
+    # the full name nor even the bare percentage fits, rotated or not.
+    assert 'background:var(--t2);position:relative"></div>' in cell
+
+
+def test_icicle_html_remainder_cell_is_never_rotated():
+    """The "not in a sub-theme" remainder entry always reads horizontally, matching treemap_html's own
+    remainder styling - it is explanatory text, not a theme name competing for the same narrow column."""
+    data = small_report()
+    data.themes = [
+        ThemeNode("Theme A", 80.0, 0.1, 800, "t1", ToneSplit(10, 10, 80), [SubTheme("Sub one", 10.0)]),
+    ]
+    html = icicle_html(data, 1000, 400)
+    assert "not in a sub-theme" in html
+    not_in_idx = html.find("not in a sub-theme")
+    assert "rotate(-90deg)" not in html[max(0, not_in_idx - 300):not_in_idx]
+
+
+def test_icicle_rotated_label_is_a_single_unwrapped_line():
+    html = _icicle_rotated_label("Battery replacement cost 7.5%", 15, "var(--ink)")
+    assert "white-space:nowrap" in html
+    assert "-webkit-line-clamp" not in html
+    assert "Battery replacement cost 7.5%" in html
 
 
 def test_icicle_html_sub_themes_sit_in_a_second_row_under_their_parent():
