@@ -91,7 +91,31 @@ _SLOTS = threading.BoundedSemaphore(max(1, int(os.environ.get("THEMES_CONCURRENC
 # (the route returns as soon as the job is created), but a truly hung embedding/Claude call could otherwise
 # leave a job stuck at "running" forever with no one ever told. `_watchdog` below marks the job failed with
 # a clear message if the pipeline itself does not finish inside this many seconds - see docs/DECISIONS.md.
+# This is the FLOOR, not a flat deadline any more - `_themes_deadline_for` below scales it up for large
+# files (see that function's own comment for why a flat 300s was confirmed live to kill real, still-
+# progressing large builds before they could finish).
 THEMES_DEADLINE_SECONDS = float(os.environ.get("THEMES_DEADLINE_SECONDS", "300") or 300)
+# Conservative answers/second floor for the whole embed+cluster+label pipeline, used only to size the
+# watchdog - NOT a performance target. Deliberately conservative: production (2026-10-09, Railway, 8 vCPU
+# plan) did not finish embedding a 74,681-row file within 300s even with concurrent embedding batches, so
+# the true throughput there is unknown but definitely well under this codebase's own unconstrained sandbox
+# measurement (~1,170 answers/sec) - 100/sec is a deliberately pessimistic floor so the deadline stays a
+# genuine safety net (still catches a truly hung call) without being the thing that kills a slow-but-real
+# large build. Env-overridable for the same reason the other knobs here are.
+THEMES_ANSWERS_PER_SECOND_FLOOR = float(os.environ.get("THEMES_ANSWERS_PER_SECOND_FLOOR", "100") or 100)
+
+
+def _themes_deadline_for(n_answers: int) -> float:
+    """Scales the watchdog deadline up for large files instead of one flat 300s for every size - a 500-
+    answer file keeps today's exact 300s floor (unchanged behaviour for the common case, and still exactly
+    what `THEMES_DEADLINE_SECONDS` alone controls when monkeypatched small in tests, see
+    test_api_themes.py::test_watchdog_marks_a_truly_stuck_job_failed_without_stopping_the_real_thread); a
+    74,681-answer file like the one that motivated this gets roughly 1,047s (~17.4 min:
+    `THEMES_DEADLINE_SECONDS` + 74681/100), real headroom instead of a near-certain kill partway through
+    embedding. `n_answers` only needs to be a reasonable magnitude, not exact - callers pass a cheap raw
+    non-null count, not the real masked/cleaned count `embed_and_cluster_with_vectors` itself computes
+    later."""
+    return THEMES_DEADLINE_SECONDS + n_answers / THEMES_ANSWERS_PER_SECOND_FLOOR
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -316,6 +340,10 @@ def build_themes(
     dataset_id_ = ds.id
     use_jev = body.use_jev_sentiment
     job = create_job(db, dataset_id_, column, "themes")
+    # A cheap raw non-null count (not the real masked/cleaned answer count `embed_and_cluster_with_vectors`
+    # computes later) is enough to size the watchdog - see `_themes_deadline_for`'s own comment for why a
+    # flat 300s was confirmed live to kill a real, still-progressing large build.
+    deadline = _themes_deadline_for(int(clean_df[column].notna().sum()))
 
     def _work(step: Callable[[str], None]) -> None:
         step("Turning answers into vectors")
@@ -353,9 +381,9 @@ def build_themes(
 
     start_job(
         job, _SLOTS, _work, _theme_build_error,
-        deadline_seconds=THEMES_DEADLINE_SECONDS,
+        deadline_seconds=deadline,
         deadline_message=(
-            f"Building themes took longer than {int(THEMES_DEADLINE_SECONDS)} seconds and did not finish "
+            f"Building themes took longer than {int(deadline)} seconds and did not finish "
             "in time. Try again, or with a smaller file."
         ),
     )

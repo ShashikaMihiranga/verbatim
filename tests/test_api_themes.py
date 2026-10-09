@@ -16,7 +16,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 import app.db as db_module
-from app.api_themes import _SLOTS, get_claude_client, get_embedding_client, get_jev_client_factory
+from app.api_themes import (
+    _SLOTS,
+    _themes_deadline_for,
+    get_claude_client,
+    get_embedding_client,
+    get_jev_client_factory,
+)
 from app.api_upload import current_user
 from app.db import Base, get_db
 from app.main import app
@@ -658,6 +664,29 @@ def test_themes_chart_ownership_isolation(env):
     as_user(uid2)
     r = env.client.get(f"/api/datasets/{did}/themes/chart", params={"column": Q})
     assert r.status_code == 404, r.text
+
+
+def test_themes_deadline_for_small_file_keeps_the_flat_floor_unchanged(monkeypatch):
+    """A 500-answer file must keep today's exact behaviour - the scaling term is small enough to be
+    negligible at this size, so this is a direct pin against a real regression for the common case."""
+    monkeypatch.setattr("app.api_themes.THEMES_DEADLINE_SECONDS", 300.0)
+    assert _themes_deadline_for(500) == pytest.approx(305.0)  # 300 + 500/100
+
+
+def test_themes_deadline_for_scales_up_for_a_real_large_file(monkeypatch):
+    """The real case that motivated this (2026-10-09 production incident, docs/DECISIONS.md): a flat 300s
+    killed a 74,681-answer build that was still genuinely progressing through embedding."""
+    monkeypatch.setattr("app.api_themes.THEMES_DEADLINE_SECONDS", 300.0)
+    assert _themes_deadline_for(74681) == pytest.approx(1046.81, abs=0.01)
+
+
+def test_themes_deadline_for_respects_a_monkeypatched_tiny_base(monkeypatch):
+    """The watchdog test below relies on being able to monkeypatch `THEMES_DEADLINE_SECONDS` down to a
+    near-zero value and have the EFFECTIVE deadline stay near-zero too (not floored back up by some
+    separate hardcoded base) - this pins that the scaling term is purely additive on top of the real
+    module constant, never a fixed minimum of its own."""
+    monkeypatch.setattr("app.api_themes.THEMES_DEADLINE_SECONDS", 0.05)
+    assert _themes_deadline_for(0) == pytest.approx(0.05)
 
 
 def test_watchdog_marks_a_truly_stuck_job_failed_without_stopping_the_real_thread(env, monkeypatch):

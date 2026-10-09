@@ -33,7 +33,14 @@ DEFAULT_MODEL = "voyage-3.5"
 # Env-overridable (matches app.api_themes.THEMES_CONCURRENCY / app.api_report.REPORT_CONCURRENCY's own
 # `os.environ.get("...", default)` convention) so a production deploy can tune it against Voyage's actual
 # observed rate limits without a code change, the same way those other concurrency knobs already work.
-DEFAULT_CONCURRENCY = max(1, int(os.environ.get("VOYAGE_EMBED_CONCURRENCY", "8") or 8))
+#
+# 5, not 8: confirmed live (Railway production, 2026-10-09) that 8 concurrent threads - each doing a
+# blocking HTTP call plus parsing/constructing a ~128 x 1024-float response - pushed this service's own
+# container CPU briefly OVER its 8 vCPU plan limit (9.51 vCPU observed) on a single-worker Uvicorn process
+# (no --workers flag; see Dockerfile) that is also serving ordinary request traffic at the same time.
+# 5 leaves real headroom under that limit for everything else the process is doing, at the cost of a
+# smaller (not zero) share of the speedup over the old fully-sequential loop.
+DEFAULT_CONCURRENCY = max(1, int(os.environ.get("VOYAGE_EMBED_CONCURRENCY", "5") or 5))
 
 
 class EmbeddingNotConfigured(RuntimeError):

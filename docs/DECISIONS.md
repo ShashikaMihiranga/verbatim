@@ -784,3 +784,53 @@
   no-pool-overhead path, retry-then-raise error propagation unchanged, and a real wall-clock proof that
   6 simulated 0.1s batches finish in well under the 0.6s a sequential loop would need). Full backend suite
   green (602 passed, 1 skipped, same pre-existing unrelated failures).
+
+## 2026-10-09 (follow-up: the concurrency fix above still wasn't enough on real production hardware)
+- User retried the same 74,681-row file (`twitter_training.csv`, dataset 11) after the concurrency fix
+  deployed and it STILL failed with the same 300s deadline message, plus a Railway CPU graph showing this
+  service's container briefly exceeding its own 8 vCPU plan limit (9.51 vCPU observed) around the same
+  time. Investigated with real production access (`railway logs`, a `railway connect postgres --tunnel-
+  only` tunnel to query the `jobs` table directly - no admin UI needed): `Job` row 51's `step` was still
+  **"Turning answers into vectors"** when the watchdog killed it - the pipeline never even reached
+  clustering, let alone labeling or sentiment scoring, after the full 300s+.
+- **Root cause of why the earlier fix wasn't sufficient**: this service runs as a single Uvicorn worker
+  process (confirmed: no `--workers` flag in the Dockerfile's `CMD`), so the 8 concurrent embedding
+  threads the previous fix added are the dominant source of concurrency in that one process - each doing a
+  blocking HTTP call plus parsing/constructing a sizeable JSON response into a numpy array, which is real
+  CPU work, not pure idle I/O wait. On this service's actual 8 vCPU Railway plan, 8 such threads running
+  at once - while the same process is also serving ordinary request traffic (confirmed in the logs: dozens
+  of concurrent `GET .../jobs/51` polls from the open browser tab) - pushed container CPU briefly over its
+  own limit, which Railway's cgroup enforcement throttles rather than crashes (no exception, no OOM-kill,
+  no crash loop anywhere in the logs - confirmed by grepping for them) but which slows real wall-clock
+  progress during the throttled periods. The combination of that throttling plus production's own real
+  network latency to Voyage (not reproducible in a sandbox with different network characteristics) meant
+  the embedding step alone still took longer than 300s on this specific hardware, even though the earlier
+  fix's own sandbox measurement (68.3s for the same row count, unconstrained) was correct about the
+  *mechanism* (concurrency beats sequential) - it just could not predict *this specific container's* real
+  throughput under load.
+- **Two-part fix, both verified to compile/test clean, not yet confirmed against another live production
+  run (next large-file attempt will be the real proof)**:
+  1. `VOYAGE_EMBED_CONCURRENCY` default lowered from 8 to 5 (`app/text_pipeline/embeddings.py`) - real
+     headroom under the 8 vCPU limit for everything else the single-worker process is doing at the same
+     time, at the cost of a smaller (not zero) share of the original speedup.
+  2. The build-themes watchdog deadline (`app/api_themes.py`) is no longer one flat 300s for every file
+     size - `_themes_deadline_for(n_answers)` adds `n_answers / THEMES_ANSWERS_PER_SECOND_FLOOR` (a
+     deliberately conservative 100 answers/sec, both env-overridable) on top of the existing
+     `THEMES_DEADLINE_SECONDS` floor. A 500-answer file keeps the exact 300s it always had (negligible
+     scaling term); the 74,681-answer file that motivated this gets ~1,047s (~17.4 min) - real headroom
+     instead of a near-certain kill partway through embedding. The route computes the scaling input as a
+     cheap raw non-null count on the already-loaded `clean_df` (`clean_df[column].notna().sum()`) - no new
+     masking pass, no new network/DB call. 3 new tests, including one pinning that a monkeypatched-tiny
+     `THEMES_DEADLINE_SECONDS` (the existing watchdog test's own technique) still produces a near-tiny
+     effective deadline, not floored back up by some separate hardcoded minimum.
+- **Evaluated introducing Jev (TypeSafe) sentiment scoring as a possible fix, per the user's own question,
+  and concluded it would NOT have helped here - not implemented**: `TYPESAFE_API_KEY` isn't even configured
+  in production (confirmed via `railway variables`), and more fundamentally, job 51 never reached the
+  "Scoring tone" step at all (it died in embedding, several steps earlier) - switching the sentiment
+  scorer cannot fix a job that never gets that far. For completeness, also confirmed the *local* lexicon
+  scorer `score_text` (`app/text_pipeline/sentiment.py`) that runs by default has no heavy NLP dependency
+  (plain `re`/`math`, no spaCy/nltk) - it is not a meaningful CPU cost at 80k-row scale either way, so
+  there is no CPU-pressure case for switching to Jev by default even independent of this incident. Jev
+  stays exactly what it already was: an explicit opt-in (`use_jev_sentiment`) a user can choose per build,
+  not a fix for this specific timeout.
+- Full backend suite green (605 passed, 1 skipped, same pre-existing unrelated failures).
