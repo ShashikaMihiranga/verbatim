@@ -542,3 +542,83 @@ def test_voyage_client_raises_without_api_key(monkeypatch):
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     with pytest.raises(EmbeddingNotConfigured):
         VoyageEmbeddingClient()
+
+
+def _fake_voyage_client(monkeypatch, batch_size: int, concurrency: int = 8) -> "VoyageEmbeddingClient":
+    """Constructing `VoyageEmbeddingClient` itself never touches the network (the SDK's own `Client(...)`
+    just builds an HTTP client object) - only `_embed_batch` does, so these tests monkeypatch that one
+    method on the instance to a deterministic, network-free stub and exercise `embed()`'s real batching/
+    concurrency/ordering logic directly."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "fake-key-for-test")
+    return VoyageEmbeddingClient(batch_size=batch_size, concurrency=concurrency)
+
+
+def test_voyage_embed_preserves_order_across_many_concurrent_batches(monkeypatch):
+    """The real bug this fixes: a strictly sequential batch loop was confirmed (against the real API) to
+    scale terribly with row count - concurrency fixes the speed, but must never scramble which vector
+    belongs to which text. Each fake batch call sleeps a RANDOM, DIFFERENT amount so batches that started
+    later can legitimately finish earlier - order must still come back exactly as submitted."""
+    import random
+    import time as time_mod
+
+    client = _fake_voyage_client(monkeypatch, batch_size=5, concurrency=4)
+    call_order: list[int] = []
+
+    def fake_embed_batch(batch: list[str]) -> list[list[float]]:
+        time_mod.sleep(random.uniform(0, 0.03))
+        call_order.append(int(batch[0]))
+        return [[float(t), float(t) + 0.5] for t in batch]
+
+    monkeypatch.setattr(client, "_embed_batch", fake_embed_batch)
+    texts = [str(i) for i in range(47)]  # not a multiple of batch_size - exercises a partial last batch
+
+    vectors = client.embed(texts)
+
+    assert vectors == [[float(i), float(i) + 0.5] for i in range(47)]
+    assert len(call_order) == 10  # ceil(47/5) batches, each actually called once
+    assert call_order != sorted(call_order)  # sanity: batches really did complete out of submission order
+
+
+def test_voyage_embed_single_batch_does_not_spin_up_a_thread_pool(monkeypatch):
+    """0 or 1 batch is the common case for small files - no observable behaviour change, and no pool
+    overhead for the normal small-dataset path."""
+    client = _fake_voyage_client(monkeypatch, batch_size=100)
+    calls = []
+    monkeypatch.setattr(client, "_embed_batch", lambda b: calls.append(b) or [[1.0]] * len(b))
+
+    assert client.embed([]) == []
+    assert calls == []
+
+    assert client.embed(["a", "b"]) == [[1.0], [1.0]]
+    assert calls == [["a", "b"]]  # exactly one call, the whole (short) list as one batch
+
+
+def test_voyage_embed_propagates_a_batch_failure_after_its_own_retry(monkeypatch):
+    """`_embed_batch`'s own retry-once behaviour is unchanged by concurrency - a batch that still fails
+    after its retry must surface as a real exception from `embed()`, not a silently incomplete result."""
+    client = _fake_voyage_client(monkeypatch, batch_size=2, concurrency=4)
+
+    def flaky_embed_batch(batch: list[str]) -> list[list[float]]:
+        if batch[0] == "2":
+            raise RuntimeError("Voyage embedding call failed after a retry: boom")
+        return [[1.0]] * len(batch)
+
+    monkeypatch.setattr(client, "_embed_batch", flaky_embed_batch)
+    with pytest.raises(RuntimeError, match="boom"):
+        client.embed(["0", "1", "2", "3", "4", "5"])
+
+
+def test_voyage_embed_runs_batches_concurrently_not_sequentially(monkeypatch):
+    """Real wall-clock proof, not just a mock-call-count check: 6 batches that each take ~0.1s must finish
+    in well under 6 * 0.1s if they are genuinely running on a thread pool rather than one after another -
+    pins the actual fix (concurrency), not just that `embed()` still produces correct output."""
+    import time as time_mod
+
+    client = _fake_voyage_client(monkeypatch, batch_size=1, concurrency=6)
+    monkeypatch.setattr(client, "_embed_batch", lambda b: (time_mod.sleep(0.1), [[1.0]] * len(b))[1])
+
+    t0 = time_mod.time()
+    client.embed([str(i) for i in range(6)])
+    elapsed = time_mod.time() - t0
+
+    assert elapsed < 0.35  # well under 6 * 0.1s = 0.6s a sequential loop would take

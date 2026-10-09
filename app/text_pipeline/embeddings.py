@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol, runtime_checkable
 
 # Voyage's HTTP API accepts up to 1000 texts per request and caps total input tokens per request; staying
@@ -19,6 +20,20 @@ from typing import Protocol, runtime_checkable
 # with pre-chunked lists; `VoyageEmbeddingClient` chunks internally so callers never have to think about it.
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_MODEL = "voyage-3.5"
+
+# `_embed_batch`'s own measured latency is dominated by fixed per-call overhead, not by how many texts are
+# in the batch (confirmed directly against the real API: batches of 32/128/500/1000 texts all took roughly
+# the same wall-clock time) - so a strictly SEQUENTIAL loop over batches scales terribly with row count: a
+# real 80,000-row build (~625 batches at the default size) was confirmed to blow well past
+# `app.api_themes.THEMES_DEADLINE_SECONDS` (300s) this way, timing out every attempt even though nothing
+# was actually broken - just one HTTP round-trip waiting on the next, serially, for an I/O-bound call that
+# has nothing to do with the CPU. `DEFAULT_CONCURRENCY` batches now run at once via a thread pool (Python
+# releases the GIL during network I/O, so this is real wall-clock parallelism, not fake); order is still
+# preserved exactly (`embed()` maps each batch's result back to its own position, not completion order).
+# Env-overridable (matches app.api_themes.THEMES_CONCURRENCY / app.api_report.REPORT_CONCURRENCY's own
+# `os.environ.get("...", default)` convention) so a production deploy can tune it against Voyage's actual
+# observed rate limits without a code change, the same way those other concurrency knobs already work.
+DEFAULT_CONCURRENCY = max(1, int(os.environ.get("VOYAGE_EMBED_CONCURRENCY", "8") or 8))
 
 
 class EmbeddingNotConfigured(RuntimeError):
@@ -40,11 +55,14 @@ class VoyageEmbeddingClient:
 
     Reads `VOYAGE_API_KEY` from the environment; raises `EmbeddingNotConfigured` if it is unset, before
     ever touching the network. Model is `VOYAGE_MODEL` or `voyage-3.5`. Batches requests at
-    `batch_size` texts each (default `DEFAULT_BATCH_SIZE`) and retries a batch once on a transient error
-    (anything that is not an auth/config problem), with a short pause between the two attempts.
+    `batch_size` texts each (default `DEFAULT_BATCH_SIZE`), running up to `concurrency` batches at once
+    (default `DEFAULT_CONCURRENCY` - see that constant's own comment for why this is not just sequential),
+    and retries a batch once on a transient error (anything that is not an auth/config problem), with a
+    short pause between the two attempts.
     """
 
-    def __init__(self, batch_size: int = DEFAULT_BATCH_SIZE, model: str | None = None) -> None:
+    def __init__(self, batch_size: int = DEFAULT_BATCH_SIZE, model: str | None = None,
+                 concurrency: int = DEFAULT_CONCURRENCY) -> None:
         api_key = os.environ.get("VOYAGE_API_KEY")
         if not api_key:
             raise EmbeddingNotConfigured(
@@ -58,13 +76,26 @@ class VoyageEmbeddingClient:
             ) from e
         self._client = voyageai.Client(api_key=api_key)
         self.batch_size = max(1, batch_size)
+        self.concurrency = max(1, concurrency)
         self.model = model or os.environ.get("VOYAGE_MODEL", DEFAULT_MODEL)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        batches = [texts[start:start + self.batch_size] for start in range(0, len(texts), self.batch_size)]
+        if len(batches) <= 1:
+            return self._embed_batch(batches[0]) if batches else []
+        # `results` is indexed by BATCH POSITION, not completion order - concurrency must never change
+        # the order vectors come back in, since every downstream caller matches them 1:1 against
+        # `row_indexes`/`texts` by position (see embed_and_cluster_with_vectors's own docstring).
+        results: list[list[list[float]] | None] = [None] * len(batches)
+        with ThreadPoolExecutor(max_workers=min(self.concurrency, len(batches))) as pool:
+            futures = {pool.submit(self._embed_batch, b): i for i, b in enumerate(batches)}
+            for future in futures:
+                # `.result()` re-raises inside THIS thread if that batch's own retry-once already failed -
+                # same "no silent partial result" guarantee the old sequential loop had.
+                results[futures[future]] = future.result()
         vectors: list[list[float]] = []
-        for start in range(0, len(texts), self.batch_size):
-            batch = texts[start : start + self.batch_size]
-            vectors.extend(self._embed_batch(batch))
+        for batch_vectors in results:
+            vectors.extend(batch_vectors)
         return vectors
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:

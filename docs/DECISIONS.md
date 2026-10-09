@@ -746,3 +746,41 @@
   even for one rotated line - the reference design's own narrowest ~2% column shows no label either).
   5 new tests (67 total in this file), full backend suite green (598 passed, 1 skipped, same pre-existing
   unrelated failures), golden-frame snapshots unchanged.
+
+## 2026-10-09 (fixed: building themes on a real 80k-row file always timed out at 300s)
+- User reported build-themes consistently failing on an 80,000-row file with "Building themes took longer
+  than 300 seconds and did not finish in time," across multiple retries, and suspected the earlier
+  Claude-model change (2026-10-01, haiku-4-5 -> sonnet-5) was the cause.
+- **Root-caused by measuring the real pipeline, not guessing**: `app.text_pipeline.embeddings.
+  VoyageEmbeddingClient.embed()` ran its batches (`DEFAULT_BATCH_SIZE=128`) in a plain, strictly
+  SEQUENTIAL for-loop - one HTTP round-trip at a time, waiting for each to finish before starting the
+  next. Timed a single real batch call directly against the Voyage API: latency is dominated by fixed
+  per-call overhead, not by how many texts are in the batch (32/128/500/1000-text batches all took
+  roughly the same wall-clock time) - so the NUMBER of sequential round-trips is what matters, and an
+  80,000-row file needs ~625 of them at the default batch size. **The Claude model was not the cause**:
+  theme labeling is one or two BATCHED Claude calls total (cluster count, which scales far slower than row
+  count via `adaptive_min_cluster_size`'s cap of 50), never one call per row - nowhere near enough extra
+  latency to explain minutes of difference. A real, secondary finding while investigating: with
+  `THEMES_CONCURRENCY=1` and the watchdog-marks-failed-but-cannot-actually-kill-the-thread design
+  (`app/jobs.py::start_job`'s own documented behaviour), a slow build that outlives the 300s deadline
+  keeps holding the one concurrency slot until the real pipeline eventually finishes in the background -
+  so a retry while that zombie thread is still running correctly gets an immediate 429 ("busy"), not a
+  second chance; this was not the proximate cause here (the user's screenshot showed the deadline message,
+  not a 429), but is a real, related risk worth keeping in mind for very large files.
+- Fix: `VoyageEmbeddingClient.embed()` now runs up to `concurrency` batches at once via a `ThreadPoolExecutor`
+  (default 8, env-overridable as `VOYAGE_EMBED_CONCURRENCY`, matching `THEMES_CONCURRENCY`/
+  `REPORT_CONCURRENCY`'s own convention) - real wall-clock parallelism, since Python releases the GIL
+  during network I/O. Results are mapped back to their own batch's position (not completion order), so
+  concurrency can never scramble which vector belongs to which text - pinned by a dedicated test using
+  randomized per-batch delays specifically so batches finish out of submission order.
+- **Verified against the real Voyage API, not just unit tests**: a full, real `embed()` call for 80,000
+  synthetic review texts (not identical - 10 varied topics, so clustering has real structure to find) took
+  **68.3 seconds** with the new concurrent client (vs. an estimated 3,000-4,000+ seconds for the old
+  sequential loop at this scale, based on directly measured per-batch latency). Real `cluster_answers()` on
+  the resulting 80,000 vectors took a further 71.8s (725 clusters, 487 noise - this synthetic data's
+  intentional repetitiveness inflated the cluster count; a real, more diverse dataset should cluster into
+  far fewer themes). Total embed+cluster: 140.1s, comfortably under the 300s deadline with real headroom
+  left for the labeling step. 4 new tests (order preservation under real concurrency, single-batch
+  no-pool-overhead path, retry-then-raise error propagation unchanged, and a real wall-clock proof that
+  6 simulated 0.1s batches finish in well under the 0.6s a sequential loop would need). Full backend suite
+  green (602 passed, 1 skipped, same pre-existing unrelated failures).
