@@ -834,3 +834,72 @@
   stays exactly what it already was: an explicit opt-in (`use_jev_sentiment`) a user can choose per build,
   not a fix for this specific timeout.
 - Full backend suite green (605 passed, 1 skipped, same pre-existing unrelated failures).
+
+## 2026-10-10 (theme-building pipeline robustness: 2 `docs/TODO.md` items worked through)
+
+**1. Retry on a dropped-cluster labeling reply - fixed.** `app/text_pipeline/labeling.py` gains
+`label_clusters_with_retry`/`label_sub_clusters_with_retry`, each wrapping the existing
+`label_clusters`/`label_sub_clusters` with one retry (a fresh `client.complete()` call, same prompt) on
+`LabelingError` before raising for real - `LABELING_RETRY_ATTEMPTS = 2` (the original attempt plus one
+retry), shared via a small private `_retry_on_labeling_error` helper rather than duplicated twice. Matches
+the real, reported failure signature exactly: a manual "Try again" (a whole new build) succeeded
+immediately on the very next attempt, which is the direct signal that retrying just the one labeling call
+- not the whole embed+cluster+label pipeline - should already fix most occurrences. `app/api_themes.py`'s
+`_work` now calls the retry versions at both labeling call sites; `label_sub_clusters`'s own existing
+"fall back to no sub-themes" path (sub-themes are an optional enhancement, never worth failing the whole
+build over) is unchanged - the retry just means that fallback is reached less often, not replaced. Only
+`LabelingError` is retried; any other exception type (a real network/auth error) still propagates
+immediately, same as before. 6 new tests in `tests/test_text_pipeline_labeling.py`: recovers after one
+dropped-cluster reply (both the top-level and sub-cluster versions), raises after exhausting retries
+(both), and a regression pin that a healthy first reply still makes exactly one call (no wasted retry
+"insurance" cost on the common, already-working case).
+
+**2. `subthemes.py`'s sub-clustering pass "never got the `finer_floor` treatment" - investigated, found
+NOT to be a real bug, no code change shipped.** First attempt mirrored the top-level `finer_floor` fix
+directly: added a `min_samples_reference` parameter to `cluster_answers` so a caller with its own
+explicit, small `min_cluster_size` (`subthemes.py`'s `sub_cluster_min_size`, ~10% of the parent) could
+still pin `min_samples` to a separate, "stricter" reference, and wired `subthemes.py` to pass
+`adaptive_min_cluster_size(n_parent)` as that reference, by direct analogy with how the top-level fix
+pins `min_samples` to the STANDARD (non-finer) adaptive formula.
+
+**This was caught as backwards before shipping, by a real test, not assumed correct from the analogy.**
+A test spying on the real `HDBSCAN(...)` constructor call (not just the final clustering output) showed
+`adaptive_min_cluster_size(n_parent)` is actually SMALLER than `sub_cluster_min_size(n_parent)` for every
+realistic parent size - confirmed numerically from n=100 to n=10,000:
+
+| parent n | `sub_cluster_min_size` | `adaptive_min_cluster_size` | min_samples (today's default) | min_samples (the rejected "fix") |
+|---|---|---|---|---|
+| 100 | 10 | 5 | 3 | 3 |
+| 150 | 15 | 5 | 5 | 3 |
+| 300 | 30 | 6 | 10 | 3 |
+| 1000 | 100 | 20 | 10 | 7 |
+| 2500+ | 250+ | 50 (capped) | 10 | 10 |
+
+`sub_cluster_min_size` grows linearly with no ceiling (`round(n * 0.10)`), while `adaptive_min_cluster_size`
+caps at 50 (`round(n / 50)`, clamped `[5, 50]`) - the two formulas are not "finer vs standard" versions of
+the same thing the way `adaptive_fine_min_cluster_size`/`adaptive_min_cluster_size` are at the top level;
+`sub_cluster_min_size` is actually the LARGER, stricter-sized one for almost every realistic parent size.
+Using the "standard" top-level formula as a min_samples reference would have LOOSENED density strictness
+below what today's unpinned default already gives - the opposite of the intended fix.
+
+Digging into why the top-level bug doesn't transfer: the top-level bug's real mechanism was `min_samples`
+deriving from an UNBOUNDED-above value (an adaptive `min_cluster_size` with no ceiling at dataset scale) -
+`adaptive_min_samples`, by contrast, already clamps its OUTPUT to a fixed `[3, 10]` range regardless of
+how large its input is, so sub-clustering's `min_samples` was never at risk of growing unboundedly loose
+the way the top-level case was. Separately, `adaptive_min_samples` (vs. the raw, unclamped default) is
+only even USED when UMAP reduction applies (`_reduction_eligible`, needs `n >= 50` and `dims >= 50`) - and
+every eligible parent (`len(members) >= MIN_THEME_SIZE_FOR_SUBTHEMES = 100`) always clears both thresholds
+automatically, since real embeddings are always 1024-dimensional (Voyage) regardless of how small the
+parent is. So sub-clustering was already, unconditionally, going through the SAME clamped-and-adaptive
+path the top-level fix exists to route dataset-scale clustering into - there was no unguarded path left
+for the bug to hide in.
+
+Reverted the `cluster_answers`/`subthemes.py` code change and its tests entirely (not left in as dead,
+unused flexibility - nothing else needs `min_samples_reference`); kept the investigation as this writeup
+plus the `docs/TODO.md` entry, matching the existing "investigated and rejected, documented why" pattern
+this project already uses for the embedding-space merge design (2026-09-30 entry) - so nobody re-attempts
+the identical "mirror the top-level fix" design without reading this first.
+
+Full backend suite green throughout (610 passed, 1 skipped, same pre-existing unrelated failures) - the
+6 labeling-retry tests are real, shipped coverage; the sub-clustering investigation's own tests were
+written, run, caught the bug, and were then reverted along with the code they were testing.

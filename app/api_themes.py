@@ -71,8 +71,8 @@ from .text_pipeline import (
     TooFewAnswers,
     VoyageEmbeddingClient,
     embed_and_cluster_with_vectors,
-    label_clusters,
-    label_sub_clusters,
+    label_clusters_with_retry,
+    label_sub_clusters_with_retry,
     score_column,
     score_column_with_jev,
     score_text,
@@ -349,7 +349,7 @@ def build_themes(
         step("Turning answers into vectors")
         result, embedded = embed_and_cluster_with_vectors(clean_df, plan, column, embedding_client)
         step("Naming each group")
-        labels = label_clusters(result, question, claude_client)
+        labels = label_clusters_with_retry(result, question, claude_client)
         # Claude's reply already flags clusters it thinks are really the same theme (SYSTEM prompt, see
         # labeling.py) - apply_merges actually consolidates them (no new LLM call) before anything else
         # reads `result`/`labels`, so sub-clustering below splits each merged theme's full combined
@@ -362,7 +362,7 @@ def build_themes(
             cluster.id: label for cluster, label in zip(result.clusters, labels[: len(result.clusters)])
         }
         try:
-            sub_labels = label_sub_clusters(sub_clusters, parent_labels, question, claude_client)
+            sub_labels = label_sub_clusters_with_retry(sub_clusters, parent_labels, question, claude_client)
         except LabelingError as e:
             # Sub-themes are an optional enhancement (plan decision 10): a broken/untrusted reply here must
             # not fail the whole theme build - log it and fall back to no sub-themes for every theme, not

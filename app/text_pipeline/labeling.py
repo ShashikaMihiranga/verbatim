@@ -22,11 +22,15 @@ takes) - this module never re-masks and never logs a sample's text anywhere.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 
 from .schema import Cluster, ClusterResult, ThemeLabel
+
+log = logging.getLogger("verbatim.labeling")
+_T = TypeVar("_T")
 
 DEFAULT_MODEL = "claude-sonnet-5"  # one tier up from claude-haiku-4-5: this is one batched call per
 # build regardless of dataset size (never per-row), so the extra cost buys better naming/merging
@@ -326,6 +330,67 @@ def label_clusters(
         labels.append(_other_theme_label(result))
 
     return labels
+
+
+LABELING_RETRY_ATTEMPTS = 2  # the original call plus one retry
+
+
+def _retry_on_labeling_error(call: Callable[[], _T], *, what: str) -> _T:
+    """Shared retry shape for `label_clusters`/`label_sub_clusters`: a `LabelingError` - already known to
+    be a real, occasionally-occurring failure shape (Claude's reply drops a cluster, or comes back
+    malformed), not something a caller should treat as a hard, non-recoverable failure after just one
+    attempt - gets one retry (a fresh `client.complete()` call, same prompt) before being raised for real.
+    Reproduced live on the real deployed dataset: a manual "Try again" click (i.e. a whole new build)
+    succeeded immediately on the very next attempt, which is exactly the signal that a same-build retry of
+    just this one call, not the whole embed+cluster+label pipeline, should already fix most occurrences -
+    see docs/TODO.md's "Claude's cluster-labeling reply occasionally drops a cluster" entry.
+
+    Any other exception type (a real network/auth error, for instance) is not retried here - it propagates
+    immediately, same as before this existed."""
+    last_error: LabelingError | None = None
+    for attempt in range(1, LABELING_RETRY_ATTEMPTS + 1):
+        try:
+            return call()
+        except LabelingError as e:
+            last_error = e
+            if attempt < LABELING_RETRY_ATTEMPTS:
+                log.warning("%s failed (attempt %d/%d), retrying: %s", what, attempt, LABELING_RETRY_ATTEMPTS, e)
+    assert last_error is not None  # LABELING_RETRY_ATTEMPTS >= 1, so the loop always either returns or sets this
+    raise last_error
+
+
+def label_clusters_with_retry(
+    result: ClusterResult,
+    question: str,
+    client: ClaudeClient,
+    samples_per_cluster: int = DEFAULT_SAMPLES_PER_CLUSTER,
+) -> list[ThemeLabel]:
+    """`label_clusters`, retried once on `LabelingError` before giving up - see
+    `_retry_on_labeling_error`'s own docstring for why. This is the one real top-level theme labeling
+    call whose failure kills the whole build (unlike `label_sub_clusters`, which already degrades to "no
+    sub-themes" rather than failing the build - see `app/api_themes.py::_work`), so it is the call this
+    retry matters most for."""
+    return _retry_on_labeling_error(
+        lambda: label_clusters(result, question, client, samples_per_cluster), what="Theme labeling",
+    )
+
+
+def label_sub_clusters_with_retry(
+    sub_clusters: dict[int, list[Cluster]],
+    parent_labels: dict[int, ThemeLabel],
+    question: str,
+    client: ClaudeClient,
+    samples_per_cluster: int = DEFAULT_SAMPLES_PER_SUBCLUSTER,
+) -> dict[int, list[ThemeLabel]]:
+    """`label_sub_clusters`, retried once on `LabelingError` before giving up - same reasoning as
+    `label_clusters_with_retry`. Sub-theme labeling already has its own graceful "fall back to no
+    sub-themes" path one level up (`app/api_themes.py::_work`'s own `except LabelingError`) for when even
+    the retry doesn't recover - this just means that fallback is reached less often, not a replacement
+    for it."""
+    return _retry_on_labeling_error(
+        lambda: label_sub_clusters(sub_clusters, parent_labels, question, client, samples_per_cluster),
+        what="Sub-theme labeling",
+    )
 
 
 def label_sub_clusters(

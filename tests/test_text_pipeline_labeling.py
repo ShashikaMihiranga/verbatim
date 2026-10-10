@@ -3,11 +3,18 @@ import json
 
 import pytest
 
-from app.text_pipeline import LabelingError, label_clusters, label_sub_clusters
+from app.text_pipeline import (
+    LabelingError,
+    label_clusters,
+    label_clusters_with_retry,
+    label_sub_clusters,
+    label_sub_clusters_with_retry,
+)
 from app.text_pipeline.labeling import (
     AnthropicClaudeClient,
     ClaudeNotConfigured,
     FakeClaudeClient,
+    LABELING_RETRY_ATTEMPTS,
     OTHER_CLUSTER_ID,
     OTHER_LABEL,
 )
@@ -346,3 +353,77 @@ def test_label_sub_clusters_empty_input_makes_no_calls_and_returns_empty_dict():
 
     assert result == {}
     assert client.calls == []
+
+
+# ==================================================================== retry on a dropped-cluster reply
+# (docs/TODO.md: "Claude's cluster-labeling reply occasionally drops a cluster entirely... a manual 'Try
+# again' click succeeded immediately after" - label_clusters_with_retry/label_sub_clusters_with_retry
+# retry the ONE labeling call, not the whole embed+cluster+label pipeline)
+
+def test_label_clusters_with_retry_recovers_after_one_dropped_cluster_reply():
+    result = make_result([make_cluster(0, ["a"]), make_cluster(1, ["b"])])
+    attempts = {"n": 0}
+
+    def flaky_reply(prompt):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return reply_for([0])  # cluster 1 missing - the real, reported failure shape
+        return reply_for([0, 1])
+
+    client = FakeClaudeClient(flaky_reply)
+
+    labels = label_clusters_with_retry(result, QUESTION, client)
+
+    assert {label.cluster_id for label in labels} == {0, 1}
+    assert len(client.calls) == 2  # the original attempt, plus exactly one retry
+
+
+def test_label_clusters_with_retry_raises_after_exhausting_retries():
+    result = make_result([make_cluster(0, ["a"]), make_cluster(1, ["b"])])
+    client = FakeClaudeClient(lambda prompt: reply_for([0]))  # always missing cluster 1
+
+    with pytest.raises(LabelingError):
+        label_clusters_with_retry(result, QUESTION, client)
+
+    assert len(client.calls) == LABELING_RETRY_ATTEMPTS  # gave up after the documented number of attempts
+
+
+def test_label_clusters_with_retry_makes_only_one_call_when_the_first_reply_is_good():
+    """Regression pin: a healthy reply must not pay for a second call it doesn't need."""
+    result = make_result([make_cluster(0, ["a"])])
+    client = FakeClaudeClient(reply_for([0]))
+
+    labels = label_clusters_with_retry(result, QUESTION, client)
+
+    assert len(labels) == 1
+    assert len(client.calls) == 1
+
+
+def test_label_sub_clusters_with_retry_recovers_after_one_dropped_cluster_reply():
+    sub_clusters = {0: [make_cluster(0, ["a"]), make_cluster(1, ["b"])]}
+    parent_labels = {0: make_parent_label(0)}
+    attempts = {"n": 0}
+
+    def flaky_reply(prompt):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return sub_reply_for([0])  # flat id 1 missing
+        return sub_reply_for([0, 1])
+
+    client = FakeClaudeClient(flaky_reply)
+
+    result = label_sub_clusters_with_retry(sub_clusters, parent_labels, QUESTION, client)
+
+    assert len(result[0]) == 2
+    assert len(client.calls) == 2
+
+
+def test_label_sub_clusters_with_retry_raises_after_exhausting_retries():
+    sub_clusters = {0: [make_cluster(0, ["a"]), make_cluster(1, ["b"])]}
+    parent_labels = {0: make_parent_label(0)}
+    client = FakeClaudeClient(lambda prompt: sub_reply_for([0]))  # always missing flat id 1
+
+    with pytest.raises(LabelingError):
+        label_sub_clusters_with_retry(sub_clusters, parent_labels, QUESTION, client)
+
+    assert len(client.calls) == LABELING_RETRY_ATTEMPTS

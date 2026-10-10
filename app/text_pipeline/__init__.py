@@ -30,7 +30,9 @@ from .labeling import (
     LabelingError,
     SUB_SYSTEM,
     label_clusters,
+    label_clusters_with_retry,
     label_sub_clusters,
+    label_sub_clusters_with_retry,
 )
 from .labeling import ClaudeNotConfigured as LabelingClaudeNotConfigured
 from .labeling import FakeClaudeClient as FakeLabelingClaudeClient
@@ -59,7 +61,8 @@ __all__ = [
     "adaptive_min_cluster_size", "adaptive_min_samples", "adaptive_n_components", "cluster_answers",
     "EmbeddedAnswers", "TooFewAnswers", "embed_and_cluster", "embed_and_cluster_with_vectors",
     "AnthropicClaudeClient", "ClaudeClient", "DEFAULT_SAMPLES_PER_SUBCLUSTER", "LabelingError",
-    "SUB_SYSTEM", "label_clusters", "label_sub_clusters",
+    "SUB_SYSTEM", "label_clusters", "label_clusters_with_retry", "label_sub_clusters",
+    "label_sub_clusters_with_retry",
     "LabelingClaudeNotConfigured", "FakeLabelingClaudeClient",
     "SpotCheckParseError", "SpotCheckReport", "score_column", "score_text", "spot_check", "tone_split",
     "SentimentClaudeNotConfigured", "FakeSentimentClaudeClient",
