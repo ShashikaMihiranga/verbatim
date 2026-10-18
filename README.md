@@ -1,8 +1,37 @@
 # Verbatim
 
-Project goal and decisions: [docs/PROJECT_VISION.md](docs/PROJECT_VISION.md).
+An app that lets anyone, with no data-science background, turn a spreadsheet of survey answers into a
+short visual report. Upload a file; the app works out what each column means, cleans it, clusters the
+open-ended text into themes with sentiment, and writes a plain-English report with charts - no stats
+knowledge or manual analysis required.
 
-Open-ended survey answers to themes, sentiment and charts. See [SPEC.md](SPEC.md) for the product plan.
+Project goal and decisions: [docs/PROJECT_VISION.md](docs/PROJECT_VISION.md) (read this first). Product
+plan, data flow and chart rules: [SPEC.md](SPEC.md). Design/product rules and the task roadmap:
+[CLAUDE.md](CLAUDE.md). Permanent log of what shipped and why: [docs/DECISIONS.md](docs/DECISIONS.md).
+
+## How it fits together
+
+One user journey, each stage owned by one backend module and one frontend screen:
+
+| Stage | Screen | Backend | What happens |
+|---|---|---|---|
+| 1. Upload | `/upload` | `app/api_upload.py`, `app/profiling/` | File stored in Postgres by content hash; each column's kind (text/score/date/segment/number/ID) is guessed |
+| 2. Confirm columns | `/check-columns` | `app/api_columns.py` | User confirms or corrects the guessed column roles |
+| 3. Clean | `/cleaning` | `app/cleaning/` | A cleaning plan adapted to this dataset (blanks, dedupe, spelling merges, banding, PII masking) runs and reports what it did |
+| 4. Build themes | `/report` | `app/text_pipeline/`, `app/api_themes.py` | Open text is embedded (Voyage), clustered (HDBSCAN), labelled (Claude) and scored for sentiment |
+| 5. Build report | `/report` | `app/findings.py`, `app/api_report.py` | Themes become a short, scored set of findings, each rendered as one sentence + one chart (`app/charts.py`) |
+| 6. Projects | `/projects` | `app/api_projects.py` | A signed-in user's own uploads, each linking back to wherever its work left off |
+
+Stack: FastAPI (Python 3.12) + SQLAlchemy/Alembic on Postgres (Railway) for the backend; React + TypeScript
+(Vite) for the frontend; Clerk for auth; Voyage AI for embeddings and Claude (Anthropic) for cluster
+labelling and headline sentences. Deploys to Railway from a single Dockerfile (`railway.json`, health
+check `/health`). Charts are server-rendered SVG/HTML fragments (`app/charts.py`), not a JS charting
+library - see `CLAUDE.md`'s design rules for the reasoning (themes/tone use colour only to identify,
+never as the sole carrier; numbers are always printed alongside).
+
+Every stage above is "owner only" behind Clerk sign-in, and a model is only ever shown masked samples or
+aggregated numbers - never a user's raw column of answers (`app/cleaning/payload.py`). See each module's
+own section below for routes, env vars and the trust rules enforced at that stage.
 
 ## Run locally
 
