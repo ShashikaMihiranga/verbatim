@@ -685,9 +685,15 @@ def build_structured_context(
         raw_seg: dict[int, str] = {}
         for r in rows:
             try:
-                raw_seg[r] = clean_df.at[r, segment_col]
+                v = clean_df.at[r, segment_col]
             except KeyError:
                 continue
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                continue  # a blank/missing cell is not a real segment group (confirmed bug, 2026-10-21:
+                # an unguarded NaN here became a literal `SegmentGroup(label=nan, ...)`, which crashed the
+                # WHOLE report response's JSON serialization, not just the segment/heatmap block - see
+                # docs/DECISIONS.md)
+            raw_seg[r] = v
         # Cap to the 8 largest groups by row count before ever calling build_segment_data - a cosmetic cap
         # for heatmap grid readability, not a suppression rule (see B1's module docstring).
         counts: dict[str, int] = {}

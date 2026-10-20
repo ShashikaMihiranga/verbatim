@@ -642,6 +642,40 @@ def test_build_structured_context_builds_all_three_from_realistic_data():
     assert all(s.values for s in context.trend.series)
 
 
+def test_build_structured_context_drops_nan_segment_values_instead_of_treating_them_as_a_group():
+    """Real bug, 2026-10-21: a blank/missing segment cell reads back from pandas as `float('nan')`, and an
+    unguarded `clean_df.at[r, segment_col]` lookup let that NaN become a literal `SegmentGroup(label=nan,
+    ...)`. That NaN then flowed all the way to `app/api_report.py`'s `filter_options` in the JSON response,
+    crashing the WHOLE report endpoint with a 500 ("Out of range float values are not JSON compliant:
+    nan") - not just the segment/heatmap block. A missing value must never become its own "group"."""
+    n = 300
+    rows = range(n)
+    score = [[3, 7, 9][i % 3] for i in rows]
+    # 170 North, 100 South, 30 missing (blank cells) - North/South both still clear the floor=30 gate.
+    segment = ["North" if i < 170 else "South" if i < 270 else float("nan") for i in rows]
+    clean_df = pd.DataFrame({"Score": score, "Segment": segment})
+
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 100, -0.1, list(range(150, 250))),
+        make_theme("Other", 50, 0.0, list(range(250, 300))),
+    ]
+    plan = _plan_with_score_step("Score", [0, 10])
+    nodes = theme_nodes(themes, total_answered=300)
+    columns = {"score": ["Score"], "segment": ["Segment"], "date": []}
+
+    context = build_structured_context(clean_df, plan, themes, nodes, columns, floor=30)
+
+    assert context.segment is not None
+    labels = {g.label for g in context.segment.groups}
+    assert labels == {"North", "South"}  # never a NaN-labeled third "group"
+    assert all(isinstance(label, str) for label in labels)
+    groups_by_label = {g.label: g.n for g in context.segment.groups}
+    assert groups_by_label == {"North": 170, "South": 100}
+    # The 30 blank rows must never appear in segment_raw_by_row either - they're not a real group.
+    assert len(context.segment_raw_by_row) == 270
+
+
 def test_build_structured_context_filter_rows_restricts_rows():
     """The core Filters mechanism: `filter_rows` narrows the row universe everything below is computed
     from, with zero changes to build_score_data/build_segment_data/build_trend_data themselves. Drops only

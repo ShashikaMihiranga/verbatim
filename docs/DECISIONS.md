@@ -903,3 +903,57 @@ the identical "mirror the top-level fix" design without reading this first.
 Full backend suite green throughout (610 passed, 1 skipped, same pre-existing unrelated failures) - the
 6 labeling-retry tests are real, shipped coverage; the sub-clustering investigation's own tests were
 written, run, caught the bug, and were then reverted along with the code they were testing.
+
+## 2026-10-21 (fixed: `GET /report` 500 crash on any segment column with blank cells)
+
+User reported "reporting is not working correctly." Investigated by reproducing locally against the real
+Amazon reviews dataset (dataset 1, `reviews.text` column): `GET /api/datasets/1/report?column=reviews.text`
+returned a 500, `ValueError: Out of range float values are not JSON compliant: nan`, raised from
+Starlette's own `json.dumps` inside `JSONResponse.render` - i.e. the *entire* report response, not one
+block, failed to serialize.
+
+**Root cause**: `build_structured_context`'s segment-column loop (`app/findings_structured.py`, the
+`for segment_col in columns.get("segment", [])` block) read each row's raw segment-column value straight
+off the cleaned dataframe (`clean_df.at[r, segment_col]`) with no check for a blank/missing cell. Pandas
+represents a missing cell as `float('nan')`, so a dataset with even one blank value in its segment column
+got a literal `float('nan')` treated as if it were a real category value - counted in `group_totals`,
+potentially surviving the suppression floor as its own "group," and ultimately constructed into
+`SegmentGroup(label=nan, ...)`. That NaN then flowed, unflagged, all the way into the top-level JSON
+response via `app/api_report.py`'s `filter_options.segment.groups` (added for the Filters feature,
+2026-10-02 - before that date `segment.groups` labels were only ever consumed inside chart-rendering code,
+which stringifies values rather than JSON-serializing them, so this exact crash shape could not have
+happened before Filters shipped). The date-column loop already guarded against this correctly
+(`if ts is None or pd.isna(ts): continue`); the score-column loop is protected downstream by
+`apply_bands`'s own explicit NaN skip (line ~349, pre-existing). Only the segment-column loop had no
+equivalent guard.
+
+**Fix**: `app/findings_structured.py`'s segment loop now skips a row whose raw value is `None` or NaN
+before it ever enters `raw_seg` - a missing cell is correctly treated as "this row has no segment," not
+as membership in a group called "nan." One-line-equivalent change, matching the exact guard style already
+used by `apply_bands`.
+
+**New regression test**: `tests/test_findings_structured.py::test_build_structured_context_drops_nan_segment_values_instead_of_treating_them_as_a_group`
+- 300 synthetic rows, 30 with a blank segment cell, asserts exactly 2 string-labeled groups survive (never
+a third NaN-labeled one) and the 30 blank rows never appear in `segment_raw_by_row`.
+
+**Verified live**: ran the real local app against dataset 1 (`Amazon_reviews.csv`) before and after the
+fix - 500 before, 200 with a fully-rendered report (15 themes, 5 "what stands out" findings, working
+filter bar) after, confirmed via `claude-in-chrome`. Confirmed dataset 2 (`Womens Clothing E-Commerce
+Reviews.csv`) was unaffected either way (its segment column, `Division Name`, has no missing values).
+Full backend suite: 611 passed (610 + the new test), 1 skipped - no regressions.
+
+**Second, separate finding - documented, not fixed in this pass**: on dataset 1, the segment column that
+actually ends up selected for the heatmap/filter is `ean` (a product barcode column), visible in the live
+screenshot as a filter literally labeled "All ean." This is NOT a bug in the selection mechanism itself -
+`pick_structured_columns`/`build_structured_context` correctly try every confirmed `segment`-kind column
+in upload order and use the first one whose groups clear the suppression floor, exactly as designed
+(confirmed: `brand` has only 1 group above the 100-answer floor - Moshi, n=12, is suppressed - so it's
+correctly skipped; `colors` similarly only has 1 surviving group after NaN rows are now correctly excluded).
+The real gap is one layer earlier: the column *profiler* classifies ID-like columns such as `ean`/`upc`/
+`manufacturerNumber` as `segment` kind in the first place, alongside genuinely meaningful segments like
+`brand`/`colors`/`manufacturer` - a barcode is not a meaningful audience segment even though it has low
+cardinality. This is the same category of gap `docs/TODO.md`'s existing "Column profiling & report
+adaptivity" section already tracks (segment-kind heuristics, `open_text` uniqueness gating, etc.) - added
+as a new explicit line item there rather than fixed here, since it's a profiler-heuristic change (risk of
+affecting every dataset's column guesses), not a report-rendering bug, and out of scope for "fix the
+reporting crash."
