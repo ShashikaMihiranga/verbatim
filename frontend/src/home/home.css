@@ -4,7 +4,8 @@
 
 /* header */
 .lp-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }
-.lp-logo { font-weight: 600; font-size: 1.3rem; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+.lp-logo { display: inline-flex; align-items: center; text-decoration: none; }
+.lp-logo img { display: block; }
 .lp-header nav { display: flex; align-items: center; gap: 22px; }
 .lp-header nav a:not(.lp-btn) { color: var(--ink); text-decoration: none; }
 .lp-header nav a:not(.lp-btn):hover { text-decoration: underline; text-underline-offset: 4px; }

@@ -15,7 +15,9 @@ export default function Landing() {
   return (
     <div className="lp">
       <header className="lp-header">
-        <Link to="/" className="lp-logo" aria-label="Verbatim home">Verbatim</Link>
+        <Link to="/" className="lp-logo" aria-label="Verbatim home">
+          <img src="/logo-lockup.svg" alt="Verbatim" height={28} />
+        </Link>
         <nav aria-label="Main">
           <a href="#how">How it works</a>
           <a href="#charts">Charts</a>
