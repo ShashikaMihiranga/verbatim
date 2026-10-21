@@ -133,9 +133,12 @@ class LabelingError(RuntimeError):
 @runtime_checkable
 class ClaudeClient(Protocol):
     """Anything that can turn one labelling prompt into Claude's raw text reply. One method, like
-    `embeddings.EmbeddingClient.embed` - callers never see the underlying SDK shape."""
+    `embeddings.EmbeddingClient.embed` - callers never see the underlying SDK shape. `max_tokens`
+    defaults to `MAX_TOKENS` so every existing caller (`findings.py`'s own separate `FakeClaudeClient`
+    included) keeps working unchanged; `label_clusters`/`label_sub_clusters` below are the only callers
+    that ever pass a different value."""
 
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(self, system: str, prompt: str, *, max_tokens: int = MAX_TOKENS) -> str:
         ...
 
 
@@ -160,7 +163,7 @@ class AnthropicClaudeClient:
         self._client = anthropic.Anthropic()
         self.model = model or os.environ.get("VERBATIM_CLAUDE_MODEL", DEFAULT_MODEL)
 
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(self, system: str, prompt: str, *, max_tokens: int = MAX_TOKENS) -> str:
         # thinking explicitly disabled: this is a structured-JSON-only task (the system prompt already
         # spells out exact rules), never open-ended reasoning, and newer models' adaptive thinking competes
         # with the actual reply for the same max_tokens budget - confirmed directly against the real API
@@ -169,7 +172,7 @@ class AnthropicClaudeClient:
         # surfacing as "Claude's reply did not contain any JSON" - not a formatting problem, a budget one.
         msg = self._client.messages.create(
             model=self.model,
-            max_tokens=MAX_TOKENS,
+            max_tokens=max_tokens,
             system=system,
             thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
@@ -185,11 +188,30 @@ class FakeClaudeClient:
 
     def __init__(self, reply: str | Any) -> None:
         self.reply = reply
-        self.calls: list[dict[str, str]] = []
+        self.calls: list[dict[str, Any]] = []
 
-    def complete(self, system: str, prompt: str) -> str:
-        self.calls.append({"system": system, "prompt": prompt})
+    def complete(self, system: str, prompt: str, *, max_tokens: int = MAX_TOKENS) -> str:
+        self.calls.append({"system": system, "prompt": prompt, "max_tokens": max_tokens})
         return self.reply(prompt) if callable(self.reply) else self.reply
+
+
+TOKENS_PER_CLUSTER = 300  # generous per-entry allowance (cluster_id, label, description, merge_with,
+# note, JSON punctuation) - see `_max_tokens_for`'s own docstring for why this exists.
+MAX_TOKENS_CEILING = 48000  # far under Sonnet 5's real 128K sync-API output limit; a backstop against an
+# unreasonably large request (cost/latency), not a value any normal dataset should ever reach.
+
+
+def _max_tokens_for(n_clusters: int) -> int:
+    """Scales the labelling reply's token budget up for datasets with a lot of distinct clusters,
+    instead of one flat `MAX_TOKENS` for every size (same "adaptive, not a fixed constant" shape as
+    `app.api_themes._themes_deadline_for`). Confirmed bug, 2026-10-21 (see docs/DECISIONS.md): a flat
+    4096, then a flat 16000, both truncated the SAME reply mid-JSON on a real 75,000-row/theme-rich
+    devapp dataset - twice, at nearly the same character offset both times, which is the signature of a
+    hard ceiling being hit consistently, not an occasional malformed reply. `MAX_TOKENS` (the module
+    floor) covers everything up to a normal theme count for free; past that, `TOKENS_PER_CLUSTER`
+    generously accounts for one JSON theme entry (cluster_id, label, description, merge_with, note, and
+    punctuation), clamped at `MAX_TOKENS_CEILING` as a sanity backstop."""
+    return min(MAX_TOKENS_CEILING, max(MAX_TOKENS, n_clusters * TOKENS_PER_CLUSTER))
 
 
 def _representative_texts(cluster: Cluster, n: int) -> list[str]:
@@ -320,7 +342,9 @@ def label_clusters(
     if result.clusters:
         expected_ids = {cluster.id for cluster in result.clusters}
         prompt = _build_prompt(result.clusters, question, samples_per_cluster)
-        raw_response = client.complete(SYSTEM, prompt)
+        max_tokens = _max_tokens_for(len(result.clusters))
+        log.info("Theme labeling: %d clusters, max_tokens=%d", len(result.clusters), max_tokens)
+        raw_response = client.complete(SYSTEM, prompt, max_tokens=max_tokens)
         parsed = _parse_response(raw_response, expected_ids)
         for cluster in result.clusters:
             item = parsed[cluster.id]
@@ -458,7 +482,7 @@ def label_sub_clusters(
             flat_id += 1
 
     prompt = json.dumps({"survey_question": question, "clusters": clusters_payload})
-    raw_response = client.complete(SUB_SYSTEM, prompt)
+    raw_response = client.complete(SUB_SYSTEM, prompt, max_tokens=_max_tokens_for(len(clusters_payload)))
     parsed = _parse_response(raw_response, set(flat_by_id))
 
     result: dict[int, list[ThemeLabel]] = {parent_id: [] for parent_id in sub_clusters}

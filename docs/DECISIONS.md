@@ -982,9 +982,46 @@ extra room. Full backend suite: 611 passed, 1 skipped, no regressions (no test a
 value). Re-ran the exact failing build on `devapp` against the same dataset after deploying the fix -
 succeeded, themes built with no labelling error.
 
-Deliberately NOT done: scaling `MAX_TOKENS` dynamically with cluster count (mirroring
+Deliberately NOT done (at the time): scaling `MAX_TOKENS` dynamically with cluster count (mirroring
 `api_themes.py::_themes_deadline_for`'s pattern). The `ClaudeClient` protocol (`complete(system, prompt)
 -> str`) is shared across `labeling.py`, `sentiment.py`, `jev_sentiment.py`, `findings.py`, and their
 fakes/tests - threading a dynamic `max_tokens` through all of them for one constant's value is a much
 larger, riskier change than this bug warranted. A single generous static bump is the right-sized fix
 unless a future dataset's cluster count is large enough to need scaling too - if that happens, revisit.
+
+## 2026-10-21 (same day, follow-up: the flat 16000 bump above was not enough either - now scaled)
+Re-tested the flat `MAX_TOKENS=16000` bump against the SAME real devapp dataset (75,000 rows) that
+exposed the original bug. It failed again, the same way, on BOTH the call and its retry: `Expecting ','
+delimiter` at char 41212 (first attempt) and char 40518 (the final, user-visible error) - both landing
+at essentially the same ~41,000-character offset the earlier root-cause analysis predicted
+(~16,000-16,400 tokens at JSON's ~2.5-3 chars/token rate), confirming this dataset's real theme count
+needs noticeably more than 16000 output tokens, not just "a bit more."
+
+Revisited the "deliberately not done" call above given this new evidence: a second flat-number guess
+risked being wrong again for the same reason the first one was, so implemented the deferred dynamic
+scaling instead - and it turned out smaller and safer than feared once actually traced through every
+real caller instead of guessed at. `ClaudeClient.complete` gained an optional `max_tokens: int =
+MAX_TOKENS` keyword (every existing caller keeps working unchanged via the default). The worry about a
+protocol shared across four modules turned out overstated: the actual single-method `complete(system,
+prompt) -> str` Protocol this threads through is only `labeling.py`'s own `AnthropicClaudeClient`/
+`FakeClaudeClient`; `findings.py` imports and calls `AnthropicClaudeClient()` directly (no override
+needed - it never asks for a bigger budget), `sentiment.py`'s `ClaudeClient` is an unrelated `Any`-typed
+raw-SDK shape, and `jev_sentiment.py` is a separate vendor entirely - none of those needed touching.
+
+New `_max_tokens_for(n_clusters) -> int` (`labeling.py`): `min(MAX_TOKENS_CEILING, max(MAX_TOKENS,
+n_clusters * TOKENS_PER_CLUSTER))` - `TOKENS_PER_CLUSTER = 300` (a generous per-entry allowance: cluster
+id, label, description, merge_with, note, JSON punctuation), `MAX_TOKENS_CEILING = 48000` (a sanity
+backstop, far under Sonnet 5's real 128K synchronous-API output ceiling - confirmed via Anthropic's own
+docs, not assumed). `MAX_TOKENS` itself (16000) stays as the floor for ordinary datasets, so a normal
+build's cost is unchanged. Both `label_clusters` and `label_sub_clusters` now compute and pass their own
+scaled `max_tokens`, logged (`log.info("Theme labeling: %d clusters, max_tokens=%d", ...)`) so a future
+truncation (if the real cluster count ever exceeds what 48000 tokens can cover) is diagnosable from logs
+alone, not re-discovered by trial and error the way this one was.
+
+New tests in `tests/test_text_pipeline_labeling.py`: `_max_tokens_for` at the floor, scaling past the
+floor, clamped at the ceiling, and `label_clusters` actually passing the scaled value through to
+`client.complete`. Full suite: 615 passed (611 + 4 new), 1 skipped, no regressions.
+
+**Not yet re-verified live** against the actual 75,000-row dataset that triggered this - deploying to
+devapp and a fresh "Try again" build is the next step, to confirm the real cluster count for this
+dataset falls within the new ceiling (not just that the formula is correct in isolation).

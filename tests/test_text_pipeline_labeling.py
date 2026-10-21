@@ -15,8 +15,12 @@ from app.text_pipeline.labeling import (
     ClaudeNotConfigured,
     FakeClaudeClient,
     LABELING_RETRY_ATTEMPTS,
+    MAX_TOKENS,
+    MAX_TOKENS_CEILING,
     OTHER_CLUSTER_ID,
     OTHER_LABEL,
+    TOKENS_PER_CLUSTER,
+    _max_tokens_for,
 )
 from app.text_pipeline.schema import Cluster, ClusterMember, ClusterResult, ThemeLabel
 
@@ -43,6 +47,35 @@ def reply_for(cluster_ids, **overrides):
         entry.update(overrides.get(cid, {}))
         themes.append(entry)
     return json.dumps({"themes": themes})
+
+
+# ---------------------------------------------------------------- max_tokens scaling (2026-10-21 fix)
+
+
+def test_max_tokens_for_stays_at_the_floor_for_a_normal_cluster_count():
+    assert _max_tokens_for(5) == MAX_TOKENS
+    assert _max_tokens_for(0) == MAX_TOKENS
+
+
+def test_max_tokens_for_scales_up_past_the_floor():
+    n = (MAX_TOKENS // TOKENS_PER_CLUSTER) + 10  # enough clusters to need more than the floor
+    assert _max_tokens_for(n) == n * TOKENS_PER_CLUSTER
+    assert _max_tokens_for(n) > MAX_TOKENS
+
+
+def test_max_tokens_for_is_capped_at_the_ceiling():
+    assert _max_tokens_for(1_000_000) == MAX_TOKENS_CEILING
+
+
+def test_label_clusters_passes_the_scaled_max_tokens_to_the_client():
+    clusters = [make_cluster(i, [f"text {i}"]) for i in range((MAX_TOKENS // TOKENS_PER_CLUSTER) + 10)]
+    result = make_result(clusters)
+    client = FakeClaudeClient(lambda prompt: reply_for([c.id for c in clusters]))
+
+    label_clusters(result, QUESTION, client, samples_per_cluster=1)
+
+    assert client.calls[0]["max_tokens"] == _max_tokens_for(len(clusters))
+    assert client.calls[0]["max_tokens"] > MAX_TOKENS
 
 
 # ---------------------------------------------------------------- batching
