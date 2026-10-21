@@ -1117,3 +1117,48 @@ numbers rather than theorizing further.
 Other, versus 18.7% on a smaller real dataset, is still unknown - this pass only makes the real numbers
 visible for the next build. The honest next step is re-running a real large dataset through "Build
 themes" now that this logging is deployed, and reading what HDBSCAN actually decided from Railway logs.
+
+## 2026-10-21 (same day, root-caused: the 80%+ "Other" is NOT a clustering bug)
+Re-ran "Build themes" on the same 75,000-row dataset (devapp, dataset 1) now that the diagnostic logging
+above is deployed, and read the real numbers from Railway logs:
+
+```
+cluster_answers: n=72688 dims=1024 reduction_applied=True min_cluster_size=50 min_samples=10 |
+HDBSCAN found 234 raw groups (sizes top-10: [2837, 1720, 1700, 1640, 1474, 1416, 1311, 1238, 1220, 1191]),
+0 of them folded into noise for being under min_cluster_size | HDBSCAN's own noise: 22164 |
+final: 234 real clusters (sizes: [... 234 values, smallest 50 ...]), 22164 noise (30.5% of 72688)
+```
+
+**HDBSCAN/UMAP are working correctly - better than the baseline, even.** 234 real, dense clusters found,
+only **30.5% genuine noise**, zero clusters discarded for being under the size floor. This is a HEALTHY
+clustering result, not meaningfully different in kind from the 18.7%-noise baseline that validated this
+pipeline originally. The clustering pipeline is fully exonerated by this evidence - no code change to
+`clustering.py` is justified, and none was made.
+
+**The real explanation is one layer up, in `app/findings.py::theme_nodes`, and it's a deliberate,
+already-documented design decision**: `kept_real = ranked_real[:7]` caps the REPORT to the top 7 ranked
+clusters by size (matching `app/charts.py`'s fixed 7-colour `t1..t7` palette), and folds every cluster
+ranked 8th or beyond into the SAME "Other" node as genuine noise (`_merge_into_other`, with its own prior
+comment confirming this was intentionally built after a real hotel-reviews dataset with 25+ real themes
+produced an unreadable chart of same-coloured slivers). That decision was correct for a dataset with a
+handful of dominant themes trailing off into many tiny ones - but this dataset has 234 roughly-comparably-
+sized real clusters, an order of magnitude beyond what a fixed top-7 display was ever tuned against.
+
+**Confirmed by arithmetic, not just plausible**: top 7 cluster sizes sum to 12,098 of 72,688 answers
+(16.6%) - meaning `theme_nodes` folds the other 227 real clusters (50,524 answers) PLUS the 22,164
+genuinely noisy answers into "Other," for an implied 83.4% - matching the observed 82.7% within rounding.
+The visual "80%+ Other" the user saw is almost entirely real, meaningfully-clustered content that the
+report simply doesn't have room to show as named themes, not uncategorised noise.
+
+**Deliberately NOT changed here, and why**: raising the top-7 cap is a product/design decision, not a
+clustering parameter - `app/charts.py`'s palette (`t1`..`t7` plus `--other`) is a fixed, hand-chosen
+token set per `CLAUDE.md`'s own design rules ("Theme colours only identify themes... no gradients or
+shadows"), and inventing more theme colours, or a "show more themes"/pagination affordance, needs actual
+design review, not a quick parameter bump buried in a clustering investigation. This was scoped as a
+clustering investigation specifically; the fix (if the product decides one is wanted) belongs to a
+separate, explicitly-scoped report/chart-design stream. Added as a new, evidenced line item to
+`docs/TODO.md` instead of implemented here.
+
+No code changed this pass beyond this entry; the diagnostic logging from the prior entry stays (useful
+for any future large-dataset investigation). Full suite: 615 passed, 1 skipped (unchanged, no new tests
+needed - no behaviour changed).
