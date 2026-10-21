@@ -29,7 +29,11 @@
 .hint { font-size: 14px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
 .row { display: flex; align-items: center; gap: 16px; min-height: 60px; padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .row:last-of-type { border-bottom: 1px solid var(--line); }
-.row .nm { flex: 1 1 200px; font-weight: 500; overflow-wrap: anywhere; }
+.row .nm { flex: 1 1 200px; font-weight: 500; overflow-wrap: anywhere; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.row .nm.nm-editing { flex-wrap: nowrap; gap: 8px; }
+.name-edit-btn { height: 26px; min-width: 26px; padding: 0 8px; margin-left: 4px; border-radius: 6px; background: transparent; color: var(--muted); border: 1px solid var(--line); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; flex: 0 0 auto; }
+.name-edit-btn:hover { color: var(--ink); border-color: var(--accent); }
+.name-input { min-width: 0; flex: 1 1 auto; }
 .row .why { flex: 1 1 100%; color: var(--muted); font-size: 14px; }
 .chip { height: 36px; padding: 0 12px; border-radius: 8px; font: inherit; font-size: 15px; font-weight: 500; background: var(--surface); color: var(--ink); border: 1px solid var(--line); min-width: 160px; }
 .chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }

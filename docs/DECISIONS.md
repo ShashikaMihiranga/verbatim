@@ -1243,4 +1243,27 @@ ripple fix works outside of unit tests too.
 heuristics; renaming a column after `Column`/`Theme` rows already exist for it (a separate, larger
 problem - `Theme.column_name` and cached cleaning/report state would need migrating).
 
-Committed to `staging`, not pushed (per current session workflow - push only on explicit confirmation).
+Committed to `staging`, pushed, and deployed to devapp.
+
+## 2026-10-21 (same day, UI follow-up: rename field was always visible for every column)
+User feedback after the above shipped: showing a full duplicate text box next to every single column
+name - including the ~20 ordinary ones nobody wants to touch - looked unfinished and cluttered, even
+though the feature itself worked. The fix is purely presentational, no backend change.
+
+`CheckColumns.tsx` now has a small per-column `editingName` state. An ordinary column shows its name as
+plain text with a small "✎" rename button (`.name-edit-btn`, reusing `--muted`/`--line`/`--accent`
+tokens, no new colours); clicking it swaps in the same `.chip`-styled input plus a "Done" button,
+Enter/blur to accept, Escape to cancel back to the pre-edit value. A `looks_headerless`-flagged column
+still starts already open (pre-filled with Claude's suggestion, same as before) since those genuinely
+need attention - this only changes the common case, not the one the whole feature was built for.
+
+Live-verified in the browser against two real uploads: a normal-header file (every column now shows the
+compact plain-text-plus-pencil form, not a duplicate box) and a genuinely headerless file (the two
+flagged columns still open pre-filled and editable, a third column's header text was correctly absorbed
+as the survey question by existing detection logic rather than mistaken for a label). Clicked the pencil
+button, renamed a column through the real UI, saved, and confirmed via `GET /profile` that
+`confirmed.renames` recorded the change correctly - the full save path is unaffected by this purely
+visual change. Frontend: 62 passed, `tsc -b && vite build` clean.
+
+Committed to `staging`, not pushed yet (per current session workflow - push only on explicit
+confirmation).
