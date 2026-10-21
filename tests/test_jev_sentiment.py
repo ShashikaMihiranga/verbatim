@@ -14,6 +14,8 @@ import pytest
 from app.cleaning import plan_cleaning
 from app.text_pipeline import AnswerScore, score_column, score_column_with_jev, score_text
 from app.text_pipeline.jev_sentiment import (
+    MAX_CRITERIA_OPTIONS,
+    ChoiceAnswer,
     FakeJevClient,
     HttpJevClient,
     JevError,
@@ -367,3 +369,122 @@ def test_http_jev_client_response_size_cap(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeHttpResponse(huge))
     with pytest.raises(JevError):
         HttpJevClient().classify_tone("some text")
+
+
+# ---------------------------------------------------------------- classify_choice (2026-10-21, "Look
+# inside Other" feature: a dynamic Choice question, not the fixed "tone" one)
+
+_THEME_CRITERIA = {
+    "Shipping delays": "Mentions late or slow delivery.",
+    "Product quality": "Mentions the product breaking or being poorly made.",
+    "Customer service": "Mentions interactions with support staff.",
+}
+
+
+def _choice_ok_body(question_key, choice, confidence=0.7, probabilities=None, criteria=_THEME_CRITERIA):
+    if probabilities is None:
+        n = len(criteria)
+        probabilities = {k: (confidence if k == choice else (1 - confidence) / (n - 1)) for k in criteria}
+    return json.dumps({
+        "model": "jev-1.13.0",
+        "answers": {question_key: {
+            "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": confidence,
+        }},
+    }).encode("utf-8")
+
+
+def test_http_jev_client_classify_choice_builds_request_and_parses_response(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-123")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data)
+        return _FakeHttpResponse(_choice_ok_body("review_topic", "Shipping delays"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = HttpJevClient().classify_choice(
+        "It took three weeks to arrive.",
+        question_key="review_topic",
+        instructions="Classify the main topic of this review.",
+        criteria=_THEME_CRITERIA,
+    )
+
+    assert isinstance(result, ChoiceAnswer)
+    assert result.choice == "Shipping delays"
+    assert result.confidence == pytest.approx(0.7)
+    assert set(result.probabilities) == set(_THEME_CRITERIA)
+    assert captured["body"]["questions"]["review_topic"]["type"] == "choice"
+    assert captured["body"]["questions"]["review_topic"]["instructions"] == "Classify the main topic of this review."
+    assert captured["body"]["questions"]["review_topic"]["criteria"] == _THEME_CRITERIA
+    assert "tone" not in captured["body"]["questions"]  # only the one dynamic question is sent, not both
+
+
+def test_http_jev_client_classify_choice_raises_on_choice_outside_criteria(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-123")
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=None: _FakeHttpResponse(_choice_ok_body("t", "Not a real option")),
+    )
+    with pytest.raises(JevError):
+        HttpJevClient().classify_choice("x", question_key="t", instructions="i", criteria=_THEME_CRITERIA)
+
+
+def test_http_jev_client_classify_choice_rejects_empty_criteria():
+    with pytest.raises(JevError):
+        HttpJevClient.__new__(HttpJevClient).classify_choice("x", question_key="t", instructions="i", criteria={})
+
+
+def test_http_jev_client_classify_choice_rejects_more_than_255_options():
+    too_many = {f"option {i}": None for i in range(MAX_CRITERIA_OPTIONS + 1)}
+    with pytest.raises(JevError):
+        HttpJevClient.__new__(HttpJevClient).classify_choice("x", question_key="t", instructions="i", criteria=too_many)
+
+
+def test_classify_tone_and_classify_choice_use_independent_questions(monkeypatch):
+    """A regression guard for the shared-request-helper refactor: classify_tone must still send ONLY
+    the hardcoded tone question, never a stray dynamic one, and vice versa."""
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-123")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        body = json.loads(req.data)
+        captured["questions"] = set(body["questions"])
+        qk = next(iter(body["questions"]))
+        if qk == "tone":
+            return _FakeHttpResponse(_ok_body())
+        return _FakeHttpResponse(_choice_ok_body(qk, "Shipping delays"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = HttpJevClient()
+
+    client.classify_tone("some text")
+    assert captured["questions"] == {"tone"}
+
+    client.classify_choice("some text", question_key="topic", instructions="i", criteria=_THEME_CRITERIA)
+    assert captured["questions"] == {"topic"}
+
+
+def test_fake_jev_client_classify_choice_default_picks_first_criterion():
+    client = FakeJevClient(("pos", 0.9))
+    result = client.classify_choice("x", question_key="t", instructions="i", criteria=_THEME_CRITERIA)
+    assert result.choice == next(iter(_THEME_CRITERIA))
+    assert result.confidence == 1.0
+    assert client.choice_calls == [
+        {"text": "x", "question_key": "t", "instructions": "i", "criteria": _THEME_CRITERIA},
+    ]
+
+
+def test_fake_jev_client_classify_choice_with_fixed_result():
+    fixed = ChoiceAnswer(choice="Customer service", confidence=0.6, probabilities={"Customer service": 0.6})
+    client = FakeJevClient(("pos", 0.9), choice_result=fixed)
+    assert client.classify_choice("x", question_key="t", instructions="i", criteria=_THEME_CRITERIA) is fixed
+
+
+def test_fake_jev_client_classify_choice_with_callable_result():
+    def pick(text, question_key, instructions, criteria):
+        return ChoiceAnswer(choice="Product quality", confidence=0.5, probabilities={})
+
+    client = FakeJevClient(("pos", 0.9), choice_result=pick)
+    result = client.classify_choice("x", question_key="t", instructions="i", criteria=_THEME_CRITERIA)
+    assert result.choice == "Product quality"
