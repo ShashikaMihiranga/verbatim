@@ -29,11 +29,11 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from .clustering import cluster_answers
+from .clustering import MIN_MIN_CLUSTER_SIZE, cluster_answers
 from .jev_sentiment import ChoiceAnswer, JevClient
 from .labeling import OTHER_CLUSTER_ID, ClaudeClient, label_clusters_with_retry
 from .merging import apply_merges
-from .schema import ClusterResult, ThemeLabel
+from .schema import ClusterMember, ClusterResult, ThemeLabel
 
 NONE_OF_THESE = "None of these"
 NONE_OF_THESE_DESCRIPTION = (
@@ -57,7 +57,24 @@ def recluster_other(
     standalone pool, via `clustering.cluster_answers` with `finer_floor=True` - the same "recover
     small-but-real topics instead of writing them off" setting `pipeline.embed_and_cluster_with_vectors`
     already uses for a normal top-level build, appropriate here too since these answers already failed
-    the dataset-wide floor once and a second, equally lenient pass is the fairest retry."""
+    the dataset-wide floor once and a second, equally lenient pass is the fairest retry.
+
+    Guards against fewer answers than `MIN_MIN_CLUSTER_SIZE` (clustering.py's own absolute floor for "a
+    group big enough to call a theme") BEFORE calling `cluster_answers` - unlike every other call site in
+    this codebase, which only ever reaches `cluster_answers` after `pipeline.py`'s own
+    `MIN_ANSWERS_TO_CLUSTER` gate, this is the first one driven by however many rows happen to be in
+    "Other", which can legitimately be smaller than that floor. sklearn's own `HDBSCAN` raises a hard
+    `ValueError` (not a graceful "no clusters found") when asked for `min_samples` greater than the
+    sample count - confirmed live by this module's own first end-to-end test. Returns every answer as
+    noise (zero real clusters) rather than attempting that: there is no way to form even one valid
+    cluster from fewer answers than the floor anyway, so this is not a lossy shortcut, just skipping a
+    call that could only ever fail or - at that size - find nothing real."""
+    if len(row_indexes) < MIN_MIN_CLUSTER_SIZE:
+        return ClusterResult(
+            column="", clusters=[],
+            noise=[ClusterMember(row=r, text=t, distance=None) for r, t in zip(row_indexes, texts)],
+            total_answers=len(row_indexes),
+        )
     return cluster_answers(vectors, texts, row_indexes, finer_floor=True)
 
 

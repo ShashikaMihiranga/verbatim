@@ -18,15 +18,20 @@ from sqlalchemy.pool import NullPool
 import app.db as db_module
 from app.api_themes import (
     _SLOTS,
+    MIN_OTHER_NEW_THEME_SIZE,
+    _apply_other_classification,
     _themes_deadline_for,
     get_claude_client,
     get_embedding_client,
+    get_jev_client,
     get_jev_client_factory,
 )
 from app.api_upload import current_user
 from app.db import Base, get_db
 from app.main import app
 from app.text_pipeline import FakeEmbeddingClient, FakeJevClient
+from app.text_pipeline.jev_sentiment import ChoiceAnswer
+from app.text_pipeline.other_classify import NONE_OF_THESE
 from app.text_pipeline.labeling import FakeClaudeClient as FakeLabelingClaudeClient
 from tests.job_test_support import BlockingClient, wait_for_job
 
@@ -912,3 +917,179 @@ def test_sub_theme_labeling_failure_falls_back_to_no_sub_themes_not_a_failed_job
     assert themes  # themes were still built and stored...
     assert any(t["size"] >= 100 for t in themes)  # ...including the one that WOULD have split
     assert all(t["sub_themes"] == [] for t in themes)  # ...just with no sub-themes on any of them
+
+
+# ==================================================================== "Look inside Other" (docs/TODO.md,
+# 2026-10-21). Theme rows are seeded DIRECTLY into the database (mirroring tests/test_api_report.py's own
+# `seed_themes` pattern) rather than run through a full build-themes job first - this module's own
+# build-themes tests already cover real clustering/noise behaviour; what matters here is the NEW route and
+# its write-back, not re-deriving exactly which answers HDBSCAN calls noise.
+
+def seed_theme(env, did, **kw) -> int:
+    from app.models import Theme
+    with env.Session() as s:
+        t = Theme(dataset_id=did, column_name=Q, **kw)
+        s.add(t)
+        s.commit()
+        return t.id
+
+
+def install_look_inside_other_fakes(jev_choice_result=None):
+    app.dependency_overrides[get_embedding_client] = lambda: FakeEmbeddingClient()
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply)
+    app.dependency_overrides[get_jev_client] = lambda: FakeJevClient(("pos", 0.8), choice_result=jev_choice_result)
+
+
+def look_inside_other_job(env, did, column=Q, timeout=5.0) -> dict:
+    r = env.client.post(f"/api/datasets/{did}/themes/look-inside-other", json={"column": column})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["status"] == "running" and body["job_id"]
+    return wait_for_job(env.client, did, body["job_id"], timeout=timeout)
+
+
+def test_look_inside_other_422_on_unknown_column(env):
+    install_look_inside_other_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    r = env.client.post(f"/api/datasets/{did}/themes/look-inside-other", json={"column": "Not a real column"})
+    assert r.status_code == 422
+
+
+def test_look_inside_other_409_when_no_other_theme_exists(env):
+    install_look_inside_other_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="Cost", description="x", size=5, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4])
+    r = env.client.post(f"/api/datasets/{did}/themes/look-inside-other", json={"column": Q})
+    assert r.status_code == 409
+
+
+def test_look_inside_other_409_when_other_has_no_answers(env):
+    install_look_inside_other_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="Other", description="x", size=0, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[])
+    r = env.client.post(f"/api/datasets/{did}/themes/look-inside-other", json={"column": Q})
+    assert r.status_code == 409
+
+
+def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
+    """Happy path through the real route/job: seeded "Cost" (known) + "Other" (to look inside), Jev
+    configured to match every Other answer back to "Cost" - confirms the job reaches "done", Cost's
+    answer_refs/size/sentiment grow to include the matched rows, and the now-empty Other theme is
+    deleted outright (see `_apply_other_classification`'s own docstring for why)."""
+    install_look_inside_other_fakes(jev_choice_result=ChoiceAnswer(choice="Cost", confidence=0.9, probabilities={}))
+    df = theme_df()  # 26 rows: 0-12 reliability, 13-25 support (see _survey_texts)
+    did = upload_csv(env, df)
+    clean_and_apply(env, did)
+
+    cost_id = seed_theme(
+        env, did, label="Cost", description="About pricing.", size=5, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4],
+    )
+    seed_theme(
+        env, did, label="Other", description="x", size=3, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[13, 14, 15],
+    )
+
+    job = look_inside_other_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert job["error"] is None
+
+    themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    labels = {t["label"] for t in themes}
+    assert "Other" not in labels  # everything matched - the now-empty row was deleted, not kept at size 0
+
+    cost = next(t for t in themes if t["label"] == "Cost")
+    assert cost["size"] == 8  # 5 original + 3 matched from Other
+    with env.Session() as s:
+        from app.models import Theme
+        row = s.get(Theme, cost_id)
+        assert sorted(row.answer_refs) == [0, 1, 2, 3, 4, 13, 14, 15]
+
+
+# ---------------------------------------------------------------- _apply_other_classification (direct,
+# unit-level: the DB write-back logic itself, independent of the route/job wrapper above)
+
+def _seed_known_and_other(env, did, known_refs=(0, 1, 2, 3, 4), other_refs=(13, 14, 15, 16, 17, 18)):
+    from app.models import Theme
+    with env.Session() as s:
+        known = Theme(dataset_id=did, column_name=Q, label="Cost", description="About pricing.", size=len(known_refs),
+                      sentiment=0.0, tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(known_refs))
+        other = Theme(dataset_id=did, column_name=Q, label="Other", description="x", size=len(other_refs),
+                      sentiment=0.0, tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(other_refs))
+        s.add_all([known, other])
+        s.commit()
+        return known.id, other.id
+
+
+def test_apply_other_classification_extends_a_known_theme(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    known_id, other_id = _seed_known_and_other(env, did, other_refs=(13, 14))
+    row_text = {13: "a bit expensive", 14: "too pricey for what it is"}
+
+    with env.Session() as s:
+        from app.models import Theme
+        _apply_other_classification(s, did, Q, other_id, {13: "Cost", 14: "Cost"}, {}, row_text)
+        known = s.get(Theme, known_id)
+        assert sorted(known.answer_refs) == [0, 1, 2, 3, 4, 13, 14]
+        assert known.size == 7
+        assert s.get(Theme, other_id) is None  # both rows matched - nothing left, row deleted
+
+
+def test_apply_other_classification_creates_a_new_theme_above_the_minimum(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    other_refs = list(range(13, 13 + MIN_OTHER_NEW_THEME_SIZE))
+    known_id, other_id = _seed_known_and_other(env, did, other_refs=other_refs)
+    by_row = {r: "Shipping delays" for r in other_refs}
+    row_text = {r: "slow shipping, took forever" for r in other_refs}
+
+    with env.Session() as s:
+        from app.models import Theme
+        from sqlalchemy import select
+        _apply_other_classification(
+            s, did, Q, other_id, by_row, {"Shipping delays": "About delivery."}, row_text,
+        )
+        new_theme = s.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == "Shipping delays"))
+        assert new_theme is not None
+        assert sorted(new_theme.answer_refs) == sorted(other_refs)
+        assert new_theme.size == MIN_OTHER_NEW_THEME_SIZE
+        assert s.get(Theme, other_id) is None  # everything matched the new theme
+
+
+def test_apply_other_classification_below_minimum_new_theme_folds_back_into_other(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    too_few = list(range(13, 13 + MIN_OTHER_NEW_THEME_SIZE - 1))  # one short of the minimum
+    _, other_id = _seed_known_and_other(env, did, other_refs=too_few)
+    by_row = {r: "Tiny new group" for r in too_few}
+    row_text = {r: "some rare answer" for r in too_few}
+
+    with env.Session() as s:
+        from app.models import Theme
+        from sqlalchemy import select
+        _apply_other_classification(s, did, Q, other_id, by_row, {"Tiny new group": "x"}, row_text)
+        assert s.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == "Tiny new group")) is None
+        other = s.get(Theme, other_id)
+        assert sorted(other.answer_refs) == sorted(too_few)  # folded straight back into Other
+
+
+def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    _, other_id = _seed_known_and_other(env, did, other_refs=(13, 14, 15))
+    # 13 -> explicit NONE_OF_THESE, 14 -> missing entirely (its own Jev call failed), 15 -> untouched
+    by_row = {13: NONE_OF_THESE}
+    row_text = {13: "a", 14: "b", 15: "c"}
+
+    with env.Session() as s:
+        _apply_other_classification(s, did, Q, other_id, by_row, {}, row_text)
+    with env.Session() as s:
+        from app.models import Theme
+        other = s.get(Theme, other_id)
+        assert sorted(other.answer_refs) == [13, 14, 15]

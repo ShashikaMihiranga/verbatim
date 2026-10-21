@@ -70,6 +70,23 @@ def test_recluster_other_empty_input():
     assert result.clusters == [] and result.total_answers == 0
 
 
+def test_recluster_other_fewer_than_floor_answers_becomes_all_noise_not_a_crash():
+    """Real bug, found via this module's own first end-to-end API test: sklearn's HDBSCAN raises a hard
+    ValueError ("min_samples must be at most the number of samples") rather than gracefully finding
+    nothing when asked for fewer answers than its own min_samples floor - something only this entry
+    point can hit, since every other cluster_answers call site is gated by pipeline.py's own
+    MIN_ANSWERS_TO_CLUSTER=20 first. Must return everything as noise instead of raising."""
+    rows = [1, 2, 3]
+    texts = ["a", "b", "c"]
+    vectors = [[0.1, 0.2], [0.3, 0.1], [0.9, 0.9]]
+
+    result = recluster_other(rows, texts, vectors)
+
+    assert result.clusters == []
+    assert sorted(m.row for m in result.noise) == rows
+    assert result.total_answers == 3
+
+
 # ---------------------------------------------------------------- label_and_consolidate
 
 

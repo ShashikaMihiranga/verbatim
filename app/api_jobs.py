@@ -32,7 +32,7 @@ def latest_job(
     user: User = Depends(current_user),
 ):
     ds = _own_dataset(db, user, dataset_id)
-    if kind not in ("themes", "report"):
+    if kind not in ("themes", "report", "look_inside_other"):
         raise HTTPException(422, "Unknown job kind.")
     job = db.scalar(
         select(Job)

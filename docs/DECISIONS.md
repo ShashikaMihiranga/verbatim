@@ -1326,3 +1326,44 @@ added complexity and per-row cost.
 
 Committed to `staging`, not pushed yet (per current session workflow - push only on explicit
 confirmation).
+
+## 2026-10-21 ("Look inside Other" Stage 1 complete - job route, DB write-back, real bug fixed)
+Backend of the 3-stage "Look inside Other" plan (design discussion the same day, mockup-driven - see
+`docs/TODO.md`) is functionally complete: `POST /api/datasets/{id}/themes/look-inside-other` wires
+`app/text_pipeline/other_classify.py`'s pieces (committed earlier the same day) into a real background
+job, with a new `app/api_themes.py::_apply_other_classification` doing the actual `Theme`-row writes -
+an UPDATE path (extend known themes' `answer_refs`, create new `Theme` rows for newly-discovered
+sub-themes, shrink or delete "Other"), deliberately not `_write_theme_rows`'s full delete-and-replace,
+which would also wipe every untouched known theme.
+
+**A real bug found by the first end-to-end test, not assumed away**: `recluster_other` crashed with
+sklearn's own `ValueError: min_samples must be at most the number of samples in X` whenever "Other" had
+fewer answers than HDBSCAN's own minimum cluster-size floor. Every OTHER call site in this codebase that
+reaches `cluster_answers` is gated first by `pipeline.py`'s `MIN_ANSWERS_TO_CLUSTER=20` - this is the
+first entry point driven by however many rows happen to be in "Other", which can legitimately be
+smaller than that. Fixed in `recluster_other` itself: fewer than `MIN_MIN_CLUSTER_SIZE` (clustering.py's
+own absolute floor) answers now returns everything as noise directly, skipping the call that could only
+ever fail or find nothing real at that size - not a lossy shortcut, since no valid cluster could form
+from fewer answers than the floor regardless.
+
+New `get_jev_client` DI provider (`app/api_themes.py`) - unlike `get_jev_client_factory` (Jev is
+optional for sentiment scoring), Jev is NOT optional here: the whole per-answer classification step
+depends on it, so this builds the real client eagerly and turns `JevNotConfigured` into a 503, same
+shape as the existing `get_embedding_client`/`get_claude_client` providers. New job kind
+`"look_inside_other"` added to `app/api_jobs.py`'s `latest_job` whitelist.
+
+**Tests**: 9 new in `tests/test_api_themes.py` (route validation: unknown column 422, no-Other-theme
+409, empty-Other 409; one real end-to-end job test seeding known+Other `Theme` rows directly - matching
+`test_api_report.py`'s own `seed_themes` precedent rather than re-deriving exact HDBSCAN noise behaviour
+from a full build-themes run first - confirming the job reaches "done", a known theme's `answer_refs`/
+size/sentiment grow correctly, and an emptied "Other" is deleted outright; 4 direct unit tests of
+`_apply_other_classification` itself: known-theme extension, new-theme creation above the size floor,
+below-floor folding back into Other, and `NONE_OF_THESE`/missing-row handling) plus 1 new regression test
+in `tests/test_other_classify.py` for the HDBSCAN crash fix. Full backend suite: 662 passed (653 + 9), 1
+skipped.
+
+**Not yet done**: live verification against a real dataset on devapp (every test here uses fake
+clients - no real Voyage/Claude/Jev call has exercised this route yet), and Stages 2-3 (the chart-type
+switcher, the animated flow UI) remain entirely unbuilt.
+
+Committed to `staging`, not pushed yet.
