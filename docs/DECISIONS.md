@@ -1025,3 +1025,34 @@ floor, clamped at the ceiling, and `label_clusters` actually passing the scaled 
 **Not yet re-verified live** against the actual 75,000-row dataset that triggered this - deploying to
 devapp and a fresh "Try again" build is the next step, to confirm the real cluster count for this
 dataset falls within the new ceiling (not just that the formula is correct in isolation).
+
+## 2026-10-21 (same day, follow-up #2: the scaled max_tokens itself broke a different way)
+Deployed the cluster-count-scaled fix above and re-ran the build on the same devapp dataset. It no
+longer hit the JSON-truncation error - but the build still failed, this time with a generic "Something
+went wrong while building this" (not the specific labelling-failure message), and the background thread
+crashed outright per Railway logs:
+
+```
+ValueError: Streaming is required for operations that may take longer than 10 minutes.
+```
+
+Root cause: the Anthropic Python SDK itself refuses a plain, non-streaming `messages.create()` call once
+`max_tokens` is large enough that generation could plausibly take over 10 minutes - this guard only
+started firing because `_max_tokens_for` now asks for a genuinely large budget on theme-rich datasets
+(the earlier flat 4096/16000 values never came close to tripping it). This is a `ValueError`, not a
+`LabelingError`, so `_retry_on_labeling_error` never caught it - it propagated straight past the
+labelling retry logic and crashed `app/jobs.py`'s background worker thread, which is why the user-facing
+message was the generic background-job failure, not the specific labelling-error text.
+
+Fix: `AnthropicClaudeClient.complete` (`labeling.py`) now calls `self._client.messages.stream(...)`
+inside a `with` block and reads `stream.get_final_message()`, instead of `self._client.messages.create(...)`
+directly. Confirmed against the installed SDK itself (`anthropic==1.8.0`) that `Messages.stream`'s
+signature accepts the same `model`/`max_tokens`/`system`/`thinking`/`messages` kwargs this call already
+passes - no other call-site change needed. This call site is still synchronous from its own caller's
+point of view (`complete()` still blocks until the full reply is available) - `stream=True` only changes
+how the SDK transports the response over the wire, not this method's blocking behaviour, so nothing
+upstream of `complete()` needed to change. No test mocked the internal `messages.create`/`.stream` SDK
+shape directly (confirmed via grep), so no test needed updating. Full suite: 615 passed, 1 skipped.
+
+**Not yet re-verified live** - this is the third attempt against the same 75,000-row dataset; deploying
+and re-running "Try again" is still the next step.

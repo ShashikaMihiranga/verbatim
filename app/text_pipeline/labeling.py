@@ -170,13 +170,23 @@ class AnthropicClaudeClient:
         # (claude-sonnet-5 upgrade, docs/DECISIONS.md's dated entry): a real labeling prompt spent its
         # entire 4096-token budget on an (unrequested) thinking block and returned NO text at all,
         # surfacing as "Claude's reply did not contain any JSON" - not a formatting problem, a budget one.
-        msg = self._client.messages.create(
+        #
+        # Streamed, not a plain blocking `.create()` call (2026-10-21, confirmed bug - see
+        # docs/DECISIONS.md): the Anthropic SDK itself refuses a non-streaming call whose `max_tokens` is
+        # large enough that generation COULD plausibly run past 10 minutes - `ValueError: Streaming is
+        # required for operations that may take longer than 10 minutes`. This only started firing once
+        # `_max_tokens_for` began asking for a genuinely large budget on theme-rich datasets; this call
+        # site is still synchronous from its caller's point of view (it blocks until the full reply is
+        # in, same as before) - `stream=True` here only changes how the SDK transports the response, not
+        # this method's blocking behaviour, so nothing upstream needed to change.
+        with self._client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
             system=system,
             thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            msg = stream.get_final_message()
         return "".join(getattr(block, "text", "") for block in msg.content)
 
 
