@@ -210,6 +210,26 @@ def _render_report(
     )
     breakdown, all_themes = other_breakdown(themes, report_data.answered, filter_rows=filter_rows)
 
+    # Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): alternate views of the SAME theme data the
+    # treemap above already shows, rendered from the ONE already-built `report_data` (never rebuilt per
+    # tab, same "one report_data, reused for every block" rule the blocks loop below already follows).
+    # "arc" (theme co-occurrence) is deliberately NOT included: it needs an answer to belong to MULTIPLE
+    # themes at once to mean anything, but this pipeline's clustering is a hard partition - every answer
+    # belongs to exactly one theme by construction, so `data.cooccurrence` has no real signal to compute
+    # it from (not a missing wiring step, a genuinely new kind of analysis this pipeline does not do
+    # today). Shipping an always-empty arc diagram would be exactly the kind of misleading chart this
+    # project's own design discipline avoids elsewhere (see e.g. the sub-theme coverage gate) - deferred,
+    # not faked. "sankey" is also excluded here: that existing chart needs a real score column
+    # (`data.score.bands`) and is unrelated to the mockup's own "Known themes" tab (a bespoke, separate
+    # Stage 3 build, not a reuse of this renderer - see docs/DECISIONS.md).
+    theme_chart_variants = {}
+    for variant_id in ("icicle", "sentsun", "rank"):
+        v_html, v_width, v_height = render_parts(variant_id, report_data)
+        theme_chart_variants[variant_id] = {
+            "chart_title": TITLES.get(variant_id, variant_id),
+            "chart_html": v_html, "chart_width": v_width, "chart_height": v_height,
+        }
+
     blocks_content = content.get("blocks") or []
     finding_ids = [b["finding_id"] for b in blocks_content if b.get("finding_id") is not None]
     findings_by_id: dict[int, Finding] = {}
@@ -292,6 +312,7 @@ def _render_report(
         "all_themes": [
             {"name": t.name, "share": t.share, "count": t.count, "sentiment": t.sentiment} for t in all_themes
         ],
+        "theme_chart_variants": theme_chart_variants,
     }
 
 

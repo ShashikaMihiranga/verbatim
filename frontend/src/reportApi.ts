@@ -69,6 +69,17 @@ export interface ReportThemeSummary {
   sentiment: number
 }
 
+// Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): alternate views of the SAME theme data the
+// treemap's overview block already shows, rendered server-side from the one already-built report_data.
+// Keyed by chart id ("icicle" | "sentsun" | "rank") - deliberately no "arc" or "sankey" key; see
+// app/api_report.py's own comment for why those two are excluded from this feature.
+export interface ReportThemeChartVariant {
+  chart_title: string
+  chart_html: string
+  chart_width: number
+  chart_height: number
+}
+
 // What a caller passes to `getReport` - camelCase on this side, translated to the API's own snake_case
 // query params inside `getReport` below.
 export interface ReportFilters {
@@ -90,6 +101,7 @@ export interface ReportResponse {
   filters_applied: ReportFiltersApplied
   other_breakdown: ReportOtherBreakdown | null
   all_themes: ReportThemeSummary[]
+  theme_chart_variants: Record<string, ReportThemeChartVariant>
 }
 
 async function asError(r: Response): Promise<Error> {

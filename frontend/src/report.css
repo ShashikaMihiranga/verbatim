@@ -39,6 +39,18 @@
    one rhythm - a top divider and generous top margin - instead of a bordered/backgrounded card. */
 .rp-section { margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--line); }
 
+/* Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2) - ThemeChartTabs.tsx. Reuses .rp-chip's own
+   pill shape/tokens (--surface/--line/32px-ish height) rather than inventing a second button style, same
+   discipline as .rp-filter-select above; "active" swaps to --accent so the current tab reads clearly
+   against the others without relying on colour alone (an underline would too, but the label text itself
+   already carries the meaning - this is a visual accent, not the only cue). */
+.rp-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+.rp-tab {
+  height: 32px; padding: 0 14px; border-radius: 16px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); font-size: 14px; font-weight: 500; cursor: pointer;
+}
+.rp-tab.active { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+
 .rp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 22px; }
 .rp-head-side { display: flex; align-items: center; gap: 16px; flex: none; padding-top: 2px; }
 .rp-sentence { font-size: clamp(19px, 2.4vw, 24px); font-weight: 300; line-height: 1.35; margin: 0; max-width: 760px; }

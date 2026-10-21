@@ -1367,3 +1367,46 @@ clients - no real Voyage/Claude/Jev call has exercised this route yet), and Stag
 switcher, the animated flow UI) remain entirely unbuilt.
 
 Committed to `staging`, not pushed yet.
+
+## 2026-10-21 (Stage 2: chart-type switcher - icicle/sentsun/rank wired, Arc deliberately deferred)
+`GET /report` (`app/api_report.py::_render_report`) now also returns `theme_chart_variants`: `icicle`,
+`sentsun` ("Sentiment sun"), and `rank` chart fragments, all rendered from the SAME `report_data` object
+the treemap's overview block already builds - extending this module's own "one `report_data`, reused
+for every block" rule to cover alternate views of the theme data, not just the findings blocks it
+already covered. `f_icicle`/`f_sentsun`/`f_rank` (`app/charts.py`) needed no changes - they already take
+only `data: ReportData`, same as every other chart in `FRAMES`.
+
+**Arc and Sankey are deliberately NOT included, found during this stage, not assumed from the plan**:
+the approved plan (`this-is-ai-based-deep-globe.md`) called wiring Arc in "a real, separate small piece
+of backend work" (computing real `cooccurrence`). On investigation this isn't small: `f_arc`'s whole
+premise is an answer belonging to MULTIPLE themes at once (how often theme A and B are mentioned
+together), but this pipeline's clustering is a hard partition - every `Theme.answer_refs` list is
+disjoint by construction, so there is no "answer that mentions two themes" signal to compute from
+without a genuinely new multi-label analysis step. `f_arc` itself won't crash on an empty
+`cooccurrence=[]` (confirmed by reading it - it just renders no arcs), but shipping an always-empty,
+uninformative tab was judged against this project's own stated design discipline (never show something
+misleading - the same principle behind the sub-theme coverage gate elsewhere in this codebase).
+Deferred with a code comment in `app/api_report.py`, not silently dropped. `f_sankey` is excluded for a
+different reason: it needs a real score column (crashes `ZeroDivisionError` without one) and is
+unrelated to the mockup's own "Known themes" tab anyway (a bespoke, separate Stage 3 build - see that
+plan's own finding #2).
+
+Frontend: new `ThemeChartTabs.tsx` (reusing `ThemeChart.tsx`'s existing fragment-embedding mechanism
+unchanged) renders a tab bar above the report's overview chart - "Known themes" (the existing treemap,
+keeps theme-click selection working) plus one tab per variant actually present in the response, so an
+older cached report with no `theme_chart_variants` field still renders exactly as before (just the
+treemap, no tab bar) rather than erroring.
+
+**Tests**: 1 new in `tests/test_api_report.py` (confirms the 3 variants are present with real theme
+names reaching real chart HTML, and that `arc`/`sankey` are absent). Frontend: new
+`themechart-tabs.test.tsx` (3 tests - no-variants fallback, full tab bar, partial-variant tab bar);
+`report.test.tsx`'s shared fixture extended with the honest empty-`theme_chart_variants` default.
+Backend suite: 663 passed (662 + 1), 1 skipped. Frontend: 70 passed (67 + 3); `tsc -b && vite build`
+clean.
+
+**Not yet done**: Stage 3 (the animated "Known themes" flow) remains entirely unbuilt - the biggest,
+highest-risk piece, with zero precedent in this codebase (no `@keyframes`/`animateMotion`/
+`prefers-reduced-motion` anywhere today). Live browser verification of the new tab bar against a real
+report has not happened yet either.
+
+Committed to `staging`, not pushed yet.

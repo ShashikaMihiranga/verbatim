@@ -5,6 +5,7 @@ import type { ThemeCard } from './themesApi'
 import OtherExploration from './OtherExploration'
 import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
+import ThemeChartTabs from './ThemeChartTabs'
 import ThemeDetail from './ThemeDetail'
 import './themes.css'
 import './report.css'
@@ -126,7 +127,11 @@ export default function ReportView({
 
       {overview && (
         <Divider>
-          <ChartFragment block={overview} onThemeSelect={setSelectedThemeName} />
+          <ThemeChartTabs
+            overview={overview}
+            variants={report.theme_chart_variants}
+            onThemeSelect={setSelectedThemeName}
+          />
           {selectedTheme && <ThemeDetail id={datasetId} theme={selectedTheme} />}
         </Divider>
       )}

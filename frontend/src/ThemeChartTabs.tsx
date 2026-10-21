@@ -1,0 +1,70 @@
+import { useState } from 'react'
+import type { ReportBlock, ReportThemeChartVariant } from './reportApi'
+import ThemeChart from './ThemeChart'
+
+// Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): the mockup's 5-tab switcher, minus the two
+// tabs this stage deliberately defers - "Known themes" (a bespoke animated build, Stage 3) and "Arc"
+// (app/api_report.py's own comment: no real multi-label cooccurrence signal this hard-clustering
+// pipeline can produce, so there is nothing honest to show there yet). The first tab reuses the SAME
+// treemap fragment Report.tsx's overview block already renders (so theme-click selection keeps working
+// unchanged); the other three ("icicle" | "sentsun" | "rank") come from `theme_chart_variants`, all
+// built server-side from the one already-built report_data - see reportApi.ts's own comment on that
+// field for why there is no separate API call per tab.
+const VARIANT_ORDER: Array<{ id: string; label: string }> = [
+  { id: 'icicle', label: 'Icicle' },
+  { id: 'sentsun', label: 'Sentiment sun' },
+  { id: 'rank', label: 'Rank' },
+]
+
+export default function ThemeChartTabs({
+  overview,
+  variants,
+  onThemeSelect,
+}: {
+  overview: ReportBlock
+  variants: Record<string, ReportThemeChartVariant>
+  onThemeSelect?: (name: string) => void
+}) {
+  const [active, setActive] = useState<string>('treemap')
+  const available = VARIANT_ORDER.filter((v) => variants?.[v.id])
+
+  if (available.length === 0) {
+    // No variants reached the response (e.g. an older cached report) - render just the treemap, same as
+    // before this feature existed, rather than showing a tab bar with nothing to switch to.
+    return <ThemeChart fragment={overview} title={overview.chart_title} onThemeSelect={onThemeSelect} />
+  }
+
+  return (
+    <div>
+      <div className="rp-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={active === 'treemap'}
+          className={`rp-tab ${active === 'treemap' ? 'active' : ''}`}
+          onClick={() => setActive('treemap')}
+        >
+          Known themes
+        </button>
+        {available.map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            role="tab"
+            aria-selected={active === v.id}
+            className={`rp-tab ${active === v.id ? 'active' : ''}`}
+            onClick={() => setActive(v.id)}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {active === 'treemap' ? (
+        <ThemeChart fragment={overview} title={overview.chart_title} onThemeSelect={onThemeSelect} />
+      ) : (
+        <ThemeChart fragment={variants[active]} title={variants[active].chart_title} />
+      )}
+    </div>
+  )
+}

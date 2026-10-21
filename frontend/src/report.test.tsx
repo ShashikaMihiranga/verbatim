@@ -59,6 +59,10 @@ function makeReport(overrides: Partial<ReportResponse> = {}): ReportResponse {
     // richer case with a real breakdown.
     other_breakdown: null,
     all_themes: [],
+    // Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): the honest "no variants" default, same
+    // reasoning as other_breakdown/filter_options above - see themechart-tabs.test.tsx for the richer
+    // case with real icicle/sentsun/rank fragments.
+    theme_chart_variants: {},
     ...overrides,
   }
 }
