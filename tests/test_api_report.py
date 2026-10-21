@@ -320,7 +320,7 @@ def setup_filterable_report(env, monkeypatch, timeout=5.0) -> int:
     install_fake_claude()
     did = upload_csv(env, survey_df_with_rating())
     profile = env.client.get(f"/api/datasets/{did}/profile").json()["profile"]
-    cols = [{"name": c["name"], "kind": c["kind"], "off": False} for c in profile["columns"]]
+    cols = [{"position": c["position"], "name": c["name"], "kind": c["kind"], "off": False} for c in profile["columns"]]
     for c in cols:
         if c["name"] == "Rating":
             c["kind"] = "score"

@@ -90,7 +90,7 @@ def upload_csv(env, df, name="survey.csv"):
 
 def confirm_columns(env, did):
     prof = env.client.get(f"/api/datasets/{did}/profile").json()["profile"]
-    cols = [{"name": c["name"], "kind": c["kind"], "off": False} for c in prof["columns"]]
+    cols = [{"position": c["position"], "name": c["name"], "kind": c["kind"], "off": False} for c in prof["columns"]]
     r = env.client.patch(f"/api/datasets/{did}/columns", json={"columns": cols, "question": Q})
     assert r.status_code == 200, r.text
     return r.json()

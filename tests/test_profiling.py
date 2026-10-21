@@ -4,11 +4,12 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from app.profiling import LoadError, profile_file
 from app.profiling.claude_hook import collect_samples, refine_profile
-from app.profiling.columns import _segment_max_distinct, profile_column
+from app.profiling.columns import _segment_max_distinct, profile_column, profile_dataframe
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -64,6 +65,67 @@ def test_profile_column_small_dataset_segment_ceiling_unchanged():
     values = [f"answer number {i % 15} with some words in it" for i in range(100)]
     result = profile_column("notes", values, total_rows=100)
     assert result["kind"] != "segment"
+
+
+# ---------------------------------------------------------------- headerless detection (2026-10-21)
+
+
+def test_looks_headerless_numeric_header_on_numeric_column():
+    values = [str(30 + i % 20) for i in range(200)]
+    result = profile_column("42", values, total_rows=200)  # header cell is itself a number
+    assert result["kind"] == "numeric"
+    assert result["looks_headerless"] is True
+
+
+def test_looks_headerless_date_header_on_date_column():
+    values = [f"2024-01-{(i % 28) + 1:02d}" for i in range(200)]
+    result = profile_column("2024-01-03", values, total_rows=200)
+    assert result["kind"] == "date"
+    assert result["looks_headerless"] is True
+
+
+def test_looks_headerless_segment_value_repeated_as_its_own_header():
+    values = (["North"] * 120) + (["South"] * 80)
+    result = profile_column("North", values, total_rows=200)  # header is one of the column's own values
+    assert result["kind"] == "segment"
+    assert result["looks_headerless"] is True
+
+
+def test_looks_headerless_false_for_a_normal_label():
+    values = [str(20 + i % 50) for i in range(200)]
+    result = profile_column("Age", values, total_rows=200)
+    assert result["kind"] == "numeric"
+    assert result["looks_headerless"] is False
+
+
+def test_looks_headerless_never_true_for_id_or_junk():
+    # A repeated question-like header forces id_or_junk; a header that happens to look numeric must
+    # still never flag for a kind this ambiguous to judge.
+    values = ["Why did you buy this?"] * 200
+    result = profile_column("42", values, total_rows=200)
+    assert result["kind"] == "id_or_junk"
+    assert result["looks_headerless"] is False
+
+
+def test_headerless_suspected_true_when_most_eligible_columns_flag():
+    df = pd.DataFrame({
+        "103": [str(100 + i % 10) for i in range(200)],          # numeric, header looks like data
+        "2024-01-03": [f"2024-0{1 + i % 9}-01" for i in range(200)],  # date, header looks like data
+        "North": (["North"] * 120) + (["South"] * 80),           # segment, header looks like data
+    })
+    profile = profile_dataframe(df)
+    assert profile["headerless_suspected"] is True
+
+
+def test_headerless_suspected_false_for_one_coincidentally_numeric_header():
+    df = pd.DataFrame({
+        "2024": [str(100 + i % 10) for i in range(200)],  # the one column whose header looks like data
+        "Age": [str(20 + i % 50) for i in range(200)],
+        "Region": (["North"] * 120) + (["South"] * 80),
+        "Comment": [f"this is answer number {i}" for i in range(200)],
+    })
+    profile = profile_dataframe(df)
+    assert profile["headerless_suspected"] is False
 
 
 def test_cp1252_and_tab(tmp_path):
@@ -197,6 +259,32 @@ def test_refine_with_fake_client_sends_only_samples():
     assert by["Region"]["kind"] == "short_text" and by["Region"]["refined_by"] == "claude"
     assert by["Age"]["kind"] == "numeric"  # invalid kind rejected
     assert {c["name"]: c for c in profile["columns"]}["Region"]["kind"] == "segment"  # input not mutated
+
+
+def test_refine_attaches_suggested_name_only_to_a_flagged_column():
+    values = [str(100 + i % 10) for i in range(200)]
+    profile = profile_dataframe(pd.DataFrame({"103": values, "Region": (["North"] * 120) + (["South"] * 80)}))
+    assert profile["columns"][0]["looks_headerless"] is True  # "103" - numeric header on a numeric column
+    assert profile["columns"][1]["looks_headerless"] is False  # "Region" - a normal label
+    samples = {"103": values[:5], "Region": ["North", "South"]}
+    reply = json.dumps({"columns": [
+        {"name": "103", "kind": "numeric", "unit": None, "reason": "x", "suggested_name": "Order Count"},
+        # Claude tries to attach a suggestion to a column we never flagged - must be ignored.
+        {"name": "Region", "kind": "segment", "unit": None, "reason": "x", "suggested_name": "Area"},
+    ], "question": None})
+    out = refine_profile(profile, samples, client=FakeClient(reply))
+    by = {c["name"]: c for c in out["columns"]}
+    assert by["103"]["suggested_name"] == "Order Count"
+    assert "suggested_name" not in by["Region"]
+
+
+def test_refine_is_noop_without_key_even_with_headerless_columns(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    values = [str(100 + i % 10) for i in range(200)]
+    profile = profile_dataframe(pd.DataFrame({"103": values}))
+    out = refine_profile(profile, {"103": values[:5]})
+    assert out is profile
+    assert "suggested_name" not in out["columns"][0]
 
 
 def test_refine_survives_bad_reply_and_errors():

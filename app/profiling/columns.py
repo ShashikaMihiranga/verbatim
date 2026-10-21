@@ -130,6 +130,28 @@ def _parse_dates(distinct: list[Any]) -> list[date] | None:
     return [d.date() for d in parsed_all.dropna()]
 
 
+def _header_looks_like_data(name: str, kind: str, cnt: Counter) -> bool:
+    """True when the header cell itself reads as a data value of this column's own kind, not a label -
+    the "this sheet has no real header row" signal (docs/TODO.md, 2026-10-21). `_header_like`
+    (loader.py) already decides, at the whole-ROW level, whether the first row of the sheet is used as
+    the header at all; this is the per-COLUMN check layered on top of that decision - a row can be
+    text-majority overall (so loader.py accepts it as a header) while individual cells are still data
+    (a name, a date, a yes/no answer), not labels."""
+    probe = name.strip()
+    if not probe:
+        return False
+    low = probe.lower()
+    if kind in ("numeric", "score"):
+        return _parse_number(probe) is not None
+    if kind == "date":
+        return bool(_DATE_LIKE.search(probe)) and _parse_dates([probe]) is not None
+    if kind == "yes_no":
+        return low in (_YES | _NO) or low in _MALE_FEMALE
+    if kind in ("segment", "short_text", "open_text"):
+        return any(str(v).strip().lower() == low for v in cnt)  # header repeats as its own data value
+    return False  # id_or_junk: too ambiguous to call either way
+
+
 def _sensitive_by_name(name: str) -> str | None:
     for t in _tokens(name):
         if t in _SENSITIVE_TOKENS:
@@ -180,6 +202,7 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
             "unit": unit, "distinct": distinct, "missing": missing, "samples": _samples(cnt, bool(sens)),
             "sensitive": bool(sens), "sensitive_reason": sens, "is_question": is_question,
             "median_words": round(med_words, 1),
+            "looks_headerless": _header_looks_like_data(name, kind, cnt),
         }
 
     if n == 0:
@@ -338,9 +361,17 @@ def detect_question(columns: list[dict[str, Any]], df: pd.DataFrame) -> dict[str
 def profile_dataframe(df: pd.DataFrame) -> dict[str, Any]:
     total = len(df)
     cols = [profile_column(str(name), df[name].tolist(), i, total) for i, name in enumerate(df.columns)]
+    # Dataset-wide "this sheet probably has no real header row" signal: requires a PATTERN across most
+    # columns (>=60% of eligible ones), not one coincidentally data-like header (e.g. a column titled
+    # "2024") - mirrors loader.py's own `_header_like` requiring row-level consensus, not single-cell
+    # evidence. `id_or_junk`/sensitive columns are excluded: too ambiguous or too masked to judge.
+    eligible = [c for c in cols if c["kind"] != "id_or_junk" and not c["sensitive"]]
+    flagged = [c for c in eligible if c["looks_headerless"]]
+    headerless_suspected = len(eligible) >= 2 and len(flagged) / len(eligible) >= 0.6
     return {
         "row_count": total,
         "column_count": len(cols),
         "columns": cols,
         "question": detect_question(cols, df),
+        "headerless_suspected": headerless_suspected,
     }

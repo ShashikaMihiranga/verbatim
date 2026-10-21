@@ -6,9 +6,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import pandas as pd
+
 from app.db import Base, get_db
 from app.main import app
-from app.models import Column, Dataset, UploadedFile
+from app.models import CleanedFile, Column, Dataset, UploadedFile
 
 FIX = Path(__file__).parent / "fixtures" / "messy_survey.csv"
 
@@ -103,9 +105,13 @@ def test_profile_fetch(env):
     assert env.client.get("/api/datasets/999/profile").status_code == 404
 
 
+def _choices(profile):
+    return [{"position": c["position"], "name": c["name"], "kind": c["kind"], "off": False} for c in profile["columns"]]
+
+
 def test_patch_columns(env):
     ds = env.post().json()
-    cols = [{"name": c["name"], "kind": c["kind"], "off": False} for c in ds["profile"]["columns"]]
+    cols = _choices(ds["profile"])
     cols[3]["kind"] = "segment"  # the user changes Age
     cols[3]["off"] = True
     r = env.client.patch(f"/api/datasets/{ds['id']}/columns", json={"columns": cols, "question": "  Why no EV?  "})
@@ -113,18 +119,86 @@ def test_patch_columns(env):
     conf = env.client.get(f"/api/datasets/{ds['id']}/profile").json()["profile"]["confirmed"]
     assert conf["question"] == "Why no EV?"
     assert conf["columns"]["Age"] == {"kind": "segment", "off": True}
+    assert conf["renames"] == {}  # no name changed, so no rename recorded
     with env.Session() as s:
         rows = {c.name: c for c in s.scalars(select(Column)).all()}
         assert rows["Age"].kind == "segment" and rows["Age"].stats["off"] is True and rows["Age"].stats["sensitive"]
         assert len(rows) == 7
 
 
+def test_patch_columns_rename(env):
+    ds = env.post().json()
+    cols = _choices(ds["profile"])
+    original_name = cols[3]["name"]  # "Age"
+    cols[3]["name"] = "Years Old"
+    r = env.client.patch(f"/api/datasets/{ds['id']}/columns", json={"columns": cols})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["profile"]["columns"][3]["name"] == "Years Old"
+    assert body["profile"]["confirmed"]["renames"] == {original_name: "Years Old"}
+    assert "Years Old" in body["profile"]["confirmed"]["columns"]
+
+    with env.Session() as s:
+        rows = {c.name: c for c in s.scalars(select(Column)).all()}
+        assert "Years Old" in rows and original_name not in rows
+        assert rows["Years Old"].stats["original_name"] == original_name
+
+    # a follow-up GET /profile reflects the renamed name as current, same as kind/off do today
+    again = env.client.get(f"/api/datasets/{ds['id']}/profile").json()
+    assert again["profile"]["columns"][3]["name"] == "Years Old"
+
+
+def test_patch_columns_rename_twice_chains_back_to_the_literal_header(env):
+    """A second confirm, before anything downstream is built, must still map the ORIGINAL file header
+    to the final name - not the intermediate renamed name - since that's what `_load_df` always reloads
+    the raw file under."""
+    ds = env.post().json()
+    original_name = ds["profile"]["columns"][3]["name"]  # "Age"
+
+    cols = _choices(ds["profile"])
+    cols[3]["name"] = "Years Old"
+    env.client.patch(f"/api/datasets/{ds['id']}/columns", json={"columns": cols})
+
+    profile = env.client.get(f"/api/datasets/{ds['id']}/profile").json()["profile"]
+    cols2 = _choices(profile)
+    cols2[3]["name"] = "Respondent Age"  # rename again, from the now-current "Years Old"
+    r = env.client.patch(f"/api/datasets/{ds['id']}/columns", json={"columns": cols2})
+    assert r.status_code == 200, r.text
+    assert r.json()["profile"]["confirmed"]["renames"] == {original_name: "Respondent Age"}
+
+
+def test_rename_survives_cleaning_reloading_the_raw_file(env):
+    """The ripple fix: `app/api_cleaning.py::_load_df` reloads the ORIGINAL raw bytes on every cleaning
+    call, under their literal header text - a rename made at confirm time must be re-applied there every
+    time, or cleaning would silently see the pre-rename column name again."""
+    ds = env.post().json()
+    cols = _choices(ds["profile"])
+    original_name = cols[3]["name"]  # "Age"
+    cols[3]["name"] = "Years Old"
+    r = env.client.patch(f"/api/datasets/{ds['id']}/columns", json={"columns": cols})
+    assert r.status_code == 200, r.text
+
+    plan_r = env.client.post(f"/api/datasets/{ds['id']}/clean/plan")
+    assert plan_r.status_code == 200, plan_r.text  # must not 404/mismatch on the renamed column
+
+    apply_r = env.client.post(f"/api/datasets/{ds['id']}/clean/apply")
+    assert apply_r.status_code == 200, apply_r.text
+    digest = apply_r.json()["clean_hash"]
+    with env.Session() as s:
+        cleaned = s.get(CleanedFile, digest)
+        cleaned_df = pd.read_csv(pd.io.common.BytesIO(cleaned.content))
+        assert "Years Old" in cleaned_df.columns
+        assert original_name not in cleaned_df.columns
+
+
 def test_patch_validation(env):
     ds = env.post().json()
     url = f"/api/datasets/{ds['id']}/columns"
-    good = [{"name": c["name"], "kind": c["kind"]} for c in ds["profile"]["columns"]]
+    good = _choices(ds["profile"])
     assert env.client.patch(url, json={"columns": good[:-1]}).status_code == 422  # a column is missing
-    assert env.client.patch(url, json={"columns": good + [{"name": "Nope", "kind": "score"}]}).status_code == 422
+    bad_position = [dict(g) for g in good]
+    bad_position[0]["position"] = 999  # a position that doesn't exist in the profiled columns
+    assert env.client.patch(url, json={"columns": bad_position}).status_code == 422
     bad = [dict(g) for g in good]
     bad[0]["kind"] = "banana"
     assert env.client.patch(url, json={"columns": bad}).status_code == 422

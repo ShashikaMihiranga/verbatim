@@ -60,9 +60,19 @@ def _load_df(db: Session, ds: Dataset):
         raise HTTPException(404, "The original file for this dataset is not available.")
     try:
         with scratch_file(row.content, ext) as path:
-            return load_table(path).df
+            df = load_table(path).df
     except LoadError as e:
         raise HTTPException(400, str(e)) from e
+    # The raw file always reloads under its LITERAL header text (or the loader's own `Column N` fallback)
+    # - a column rename made at the Check Columns step (app/api_upload.py::confirm_columns) only lives in
+    # `profile["confirmed"]["renames"]`, so it must be re-applied here on every reload or cleaning would
+    # silently drift back to the pre-rename names. Confirmed via grep: `load_table(` is only ever called
+    # from here and from `profiling/__init__.py::profile_file` (upload time, before any rename exists) -
+    # this is the one other place that needs the map.
+    renames = ((profile.get("confirmed") or {}).get("renames")) or {}
+    if renames:
+        df = df.rename(columns=renames)
+    return df
 
 
 def _save(db: Session, ds: Dataset, cleaning: dict[str, Any]) -> None:

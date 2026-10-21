@@ -20,6 +20,7 @@ function col(overrides: Partial<ColumnProfile> = {}): ColumnProfile {
     sensitive: false,
     sensitive_reason: null,
     is_question: false,
+    looks_headerless: false,
     ...overrides,
   }
 }

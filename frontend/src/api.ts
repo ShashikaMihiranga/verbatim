@@ -35,6 +35,8 @@ export interface ColumnProfile {
   sensitive: boolean
   sensitive_reason: string | null
   is_question: boolean
+  looks_headerless: boolean
+  suggested_name?: string | null
 }
 
 export interface Profile {
@@ -43,8 +45,10 @@ export interface Profile {
   columns: ColumnProfile[]
   question: { text: string; source: string; column: string | null } | null
   notes: string[]
+  headerless_suspected?: boolean
   confirmed?: {
     columns: Record<string, { kind: Kind; off: boolean }>
+    renames?: Record<string, string>
     question: string | null
   }
 }
@@ -104,7 +108,7 @@ export async function getProfile(id: number): Promise<DatasetView> {
 
 export async function confirmColumns(
   id: number,
-  columns: { name: string; kind: Kind; off: boolean }[],
+  columns: { position: number; name: string; kind: Kind; off: boolean }[],
   question: string | null,
 ): Promise<DatasetView> {
   const r = await authFetch(`/api/datasets/${id}/columns`, {

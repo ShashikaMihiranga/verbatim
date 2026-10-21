@@ -20,10 +20,15 @@ MAX_SAMPLES = 30
 
 SYSTEM = (
     "You help a non-expert understand a survey spreadsheet. For each column you get its header and a few "
-    "sample values, plus our automatic guess. Reply with JSON only: "
+    "sample values, plus our automatic guess, and whether the header cell itself looks like a data value "
+    "rather than a label (\"looks_headerless\"). Reply with JSON only: "
     '{"columns": [{"name": str, "kind": one of ' + ", ".join(KINDS) + ', "unit": str or null, '
-    '"reason": one plain sentence}], "question": str or null}. '
-    "Only include columns where you disagree with the guess or can add a unit. Never invent values."
+    '"reason": one plain sentence, "suggested_name": str or null}], "question": str or null}. '
+    "Only include columns where you disagree with the guess or can add a unit, UNLESS a column's "
+    "looks_headerless is true - always include those, and set suggested_name to a short label (1 to 4 "
+    "words, Title Case, no punctuation) for what that column's sample values represent, e.g. \"Age\" or "
+    "\"Region\". Never set suggested_name for a column whose looks_headerless is not true. Never invent "
+    "values."
 )
 
 
@@ -41,7 +46,9 @@ def collect_samples(df, profile: dict[str, Any], n: int = MAX_SAMPLES) -> dict[s
 
 def _build_prompt(profile: dict[str, Any], samples: dict[str, list[str]]) -> str:
     cols = [
-        {"name": c["name"], "guess": c["kind"], "unit": c.get("unit"), "samples": samples.get(c["name"], [])[:MAX_SAMPLES]}
+        {"name": c["name"], "guess": c["kind"], "unit": c.get("unit"),
+         "looks_headerless": c.get("looks_headerless", False),
+         "samples": samples.get(c["name"], [])[:MAX_SAMPLES]}
         for c in profile["columns"]
     ]
     return json.dumps({"columns": cols, "current_question": (profile.get("question") or {}).get("text")})
@@ -101,6 +108,11 @@ def refine_profile(profile: dict[str, Any], samples: dict[str, list[str]], clien
             col["unit"] = item["unit"][:30]
         if isinstance(item.get("reason"), str) and item["reason"].strip() and col.get("refined_by"):
             col["reason"] = item["reason"].strip()[:240]
+        # Only ever attached to a column we ourselves flagged as headerless - Claude cannot smuggle a
+        # rename suggestion onto an ordinary column even if it tries. Never touches col["name"] itself;
+        # this is advisory metadata the frontend pre-fills into an editable field, nothing more.
+        if col.get("looks_headerless") and isinstance(item.get("suggested_name"), str) and item["suggested_name"].strip():
+            col["suggested_name"] = item["suggested_name"].strip()[:60]
     q = data.get("question")
     if isinstance(q, str) and q.strip() and not refined.get("question"):
         refined["question"] = {"text": q.strip()[:300], "source": "claude", "column": None}

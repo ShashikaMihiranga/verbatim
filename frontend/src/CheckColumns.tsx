@@ -14,6 +14,7 @@ export default function CheckColumns() {
   const [ds, setDs] = useState<DatasetView | null>(null)
   const [kinds, setKinds] = useState<Record<string, Kind>>({})
   const [off, setOff] = useState<Record<string, boolean>>({})
+  const [names, setNames] = useState<Record<string, string>>({})
   const [question, setQuestion] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -26,12 +27,15 @@ export default function CheckColumns() {
         const conf = d.profile.confirmed
         const k: Record<string, Kind> = {}
         const o: Record<string, boolean> = {}
+        const n: Record<string, string> = {}
         for (const c of d.profile.columns) {
           k[c.name] = conf?.columns[c.name]?.kind ?? c.kind
           o[c.name] = conf?.columns[c.name]?.off ?? false
+          n[c.name] = c.looks_headerless ? (c.suggested_name ?? c.name) : c.name
         }
         setKinds(k)
         setOff(o)
+        setNames(n)
         setQuestion(conf?.question ?? d.profile.question?.text ?? '')
       })
       .catch((e: Error) => setError(e.message))
@@ -69,7 +73,12 @@ export default function CheckColumns() {
     try {
       await confirmColumns(
         id,
-        profile.columns.map((c) => ({ name: c.name, kind: kinds[c.name], off: !!off[c.name] })),
+        profile.columns.map((c) => ({
+          position: c.position,
+          name: (names[c.name] ?? c.name).trim() || c.name,
+          kind: kinds[c.name],
+          off: !!off[c.name],
+        })),
         question.trim() || null,
       )
       nav(`/cleaning?dataset=${id}`)
@@ -102,7 +111,15 @@ export default function CheckColumns() {
                   {c.name}
                   {c.sensitive && <span className="badge sens">Sensitive</span>}
                   {c.confidence < 0.7 && !ignored && <span className="badge unsure">Not sure</span>}
+                  {c.looks_headerless && <span className="badge unsure">No header found - check this name</span>}
                 </span>
+                <input
+                  type="text"
+                  className="chip"
+                  aria-label={`Column name for ${c.name}`}
+                  value={names[c.name] ?? c.name}
+                  onChange={(e) => setNames({ ...names, [c.name]: e.target.value })}
+                />
                 <select
                   className={`chip${kind === 'open_text' ? ' active' : ''}`}
                   aria-label={`Type of ${c.name}`}

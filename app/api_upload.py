@@ -206,6 +206,7 @@ def get_profile(dataset_id: int, db: Session = Depends(get_db), user: User = Dep
 
 
 class ColumnChoice(BaseModel):
+    position: int
     name: str = Field(max_length=255)
     kind: Literal["open_text", "short_text", "score", "date", "segment", "numeric", "yes_no", "id_or_junk"]
     off: bool = False  # switched off for reports the user shares
@@ -219,33 +220,61 @@ class ConfirmBody(BaseModel):
 @router.patch("/datasets/{dataset_id}/columns")
 def confirm_columns(dataset_id: int, body: ConfirmBody, db: Session = Depends(get_db),
                     user: User = Depends(current_user)):
+    """Matches submitted columns to profiled columns by POSITION, not by name - this is what lets a
+    submitted `name` that differs from the profiled one mean "rename this column" instead of "unknown
+    column" (docs/TODO.md, 2026-10-21 headerless-column feature). A rename is recorded in
+    `profile["confirmed"]["renames"]` (original literal header -> final name); `app/api_cleaning.py`'s
+    `_load_df` applies that same map every time it reloads the raw file, so cleaning/themes/reports all
+    see the final name consistently - see that function's own comment for why this is the one other place
+    that needs it."""
     ds = _own_dataset(db, user, dataset_id)
     profile = dict(ds.profile or {})
-    guessed = {c["name"]: c for c in profile.get("columns", [])}
-    chosen = {c.name: c for c in body.columns}
-    unknown = sorted(set(chosen) - set(guessed))
+    guessed_by_pos = {c["position"]: c for c in profile.get("columns", [])}
+    chosen_by_pos = {c.position: c for c in body.columns}
+    unknown = sorted(set(chosen_by_pos) - set(guessed_by_pos))
     if unknown:
-        raise HTTPException(422, f"Unknown column(s): {', '.join(unknown[:5])}")
-    missing = sorted(set(guessed) - set(chosen))
+        raise HTTPException(422, f"Unknown column position(s): {', '.join(str(p) for p in unknown[:5])}")
+    missing = sorted(set(guessed_by_pos) - set(chosen_by_pos))
     if missing:
-        raise HTTPException(422, f"Missing column(s): {', '.join(missing[:5])}")
+        raise HTTPException(422, f"Missing column position(s): {', '.join(str(p) for p in missing[:5])}")
+
+    # `guessed_by_pos[pos]["name"]` is `profile["columns"]`'s CURRENT name - on a second confirm (before
+    # cleaning/themes are built, the one supported re-confirm case), that's already a renamed name, not
+    # the literal raw-file header. Chain through any prior rename so every lookup below resolves to the
+    # TRUE literal header (what `_load_df` always reloads the raw file under), regardless of how many
+    # times confirm has been called. Captured into `true_original_by_pos` UP FRONT, before anything
+    # mutates `profile["columns"]` in place below - `guessed_by_pos`'s dicts are the SAME objects as
+    # `profile["columns"]`'s (not copies), so reading `g["name"]` after that mutation would silently see
+    # the already-renamed value instead of the original.
+    prior_renames = ((profile.get("confirmed") or {}).get("renames")) or {}
+    original_by_current_name = {v: k for k, v in prior_renames.items()}
+    true_original_by_pos = {pos: original_by_current_name.get(g["name"], g["name"]) for pos, g in guessed_by_pos.items()}
+
+    renames = {
+        true_original_by_pos[pos]: chosen_by_pos[pos].name
+        for pos, g in guessed_by_pos.items()
+        if chosen_by_pos[pos].name != g["name"]
+    }
 
     question = (body.question or "").strip() or None
     profile["confirmed"] = {
-        "columns": {n: {"kind": c.kind, "off": c.off} for n, c in chosen.items()},
+        "columns": {c.name: {"kind": c.kind, "off": c.off} for c in chosen_by_pos.values()},
+        "renames": renames,  # original literal header -> final (possibly user-renamed) name
         "question": question,
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    for col in profile.get("columns", []):
+        col["name"] = chosen_by_pos[col["position"]].name
     ds.profile = profile  # new dict object so SQLAlchemy sees the JSON change
 
     for old in db.scalars(select(Column).where(Column.dataset_id == ds.id)).all():
         db.delete(old)
-    for name, g in guessed.items():
-        c = chosen[name]
+    for pos, g in guessed_by_pos.items():
+        c = chosen_by_pos[pos]
         db.add(Column(
-            dataset_id=ds.id, name=name, position=g["position"], kind=c.kind,
+            dataset_id=ds.id, name=c.name, position=pos, kind=c.kind,
             stats={"off": c.off, "unit": g.get("unit"), "sensitive": g["sensitive"], "guessed_kind": g["kind"],
-                   "distinct": g["distinct"], "missing": g["missing"]},
+                   "distinct": g["distinct"], "missing": g["missing"], "original_name": true_original_by_pos[pos]},
         ))
     db.commit()
     return _view(ds)

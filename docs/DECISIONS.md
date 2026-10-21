@@ -1162,3 +1162,85 @@ separate, explicitly-scoped report/chart-design stream. Added as a new, evidence
 No code changed this pass beyond this entry; the diagnostic logging from the prior entry stays (useful
 for any future large-dataset investigation). Full suite: 615 passed, 1 skipped (unchanged, no new tests
 needed - no behaviour changed).
+
+## 2026-10-21 (feature: headerless-dataset column naming - detect, suggest, rename)
+Implemented the recorded `docs/TODO.md` idea in full (per explicit user request): some uploaded
+spreadsheets have no real header row - the first row is already data. A Plan subagent investigated the
+real upload/profiling/Check Columns flow first; two findings from that investigation shaped the design:
+
+1. **Header detection already existed, but only at the whole-ROW level**
+   (`app/profiling/loader.py::_header_like` - picks the first row that is "mostly full and mostly
+   words"). The real gap was per-column: a row can be text-majority overall (so the row-level check
+   accepts it) while individual cells are themselves data of that column's own kind (a name, a date, a
+   yes/no), not labels.
+2. **No renaming capability existed, despite appearing to.** `app/api_upload.py::confirm_columns` used
+   the submitted `ColumnChoice.name` only as a dict lookup key; the `Column` row actually created used
+   the original profiled name, never the submitted one. `CheckColumns.tsx` had no rename input at all.
+
+**Detection** (`app/profiling/columns.py`): new `_header_looks_like_data(name, kind, cnt)` - true when
+the header cell itself reads as a plausible data value of the column's own detected `kind` (a number for
+numeric/score, a date-like string for date, a yes/no/gender token for yes_no, or a value that literally
+repeats elsewhere in the column's own data for segment/short_text/open_text). Wired into `profile_column`'s
+existing `out()` closure as `looks_headerless` (one-line addition - `out()` is defined once and used at
+every return path, confirmed by reading the file before touching it). A dataset-level
+`headerless_suspected` aggregate in `profile_dataframe` requires >=60% of >=2 eligible (non-id_or_junk,
+non-sensitive) columns to flag, mirroring `_header_like`'s own "row-level consensus, not single-cell
+evidence" shape - so one coincidentally numeric-looking header (e.g. a column titled "2024") can't flip
+headerless mode alone.
+
+**Claude suggestion**: extended `app/profiling/claude_hook.py::refine_profile` (per the TODO's own
+instruction - no second network round-trip, same no-op-without-key/lazy-import/never-raises guarantees).
+`SYSTEM`/`_build_prompt` now pass `looks_headerless` per column and ask for an optional `suggested_name`
+(1-4 words, Title Case) ONLY for flagged columns; the parse loop is explicitly guarded on
+`col.get("looks_headerless")` so Claude cannot attach a rename suggestion to an ordinary column even if
+it tries. Never touches `name` itself - `suggested_name` is purely advisory, pre-filled into an editable
+frontend field.
+
+**Rename wiring** (`app/api_upload.py::confirm_columns`): switched to matching submitted columns against
+profiled columns by `position` instead of by name string - this is what turns "the submitted name
+differs" into an actual rename instead of an "unknown column" 422. A real bug was found and fixed WHILE
+building this: `guessed_by_pos`'s dict values are the SAME objects as `profile["columns"]`'s (not
+copies), so an earlier draft that mutated names in place before reading `g["name"]` for the rename map
+silently saw the already-renamed value - caught by the new `test_patch_columns_rename` test itself
+failing, fixed by capturing `true_original_by_pos` up front, before any mutation. A second test
+(`test_patch_columns_rename_twice_chains_back_to_the_literal_header`) proves a second re-confirm (the one
+supported repeat-confirm case, before cleaning/themes are built) still maps correctly back to the
+TRUE literal file header, not the intermediate renamed name.
+
+**Ripple fix** (`app/api_cleaning.py::_load_df`): the raw file always reloads under its literal header
+text on every cleaning call (confirmed via grep: `load_table(` is only called from here and from
+upload-time `profile_file` - no other raw-reload site exists). Applies `profile["confirmed"]["renames"]`
+via `df.rename(columns=...)` on every reload, so cleaning/themes/reports all see the final name
+consistently. `app/api_themes.py` needed no change - it builds from the already-cleaned copy, which
+cleaning already wrote under final names.
+
+**Frontend** (`CheckColumns.tsx`): new always-editable text input per column (not just flagged ones, per
+the explicit requirement), pre-filled with `suggested_name` when `looks_headerless`, a "No header found -
+check this name" badge (reusing the existing `.badge`/`.chip` classes, no new CSS). `save()` now sends
+`position` and the (possibly edited) name - fixing the pre-existing dead `name` field in the same change.
+
+**Tests**: 12 new/updated backend tests (`tests/test_profiling.py`: detection unit cases, the
+`headerless_suspected` aggregate, Claude-suggestion attach/guard; `tests/test_upload_api.py`: rename,
+double-rename chaining, the cleaning-ripple fix verified through the REAL `/clean/plan`+`/clean/apply`
+routes, updated validation). `tests/test_api_projects.py`/`test_api_report.py` updated for the new
+required `position` field. Full backend suite: 627 passed (615 + 12 new), 1 skipped. Frontend: 62 passed,
+`tsc -b && vite build` clean (one existing fixture in `themes.test.tsx` needed the new required
+`looks_headerless` field added).
+
+**Live-verified against the real running app**, not just unit tests: built a real headerless CSV (first
+row `Alice,No,2024-01-01` - passes the existing row-level header check while being a segment/yes_no/date
+value in each cell), uploaded through the actual local server twice - once with a real `ANTHROPIC_API_KEY`
+(all 3 columns correctly flagged, Claude suggested "Name"/"Response"/"Date"), once with the key genuinely
+absent (moved `.env` aside, confirmed via the running process's own PID after discovering an earlier
+`kill` attempt had silently failed to stop the prior server - detection still fired correctly,
+`suggested_name` correctly absent, no error). Renamed all three columns through the real
+`PATCH /columns` endpoint, confirmed the rename map was recorded, then ran the REAL `/clean/plan` and
+`/clean/apply` routes end to end - both succeeded with the renamed names ("Respondent Name", "Subscribed",
+"Joined Date") consistently present throughout the plan, preview, and applied output, confirming the
+ripple fix works outside of unit tests too.
+
+**Not built, explicitly out of scope** (per the plan): multi-row/stacked headers; non-English header
+heuristics; renaming a column after `Column`/`Theme` rows already exist for it (a separate, larger
+problem - `Theme.column_name` and cached cleaning/report state would need migrating).
+
+Committed to `staging`, not pushed (per current session workflow - push only on explicit confirmation).
