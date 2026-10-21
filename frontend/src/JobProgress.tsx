@@ -12,6 +12,7 @@ import './themes.css'
 const KIND_VERB: Record<Job['kind'], string> = {
   themes: 'Finding themes in your answers',
   report: 'Building your report',
+  look_inside_other: 'Looking inside Other',
 }
 
 export default function JobProgress({ job }: { job: Job }) {

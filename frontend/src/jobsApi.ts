@@ -1,7 +1,16 @@
 import { authFetch } from './authFetch'
 
-export type JobKind = 'themes' | 'report'
+export type JobKind = 'themes' | 'report' | 'look_inside_other'
 export type JobStatus = 'running' | 'done' | 'failed'
+
+// "Look inside Other" (docs/TODO.md, 2026-10-21 Stage 3): the real Known/New/Still-in-Other counts the
+// animated flow's own results panel needs - written by app/api_themes.py's own job route in the same
+// commit as the Theme-row changes it summarizes, never reconstructed client-side from a second fetch.
+export interface LookInsideOtherResult {
+  known_added: number
+  new_themes: Array<{ label: string; count: number }>
+  still_other_count: number
+}
 
 export interface Job {
   id: number
@@ -11,6 +20,9 @@ export interface Job {
   status: JobStatus
   step: string
   error: string | null
+  // `null` for every job kind that has nothing to summarize (themes, report) - only "look_inside_other"
+  // ever populates this, once it reaches "done".
+  result: LookInsideOtherResult | null
 }
 
 export interface BuildStarted {

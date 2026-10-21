@@ -54,7 +54,7 @@ from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, theme_nodes
 from .jobs import create_job, start_job
-from .models import CleanedFile, Column, Dataset, Theme, User
+from .models import CleanedFile, Column, Dataset, Job, Theme, User
 from .text_pipeline import (
     AnswerScore,
     AnthropicClaudeClient,
@@ -311,7 +311,7 @@ def _apply_other_classification(
     db: Session, dataset_id: int, column: str, other_theme_id: int,
     by_row: dict[int, str], new_label_descriptions: dict[str, str],
     row_text: dict[int, str],
-) -> None:
+) -> dict | None:
     """Writes "Look inside Other"'s results: UPDATES, not `_write_theme_rows`'s full delete-and-replace
     (that would also wipe every untouched known theme). `by_row` is `other_classify.OtherClassification
     .by_row` - row -> the label Jev chose, `NONE_OF_THESE` for "still genuinely unclassifiable". A row
@@ -327,10 +327,15 @@ def _apply_other_classification(
     Other's `Theme` row is deleted outright if nothing remains unclassified afterward (matching how a
     dataset that genuinely has no noise cluster at all already looks to every downstream reader - see
     `theme_nodes`'s own `next((t for t in themes if t.label == "Other"), None)`), not kept as a
-    zero-size row nothing downstream expects."""
+    zero-size row nothing downstream expects.
+
+    Returns a small summary dict (Stage 3, docs/TODO.md 2026-10-21: the animated flow's own
+    Known/New/Still-in-Other results panel needs these real counts, not a second query reconstructing
+    them after the fact) - `{"known_added": int, "new_themes": [{"label", "count"}], "still_other_count":
+    int}` - or `None` if `other` was already gone (nothing to summarize)."""
     other = db.get(Theme, other_theme_id)
     if other is None:
-        return  # dataset/column was deleted or rebuilt from under this job; nothing left to update
+        return None  # dataset/column was deleted or rebuilt from under this job; nothing left to update
 
     known_by_label = {
         t.label: t
@@ -363,6 +368,7 @@ def _apply_other_classification(
             out[row] = AnswerScore(row=row, text=text, polarity=polarity, tone=tone)
         return out
 
+    known_added = 0
     for label, new_rows in matched_known.items():
         theme = known_by_label[label]
         refs = sorted(set(theme.answer_refs or []) | set(new_rows))
@@ -371,9 +377,11 @@ def _apply_other_classification(
         theme.size = len(refs)
         theme.tone = tone
         theme.sentiment = sentiment
+        known_added += len(new_rows)
 
     column_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
     column_id = column_row.id if column_row else None
+    new_themes_summary: list[dict] = []
     for label, new_rows in matched_new.items():
         if len(new_rows) < MIN_OTHER_NEW_THEME_SIZE:
             still_other.extend(new_rows)  # too small to count as its own theme - folds back into Other
@@ -384,6 +392,7 @@ def _apply_other_classification(
             label=label, description=new_label_descriptions[label], size=len(new_rows),
             sentiment=sentiment, tone=tone, answer_refs=sorted(new_rows), sub_themes=[],
         ))
+        new_themes_summary.append({"label": label, "count": len(new_rows)})
 
     if still_other:
         tone, sentiment = _aggregate_tone(still_other, _scores_for(still_other))
@@ -395,6 +404,7 @@ def _apply_other_classification(
         db.delete(other)
 
     db.commit()
+    return {"known_added": known_added, "new_themes": new_themes_summary, "still_other_count": len(still_other)}
 
 
 def _theme_build_error(e: BaseException) -> str | None:
@@ -605,10 +615,20 @@ def look_inside_other(
         step("Finalizing")
         classification = classify_other_answers(rows, texts, criteria, jev_client)
         with _db.SessionLocal() as job_db:
-            _apply_other_classification(
+            summary = _apply_other_classification(
                 job_db, dataset_id_, column, other_theme_id,
                 classification.by_row, new_label_descriptions, row_text,
             )
+            # Written in the SAME session/commit as the Theme-row changes above, not via jobs.py's own
+            # `_set_step`/`_mark_done` (those only ever touch a still-"running" job, guarding against a
+            # watchdog that already failed it out from under this thread - writing `result` here, before
+            # `start_job` below calls `_mark_done`, needs no such guard since the job is still genuinely
+            # running at this point).
+            if summary is not None:
+                job_row = job_db.get(Job, job.id)
+                if job_row is not None:
+                    job_row.result = summary
+                    job_db.commit()
 
     start_job(
         job, _SLOTS, _work, _look_inside_other_error,

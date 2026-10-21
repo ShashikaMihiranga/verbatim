@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { AnswerList } from './Themes'
+import type { Job } from './jobsApi'
 import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse } from './reportApi'
 import type { ThemeCard } from './themesApi'
+import LookInsideOther from './LookInsideOther'
 import OtherExploration from './OtherExploration'
 import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
@@ -65,6 +67,8 @@ export default function ReportView({
   themes,
   filters,
   onFiltersChange,
+  lookInsideOtherJob,
+  onLookInsideOther,
 }: {
   report: ReportResponse
   datasetId: number
@@ -80,6 +84,11 @@ export default function ReportView({
   // itself already hides whenever `report.filter_options` has every field `null` (see ReportFilters).
   filters?: ReportFiltersValue
   onFiltersChange?: (next: ReportFiltersValue) => void
+  // "Look inside Other" Stage 3 (docs/TODO.md, 2026-10-21). Both optional: a caller with no job-watching
+  // state wired up (e.g. a future standalone embed) still renders a perfectly good report, just without
+  // the "Look inside" CTA - same optionality pattern as `filters`/`onFiltersChange` above.
+  lookInsideOtherJob?: Job | null
+  onLookInsideOther?: () => void
 }) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
@@ -137,6 +146,10 @@ export default function ReportView({
       )}
 
       <OtherExploration breakdown={report.other_breakdown} allThemes={report.all_themes} />
+
+      {onLookInsideOther && (report.other_breakdown !== null || lookInsideOtherJob) && (
+        <LookInsideOther job={lookInsideOtherJob ?? null} onStart={onLookInsideOther} />
+      )}
 
       {findings.length > 0
         ? findings.map((b) => <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} />)

@@ -172,4 +172,5 @@ def job_dict(job: Job) -> dict:
         "status": job.status,
         "step": job.step,
         "error": job.error,
+        "result": job.result,
     }

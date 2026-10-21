@@ -1410,3 +1410,55 @@ highest-risk piece, with zero precedent in this codebase (no `@keyframes`/`anima
 report has not happened yet either.
 
 Committed to `staging`, not pushed yet.
+
+## 2026-10-21 (Stage 3: "Look inside Other" UI - real job trigger, step tracker, results panel)
+`LookInsideOther.tsx` adds the mockup's "Inside Other" section to the report page: a "Look inside" CTA
+that starts the Stage-1 job (`POST .../themes/look-inside-other`), a live step tracker while it runs, and
+a 3-column Known/New/Still-in-Other results panel once it finishes - mounted in `Report.tsx` right after
+`OtherExploration`, gated on `report.other_breakdown !== null` (only offered when there is something worth
+looking inside) or an already-running/finished job.
+
+**Deliberately NOT a pixel copy of the mockup's ribbon diagram, decided during this stage, not before
+it**: `Other-Flow*.dc.html`'s ribbons are precise per-theme paths computed from a FIXED demo dataset baked
+into its own canvas-preview-only script - the backend's real job only reports coarse step names while it
+works (`app/api_themes.py`'s `look_inside_other` route: "Checking known themes" / "Grouping new themes
+into sub-themes" / "Finalizing"), never a live per-theme split - the real split is only known once the job
+reaches "done". Drawing per-theme ribbons DURING a run would mean inventing numbers that do not exist yet,
+the same "never show something misleading" call already made for the Arc tab (Stage 2 entry above). The
+"running" state here is instead a genuine, honest "real work is happening" indicator (a single animated
+dashed strip + pulsing step dots); the exact, real breakdown only appears once `job.result` exists, in the
+"done" state's results panel - the one place in this component real numbers appear. First `@keyframes`/
+`prefers-reduced-motion` usage anywhere in this codebase (confirmed by repo-wide search before this stage
+started), both added in `report.css`.
+
+**Backend addition needed for this, not in the original Stage-1 plan**: `Job` had no way to carry a
+job-kind-specific result. Added `Job.result: Mapped[dict | None]` (migration `b1c7f3d4a9e2`, chains onto
+`a3f8c1d9e254`) and extended `job_dict` to include it - `None` for every job kind that has nothing to
+summarize (themes, report), only `look_inside_other` ever populates it. `_apply_other_classification` now
+RETURNS a summary (`{"known_added", "new_themes": [{"label","count"}], "still_other_count"}`) instead of
+`None`, computed from the same `matched_known`/`matched_new`/`still_other` structures it already builds -
+no new computation, just surfacing what it already knew. The route writes this into `job.result` in the
+SAME session/commit as the Theme-row changes it summarizes (not via `jobs.py`'s own `_set_step`/
+`_mark_done`, which only ever touch a still-"running" job to guard against a watchdog race - writing
+`result` here needs no such guard since the job is still genuinely running at that point).
+
+`Themes.tsx` gained a third job-watching slot (`lookInsideOtherJob`, mirroring the existing themes/report
+pattern, including page-load resume via `getLatestJob`) with one deliberate difference: its own refresh
+function does NOT null the job once done, unlike `refreshThemes`/`refreshReport` - the results panel stays
+showing the real final counts until the viewer starts another run, rather than vanishing the instant fresh
+theme/report data arrives.
+
+**Tests**: 1 new backend test asserting `job["result"]` on the existing end-to-end job test, 4 updated unit
+tests of `_apply_other_classification` asserting its new return value (known-theme extension, new-theme
+creation, below-floor fold-back, none-of-these/missing-row). Migration verified to chain and apply cleanly
+against a fresh SQLite DB. Backend suite: 663 passed (unchanged count - these extend existing tests rather
+than adding new ones), 1 skipped. Frontend: new `look-inside-other.test.tsx` (4 tests - idle/running/done/
+failed states); `jobProgress.test.tsx`/`Themes.tsx` updated for the new required `Job.result` field.
+Frontend: 74 passed (70 + 4); `tsc -b && vite build` clean.
+
+**Not yet done**: live browser verification against a real job run (every test here uses fake Jev/Claude/
+embedding clients - the step tracker, flow animation, and results panel have not been visually confirmed
+in a real browser yet), and the still-open question from Stage 1 of whether a real `TYPESAFE_API_KEY` is
+configured anywhere to live-test this end to end.
+
+Committed to `staging`, not pushed yet.

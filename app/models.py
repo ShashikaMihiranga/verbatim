@@ -139,6 +139,11 @@ class Job(Base):
     # the exact human-readable message a caller would previously have received as an HTTP error body -
     # never a raw traceback (see app/jobs.py:_error_message_for)
     error: Mapped[str | None] = mapped_column(Text)
+    # Small, job-kind-specific summary written once a job finishes successfully (docs/TODO.md, 2026-10-21
+    # Stage 3: "Look inside Other"'s own Known/New/Still-in-Other results panel needs real numbers, not a
+    # second query reconstructing them after the fact). `None` for every job kind that has nothing to
+    # summarize (themes, report) - this column is optional on purpose, not every job needs one.
+    result: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

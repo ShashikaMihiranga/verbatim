@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { getProfile } from './api'
 import type { ColumnProfile, DatasetView, Kind } from './api'
-import { buildThemes, getThemeAnswers, getThemes, getThemesChart } from './themesApi'
+import { buildThemes, getThemeAnswers, getThemes, getThemesChart, lookInsideOther } from './themesApi'
 import type { ThemeAnswer, ThemeCard, ThemeChartResponse } from './themesApi'
 import { buildReport, getReport } from './reportApi'
 import type { ReportFilters, ReportResponse } from './reportApi'
@@ -158,6 +158,7 @@ export default function Themes() {
   const [themesJob, setThemesJob] = useState<Job | null>(null)
   const [report, setReport] = useState<ReportResponse | null>(null)
   const [reportJob, setReportJob] = useState<Job | null>(null)
+  const [lookInsideOtherJob, setLookInsideOtherJob] = useState<Job | null>(null)
   const [filters, setFilters] = useState<ReportFilters>({})
   const [manageThemes, setManageThemes] = useState(false)
   const [error, setError] = useState('')
@@ -195,6 +196,40 @@ export default function Themes() {
     try {
       setReport(await getReport(id, column, filters))
       setReportJob(null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  // "Look inside Other" (docs/TODO.md, 2026-10-21 Stage 3) touches Theme rows (a known theme gains
+  // answers, a new theme may appear, Other shrinks) without replacing the whole theme set the way a real
+  // rebuild does - unlike refreshThemes/refreshReport above, this does NOT null the job once it resolves:
+  // the Known/New/Still-in-Other results panel (LookInsideOther.tsx) stays showing the real final counts
+  // from `job.result` until the viewer starts another run, rather than vanishing the moment fresh data
+  // arrives.
+  async function refreshAfterLookInsideOther() {
+    if (!column) return
+    try {
+      const existing = await getThemes(id, column)
+      setThemes(existing.themes)
+      setReport(await getReport(id, column, filters))
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  async function startLookInsideOther() {
+    setError('')
+    try {
+      const started = await lookInsideOther(id, column as string)
+      watch(
+        {
+          id: started.job_id, dataset_id: id, column: column as string, kind: 'look_inside_other',
+          status: 'running', step: 'Starting', error: null, result: null,
+        },
+        setLookInsideOtherJob,
+        () => void refreshAfterLookInsideOther(),
+      )
     } catch (e) {
       setError((e as Error).message)
     }
@@ -249,6 +284,7 @@ export default function Themes() {
     if (!id) return
     let stopThemesPoll = () => {}
     let stopReportPoll = () => {}
+    let stopLookInsideOtherPoll = () => {}
 
     getProfile(id)
       .then(async (d) => {
@@ -295,12 +331,25 @@ export default function Themes() {
             /* no job either; show the build-report trigger once themes exist */
           }
         }
+
+        // A reload mid-run (or right after one) must resume this job's own progress/results view too -
+        // same reasoning as the themes/report resume above. Unlike those, a `look_inside_other` job that
+        // is already "done" is still worth resuming (not just "running"): its `result` is the real
+        // Known/New/Still-in-Other panel data, which a fresh `getThemes`/`getReport` call alone cannot
+        // reconstruct.
+        try {
+          const job = await getLatestJob(id, col, 'look_inside_other')
+          if (job) stopLookInsideOtherPoll = watch(job, setLookInsideOtherJob, () => void refreshAfterLookInsideOther())
+        } catch {
+          /* nothing run yet */
+        }
       })
       .catch((e: Error) => setError(e.message))
 
     return () => {
       stopThemesPoll()
       stopReportPoll()
+      stopLookInsideOtherPoll()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
@@ -346,7 +395,7 @@ export default function Themes() {
       const started = await buildThemes(id, column as string, useJev)
       setThemes(null)
       watch(
-        { id: started.job_id, dataset_id: id, column: column as string, kind: 'themes', status: 'running', step: 'Starting', error: null },
+        { id: started.job_id, dataset_id: id, column: column as string, kind: 'themes', status: 'running', step: 'Starting', error: null, result: null },
         setThemesJob,
         () => void refreshThemes(),
       )
@@ -364,7 +413,7 @@ export default function Themes() {
       setReport(null)
       setManageThemes(false)
       watch(
-        { id: started.job_id, dataset_id: id, column: column as string, kind: 'report', status: 'running', step: 'Starting', error: null },
+        { id: started.job_id, dataset_id: id, column: column as string, kind: 'report', status: 'running', step: 'Starting', error: null, result: null },
         setReportJob,
         () => void refreshReport(),
       )
@@ -429,6 +478,8 @@ export default function Themes() {
             themes={themes ?? undefined}
             filters={filters}
             onFiltersChange={setFilters}
+            lookInsideOtherJob={lookInsideOtherJob}
+            onLookInsideOther={() => void startLookInsideOther()}
           />
           <div className="foot">
             <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning}>

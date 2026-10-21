@@ -94,6 +94,20 @@ export async function buildThemes(id: number, column: string, useJevSentiment = 
   return r.json()
 }
 
+// "Look inside Other" (docs/TODO.md, 2026-10-21 Stage 1+3): same shape as buildThemes above - a 202
+// `{job_id, status: "running"}` returned immediately, any real failure surfacing later as that job's own
+// `error` via pollJob, never as a rejection here (except the cheap, instant checks: ownership, unknown
+// column, no "Other" theme to look inside, or an empty one - see app/api_themes.py's own route).
+export async function lookInsideOther(id: number, column: string): Promise<BuildStarted> {
+  const r = await authFetch(`/api/datasets/${id}/themes/look-inside-other`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ column }),
+  })
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
 export async function getThemes(id: number, column: string): Promise<ThemesResponse> {
   const r = await authFetch(`/api/datasets/${id}/themes?${new URLSearchParams({ column })}`)
   if (!r.ok) throw await asError(r)

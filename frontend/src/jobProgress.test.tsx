@@ -20,6 +20,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     status: 'running',
     step: 'Naming each group',
     error: null,
+    result: null,
     ...overrides,
   }
 }

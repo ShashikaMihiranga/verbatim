@@ -998,6 +998,10 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
     job = look_inside_other_job(env, did, timeout=30)
     assert job["status"] == "done", job
     assert job["error"] is None
+    # Stage 3 (docs/TODO.md, 2026-10-21): the job's own `result` carries the real Known/New/Still-in-Other
+    # counts the animated flow's results panel needs - written in the same commit as the Theme-row changes,
+    # not reconstructed from a second query.
+    assert job["result"] == {"known_added": 3, "new_themes": [], "still_other_count": 0}
 
     themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
     labels = {t["label"] for t in themes}
@@ -1034,11 +1038,12 @@ def test_apply_other_classification_extends_a_known_theme(env):
 
     with env.Session() as s:
         from app.models import Theme
-        _apply_other_classification(s, did, Q, other_id, {13: "Cost", 14: "Cost"}, {}, row_text)
+        summary = _apply_other_classification(s, did, Q, other_id, {13: "Cost", 14: "Cost"}, {}, row_text)
         known = s.get(Theme, known_id)
         assert sorted(known.answer_refs) == [0, 1, 2, 3, 4, 13, 14]
         assert known.size == 7
         assert s.get(Theme, other_id) is None  # both rows matched - nothing left, row deleted
+        assert summary == {"known_added": 2, "new_themes": [], "still_other_count": 0}
 
 
 def test_apply_other_classification_creates_a_new_theme_above_the_minimum(env):
@@ -1052,7 +1057,7 @@ def test_apply_other_classification_creates_a_new_theme_above_the_minimum(env):
     with env.Session() as s:
         from app.models import Theme
         from sqlalchemy import select
-        _apply_other_classification(
+        summary = _apply_other_classification(
             s, did, Q, other_id, by_row, {"Shipping delays": "About delivery."}, row_text,
         )
         new_theme = s.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == "Shipping delays"))
@@ -1060,6 +1065,11 @@ def test_apply_other_classification_creates_a_new_theme_above_the_minimum(env):
         assert sorted(new_theme.answer_refs) == sorted(other_refs)
         assert new_theme.size == MIN_OTHER_NEW_THEME_SIZE
         assert s.get(Theme, other_id) is None  # everything matched the new theme
+        assert summary == {
+            "known_added": 0,
+            "new_themes": [{"label": "Shipping delays", "count": MIN_OTHER_NEW_THEME_SIZE}],
+            "still_other_count": 0,
+        }
 
 
 def test_apply_other_classification_below_minimum_new_theme_folds_back_into_other(env):
@@ -1073,10 +1083,11 @@ def test_apply_other_classification_below_minimum_new_theme_folds_back_into_othe
     with env.Session() as s:
         from app.models import Theme
         from sqlalchemy import select
-        _apply_other_classification(s, did, Q, other_id, by_row, {"Tiny new group": "x"}, row_text)
+        summary = _apply_other_classification(s, did, Q, other_id, by_row, {"Tiny new group": "x"}, row_text)
         assert s.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == "Tiny new group")) is None
         other = s.get(Theme, other_id)
         assert sorted(other.answer_refs) == sorted(too_few)  # folded straight back into Other
+        assert summary == {"known_added": 0, "new_themes": [], "still_other_count": len(too_few)}
 
 
 def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other(env):
@@ -1088,7 +1099,8 @@ def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other
     row_text = {13: "a", 14: "b", 15: "c"}
 
     with env.Session() as s:
-        _apply_other_classification(s, did, Q, other_id, by_row, {}, row_text)
+        summary = _apply_other_classification(s, did, Q, other_id, by_row, {}, row_text)
+        assert summary == {"known_added": 0, "new_themes": [], "still_other_count": 3}
     with env.Session() as s:
         from app.models import Theme
         other = s.get(Theme, other_id)
