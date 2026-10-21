@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { AnswerList } from './Themes'
 import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse } from './reportApi'
 import type { ThemeCard } from './themesApi'
+import OtherExploration from './OtherExploration'
 import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
@@ -129,6 +130,8 @@ export default function ReportView({
           {selectedTheme && <ThemeDetail id={datasetId} theme={selectedTheme} />}
         </Divider>
       )}
+
+      <OtherExploration breakdown={report.other_breakdown} allThemes={report.all_themes} />
 
       {findings.length > 0
         ? findings.map((b) => <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} />)

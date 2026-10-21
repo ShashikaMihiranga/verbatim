@@ -54,6 +54,11 @@ function makeReport(overrides: Partial<ReportResponse> = {}): ReportResponse {
     // above - see report-filters.test.tsx for the richer case with real option values.
     filter_options: { segment: null, score_band: null, date_range: null },
     filters_applied: { segment: null, score_band: null, date_from: null, date_to: null },
+    // "Other" exploration (docs/TODO.md, 2026-10-21 Phase 1): the honest "nothing folded into Other"
+    // default, matching filter_options/columns_used above - see other-exploration.test.tsx for the
+    // richer case with a real breakdown.
+    other_breakdown: null,
+    all_themes: [],
     ...overrides,
   }
 }

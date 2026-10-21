@@ -82,6 +82,37 @@
 
 .rp-nothing { color: var(--muted); font-size: 16px; }
 
+/* "Other" exploration (docs/TODO.md, 2026-10-21 Phase 1). The two stat tiles mirror the overview chart's
+   own big-number tiles (54px/300-weight number, --muted label, one-line note) for visual consistency,
+   even though that chart is server-rendered SVG/HTML and this section is plain React - same design
+   language, two different rendering paths. */
+.rp-other-callout { font-size: 20px; font-weight: 400; line-height: 1.4; }
+.rp-other-note { color: var(--muted); font-size: 15px; margin-top: 4px; }
+.rp-other-stats { display: flex; gap: 0; margin-top: 28px; flex-wrap: wrap; }
+.rp-other-stat { flex: 1 1 220px; padding-right: 16px; }
+.rp-other-stat + .rp-other-stat { border-left: 1px solid var(--line); padding-left: 24px; }
+.rp-other-stat-n { font-size: 44px; font-weight: 300; line-height: 1.15; margin: 4px 0 6px; }
+.rp-other-stat-l { font-size: 14px; font-weight: 500; color: var(--muted); }
+.rp-other-stat-note { font-size: 14px; color: var(--muted); line-height: 1.4; margin-top: 4px; }
+
+.rp-other-toggle { margin-top: 24px; }
+
+.rp-other-list { margin-top: 20px; max-height: 560px; overflow-y: auto; }
+.rp-other-row {
+  display: flex; align-items: center; gap: 14px; padding: 10px 0; border-top: 1px solid var(--line);
+}
+.rp-other-row-name { flex: 0 0 clamp(140px, 22%, 240px); font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
+.rp-other-row-bar-wrap { flex: 1; min-width: 0; }
+.rp-other-row-bar { height: 18px; border-radius: 3px; min-width: 2px; }
+.rp-other-row-stats { flex: 0 0 auto; display: flex; gap: 10px; align-items: baseline; font-size: 14px; }
+.rp-other-row-share { font-weight: 600; min-width: 36px; text-align: right; }
+.rp-other-row-count { color: var(--muted); min-width: 48px; text-align: right; }
+
+@media (max-width: 640px) {
+  .rp-other-stat + .rp-other-stat { border-left: none; border-top: 1px solid var(--line); padding-left: 0; padding-top: 16px; margin-top: 16px; }
+  .rp-other-row-name { flex-basis: 110px; font-size: 14px; }
+}
+
 @media (max-width: 640px) {
   .rp-sentence { max-width: none; }
   .rp-head { flex-direction: column; align-items: flex-start; gap: 10px; }

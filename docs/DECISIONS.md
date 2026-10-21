@@ -1267,3 +1267,62 @@ visual change. Frontend: 62 passed, `tsc -b && vite build` clean.
 
 Committed to `staging`, not pushed yet (per current session workflow - push only on explicit
 confirmation).
+
+## 2026-10-21 (feature: "Other" exploration, Phase 1 - callout, breakdown, "see all themes" list)
+Built the Phase 1 plan agreed earlier the same day (design discussion + Claude Design prompt, recorded in
+`docs/TODO.md`'s display-cap entry): a callout shown only when the report's "Other" share exceeds 30%,
+two honest numbers separating genuine noise from real-but-unshown themes, and a "see all themes" ranked
+list - all pure display, no new backend job, deliberately scoped apart from the separate Jev
+classification idea (Phase 2, still deferred).
+
+**Backend** (`app/chart_data.py`, `app/findings.py`, `app/api_report.py`): new `ThemeSummary`/
+`OtherBreakdown` dataclasses and a new `other_breakdown()` function, deliberately NOT a change to
+`theme_nodes()`'s own return shape - that function is reused by the capped treemap AND the score/
+segment/trend cross-tab engine, all of which depend on its existing "at most 8 nodes" contract.
+`other_breakdown()` re-reads the same `Theme` rows with the same `_eff_size`/filter-rows handling, but
+exposes the noise-vs-hidden-real-themes split `_merge_into_other` already computes internally and
+discards, plus the full uncapped ranked theme list. Returns `(None, all_themes)` when there is nothing
+genuinely in Other to explain. Wired into `GET /report`'s response as two new fields, `other_breakdown`
+and `all_themes`, both additive (no existing field changed).
+
+**A real design question resolved while writing the tests, not assumed**: should a NOISE-ONLY "Other"
+(no hidden real themes, just genuine noise) still get a breakdown? Initial test assumed no ("nothing
+extra to explain" - the merged node already shows it). Writing the test surfaced that this reasoning was
+backwards: confirming "this really is just scattered content, not hidden themes" is itself useful
+information a user would want, not a no-op case. Fixed the test, not the code - `other_breakdown()`'s
+actual behavior (return a breakdown whenever noise_count or hidden_real_count is non-zero, `None` only
+when BOTH are zero) was already correct.
+
+**Frontend**: new `OtherExploration.tsx` (pure controlled component, same shape as `ReportFilters.tsx` -
+no fetch of its own, renders from props), mounted in `Report.tsx` directly below the overview/treemap
+block, matching the agreed Claude Design prompt's placement. Tone-colours the ranked list's bars using
+the SAME absolute thresholds `app/api_report.py`'s own summary line already uses for "positive"/
+"negative"/"mixed" (>=0.05 / <=-0.05), deliberately simpler than `app/charts.py`'s relative-to-overall
+`tone()` colour-mix used by the primary charts - appropriate for this lighter-weight secondary list, not
+a new tone rule. New CSS in `report.css` reuses `.rp-section`'s divider rhythm and the overview chart's
+own big-number-tile visual language (54px-class numbers, `--muted` labels) without introducing new
+colours or tokens.
+
+**Tests**: 5 new `app/findings.py` tests (`tests/test_findings.py`) covering the no-breakdown case, the
+noise-only case (see above), the combined noise+hidden-themes split, hidden-themes-with-no-noise, and
+`filter_rows` respect; 2 new API-level tests (`tests/test_api_report.py`) confirming the real `GET
+/report` response carries both fields correctly end to end. Full backend suite: 634 passed (627 + 7), 1
+skipped. 5 new frontend tests (`other-exploration.test.tsx`, static-markup only per this repo's existing
+precedent - the expanded row list itself needs a real click, covered by live verification below, not
+unit tests). Full frontend suite: 67 passed, `tsc -b && vite build` clean.
+
+**Live-verified against the real running app, both states**: dataset 1's real, already-built 15-theme
+report (23.8% Other) confirmed the section correctly stays silent below the 30% threshold - no visual
+regression on the common case. Temporarily lowered the threshold in a scratch edit (reverted immediately
+after, confirmed via `grep` that the file matches the real 30% value before committing) to confirm the
+above-threshold rendering live: the callout, both breakdown numbers, the "See all 15 themes" toggle, and
+the expanded ranked list all rendered correctly - including a real theme ("Device reliability and
+battery/charging issues", -0.2 sentiment) correctly colouring its bar red via the tone threshold, not
+green like every other (positive-sentiment) row in the list.
+
+**Deliberately NOT built this pass** (per the agreed phasing): Phase 2's Jev classification + re-cluster
+pass remains deferred, gated on this phase shipping first and real usage showing whether it's worth the
+added complexity and per-row cost.
+
+Committed to `staging`, not pushed yet (per current session workflow - push only on explicit
+confirmation).

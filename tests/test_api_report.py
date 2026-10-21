@@ -254,6 +254,54 @@ def test_build_then_get_round_trip_renders_real_chart_html_with_real_theme_names
     assert answers.json()["answers"]
 
 
+# ---------------------------------------------------------------- "Other" exploration (docs/TODO.md, 2026-10-21 Phase 1)
+
+def test_get_report_other_breakdown_none_with_two_ordinary_themes(env):
+    """The common case (<=7 real themes, no noise cluster): nothing to explain, but all_themes still
+    lists every real theme."""
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    job = build_report_job(env, did)
+    assert job["status"] == "done", job
+
+    body = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    assert body["other_breakdown"] is None
+    assert [t["name"] for t in body["all_themes"]] == ["Reliability", "Support"]
+    assert body["all_themes"][0]["count"] == 60
+    assert body["all_themes"][1]["count"] == 20
+
+
+def test_get_report_other_breakdown_splits_noise_from_hidden_real_themes(env):
+    """A dataset with more than 7 real themes plus a noise cluster: other_breakdown separates the two,
+    and all_themes lists every real theme, not just the 7 the treemap can show."""
+    install_fake_claude()
+    did = upload_csv(env, survey_df(n_reliability=100, n_support=100))
+    clean_and_apply(env, did)
+    specs = [
+        dict(label=f"T{i}", description=f"Theme {i}.", size=10, sentiment=0.0,
+             tone={"neg": 34.0, "neu": 33.0, "pos": 33.0}, answer_refs=list(range(i * 10, i * 10 + 10)))
+        for i in range(8)  # 8 real themes - one more than the treemap's 7-colour cap
+    ]
+    specs.append(dict(label="Other", description="Unrelated answers.", size=120, sentiment=0.0,
+                       tone={"neg": 34.0, "neu": 33.0, "pos": 33.0}, answer_refs=list(range(80, 200))))
+    seed_themes(env, did, specs)
+    job = build_report_job(env, did)
+    assert job["status"] == "done", job
+
+    body = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    breakdown = body["other_breakdown"]
+    assert breakdown is not None
+    assert breakdown["noise_count"] == 120
+    assert breakdown["hidden_real_count"] == 10  # T7, the 8th real theme, ranked last of the 8
+    assert breakdown["hidden_real_theme_count"] == 1
+    assert breakdown["total_real_theme_count"] == 8
+
+    assert len(body["all_themes"]) == 8  # every real theme, "Other" itself excluded
+    assert "Other" not in [t["name"] for t in body["all_themes"]]
+
+
 # ---------------------------------------------------------------- also-checked-nothing-notable
 
 def test_nothing_notable_writes_overview_and_quality_only(env):

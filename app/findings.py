@@ -45,8 +45,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .chart_data import (
-    ContextData, FreqData, MapData, OverviewData, PhraseData, QualityData, QuoteData, ReportData,
-    ScoreData, SegmentData, SubTheme, ThemeNode, ToneSplit, TrendData,
+    ContextData, FreqData, MapData, OtherBreakdown, OverviewData, PhraseData, QualityData, QuoteData,
+    ReportData, ScoreData, SegmentData, SubTheme, ThemeNode, ThemeSummary, ToneSplit, TrendData,
 )
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .findings_structured import (
@@ -349,6 +349,58 @@ def theme_nodes(
     if overflow_real or other is not None:
         nodes.append(_merge_into_other(overflow_real, other))
     return nodes
+
+
+def other_breakdown(
+    themes: list[Theme], total_answered: int, filter_rows: set[int] | None = None,
+) -> tuple[OtherBreakdown | None, list[ThemeSummary]]:
+    """Companion to `theme_nodes` for the report's "Other" exploration section (docs/TODO.md, 2026-10-21
+    Phase 1) - same ranking, same `_eff_size`/filter handling, but exposes what `_merge_into_other`
+    folds away: the noise-vs-hidden-real-themes split inside "Other", and the full, UNCAPPED list of
+    every real theme (not just the top 7 a `ThemeNode` can get its own colour for).
+
+    Deliberately a separate function, not a `theme_nodes` return-shape change: `theme_nodes` is reused
+    by the capped treemap AND the score/segment/trend cross-tab engine
+    (`app.findings_structured.build_score_data` et al.), all of which depend on its existing "at most 8
+    nodes" contract - changing that shape would ripple into every one of those callers. This function
+    touches none of them; it only reads the same `Theme` rows a second time.
+
+    Returns `(None, all_themes)` when there is nothing genuinely in "Other" to explain (no noise cluster
+    and no real theme ranked 8th+) - the common case for most datasets, and the signal the report page
+    uses to skip the callout entirely rather than showing an empty/zero breakdown."""
+    real = [t for t in themes if t.label != OTHER_LABEL]
+    other = next((t for t in themes if t.label == OTHER_LABEL), None)
+
+    def _eff_size(t: Theme) -> int:
+        if filter_rows is None:
+            return t.size
+        return len(set(t.answer_refs or []) & filter_rows)
+
+    ranked_real = sorted(real, key=_eff_size, reverse=True)
+    all_themes = [
+        ThemeSummary(
+            name=t.label,
+            share=round(_eff_size(t) / total_answered * 100, 1) if total_answered else 0.0,
+            count=_eff_size(t),
+            sentiment=round(t.sentiment or 0.0, 3),
+        )
+        for t in ranked_real
+    ]
+
+    hidden = ranked_real[7:]
+    hidden_count = sum(_eff_size(t) for t in hidden)
+    noise_count = _eff_size(other) if other is not None else 0
+    if total_answered <= 0 or (hidden_count == 0 and noise_count == 0):
+        return None, all_themes
+
+    return OtherBreakdown(
+        noise_count=noise_count,
+        noise_share=round(noise_count / total_answered * 100, 1),
+        hidden_real_count=hidden_count,
+        hidden_real_share=round(hidden_count / total_answered * 100, 1),
+        hidden_real_theme_count=len(hidden),
+        total_real_theme_count=len(ranked_real),
+    ), all_themes
 
 
 # ---------------------------------------------------------------- answer-length histogram (optional -

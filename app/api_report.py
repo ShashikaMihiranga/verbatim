@@ -54,6 +54,7 @@ from .findings import (
     NoThemesForColumn,
     build_findings,
     build_report_data,
+    other_breakdown,
     theme_nodes,
 )
 from .findings_structured import (
@@ -207,6 +208,7 @@ def _render_report(
         ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths, structured=structured,
         filter_rows=filter_rows,
     )
+    breakdown, all_themes = other_breakdown(themes, report_data.answered, filter_rows=filter_rows)
 
     blocks_content = content.get("blocks") or []
     finding_ids = [b["finding_id"] for b in blocks_content if b.get("finding_id") is not None]
@@ -277,6 +279,19 @@ def _render_report(
             "date_from": date_from.isoformat() if date_from else None,
             "date_to": date_to.isoformat() if date_to else None,
         },
+        # "Other" exploration section (docs/TODO.md, 2026-10-21 Phase 1): `other_breakdown` is None when
+        # there is nothing genuinely folded into "Other" to explain - the frontend's callout/breakdown
+        # tiles render nothing in that case. `all_themes` is the uncapped list for the "see all themes"
+        # ranked list, always present (possibly empty), independent of whether there is anything in Other.
+        "other_breakdown": None if breakdown is None else {
+            "noise_count": breakdown.noise_count, "noise_share": breakdown.noise_share,
+            "hidden_real_count": breakdown.hidden_real_count, "hidden_real_share": breakdown.hidden_real_share,
+            "hidden_real_theme_count": breakdown.hidden_real_theme_count,
+            "total_real_theme_count": breakdown.total_real_theme_count,
+        },
+        "all_themes": [
+            {"name": t.name, "share": t.share, "count": t.count, "sentiment": t.sentiment} for t in all_themes
+        ],
     }
 
 

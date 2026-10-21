@@ -27,6 +27,7 @@ from app.findings import (
     candidate_findings,
     default_claude_client,
     label_confidence,
+    other_breakdown,
     pick_chart,
     theme_nodes,
     write_headline,
@@ -326,6 +327,74 @@ def test_theme_nodes_merges_overflow_even_with_no_noise_cluster_present():
     assert nodes[-1].count == 5
     assert nodes[-1].theme_id == 8  # exactly one theme folded in - still a real single id
     assert nodes[-1].note == "Folded in: Extra."
+
+
+# ==================================================================== other_breakdown (docs/TODO.md, 2026-10-21 Phase 1)
+
+def test_other_breakdown_none_when_seven_or_fewer_real_themes_and_no_noise():
+    """The common case: nothing is genuinely hidden in "Other" - no breakdown to show, but the full
+    ranked theme list is still returned."""
+    themes = [make_theme(i, f"T{i}", 100 - i, 0.0, answer_refs=[i]) for i in range(1, 6)]
+    breakdown, all_themes = other_breakdown(themes, total_answered=500)
+    assert breakdown is None
+    assert [t.name for t in all_themes] == ["T1", "T2", "T3", "T4", "T5"]
+
+
+def test_other_breakdown_present_for_noise_only_even_with_seven_or_fewer_real_themes():
+    """A noise cluster alone (no rank-8+ overflow) still gets a breakdown - "this really is just varied
+    content, not hidden themes" is itself useful information, not a no-op case."""
+    themes = [make_theme(1, "Cost", 100, 0.0, answer_refs=list(range(100)))]
+    other = make_theme(2, "Other", 20, 0.0, answer_refs=list(range(100, 120)))
+    breakdown, _ = other_breakdown(themes + [other], total_answered=120)
+    assert breakdown is not None
+    assert breakdown.noise_count == 20
+    assert breakdown.hidden_real_count == 0
+    assert breakdown.hidden_real_theme_count == 0
+
+
+def test_other_breakdown_splits_noise_from_hidden_real_themes():
+    kept = [make_theme(i, f"T{i}", 100, 0.0, answer_refs=list(range(i * 100, i * 100 + 100))) for i in range(1, 8)]
+    hidden = [
+        make_theme(8, "Fabric quality", 20, -0.4, answer_refs=[800, 801]),
+        make_theme(9, "Delivery speed", 15, 0.2, answer_refs=[900]),
+    ]
+    other = make_theme(10, "Other", 10, 0.0, answer_refs=[1000, 1001])
+    total = 7 * 100 + 20 + 15 + 10  # 745
+    breakdown, all_themes = other_breakdown(kept + hidden + [other], total_answered=total)
+
+    assert breakdown is not None
+    assert breakdown.noise_count == 10
+    assert breakdown.noise_share == pytest.approx(round(10 / total * 100, 1))
+    assert breakdown.hidden_real_count == 35  # 20 + 15
+    assert breakdown.hidden_real_share == pytest.approx(round(35 / total * 100, 1))
+    assert breakdown.hidden_real_theme_count == 2
+    assert breakdown.total_real_theme_count == 9  # 7 kept + 2 hidden
+
+    # all_themes is the FULL, uncapped, ranked list - all 9 real themes, "Other" itself excluded
+    assert [t.name for t in all_themes] == ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "Fabric quality", "Delivery speed"]
+    assert all_themes[-1].count == 15
+    assert all_themes[-1].share == pytest.approx(round(15 / total * 100, 1))
+
+
+def test_other_breakdown_hidden_real_themes_with_no_noise_cluster_present():
+    kept = [make_theme(i, f"T{i}", 100, 0.0, answer_refs=[i]) for i in range(1, 8)]
+    hidden = [make_theme(8, "Extra", 5, 0.0, answer_refs=[80])]
+    breakdown, _ = other_breakdown(kept + hidden, total_answered=705)
+    assert breakdown is not None
+    assert breakdown.noise_count == 0
+    assert breakdown.hidden_real_count == 5
+    assert breakdown.hidden_real_theme_count == 1
+
+
+def test_other_breakdown_respects_filter_rows():
+    kept = [make_theme(i, f"T{i}", 100, 0.0, answer_refs=list(range(i * 100, i * 100 + 100))) for i in range(1, 8)]
+    hidden = make_theme(8, "Extra", 50, 0.0, answer_refs=list(range(800, 850)))
+    # Filter keeps only 10 of "Extra"'s 50 rows.
+    filter_rows = {r for t in kept for r in (t.answer_refs or [])} | set(range(800, 810))
+    breakdown, all_themes = other_breakdown(kept + [hidden], total_answered=710, filter_rows=filter_rows)
+    assert breakdown is not None
+    assert breakdown.hidden_real_count == 10  # not 50 - filtered
+    assert all_themes[-1].count == 10
 
 
 # ==================================================================== theme_nodes with filter_rows (Filters feature)

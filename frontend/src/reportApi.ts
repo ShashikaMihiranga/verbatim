@@ -48,6 +48,27 @@ export interface ReportFiltersApplied {
   date_to: string | null
 }
 
+// "Other" exploration (docs/TODO.md, 2026-10-21 Phase 1). `null` when there is nothing genuinely folded
+// into "Other" to explain - no noise cluster and no real theme ranked 8th+, the common case for most
+// datasets - the frontend's callout/breakdown tiles render nothing in that case.
+export interface ReportOtherBreakdown {
+  noise_count: number
+  noise_share: number
+  hidden_real_count: number
+  hidden_real_share: number
+  hidden_real_theme_count: number
+  total_real_theme_count: number
+}
+
+// One row of the full, UNCAPPED theme list - every real theme, not just the 7 the treemap can give its
+// own colour to. Always present (possibly empty), independent of whether other_breakdown is null.
+export interface ReportThemeSummary {
+  name: string
+  share: number
+  count: number
+  sentiment: number
+}
+
 // What a caller passes to `getReport` - camelCase on this side, translated to the API's own snake_case
 // query params inside `getReport` below.
 export interface ReportFilters {
@@ -67,6 +88,8 @@ export interface ReportResponse {
   columns_used: ReportColumnUsed[]
   filter_options: ReportFilterOptions
   filters_applied: ReportFiltersApplied
+  other_breakdown: ReportOtherBreakdown | null
+  all_themes: ReportThemeSummary[]
 }
 
 async function asError(r: Response): Promise<Error> {

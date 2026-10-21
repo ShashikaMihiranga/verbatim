@@ -36,6 +36,34 @@ class ThemeNode:
 
 
 @dataclass
+class ThemeSummary:
+    """One row of the report's "see all themes" list (docs/TODO.md, 2026-10-21 Phase 1) - every real
+    theme, not just the top 7 `ThemeNode`s a chart can render its own colour for. Deliberately a
+    separate, smaller shape from `ThemeNode`: this never needs a colour token, children, or map/callout
+    positioning - it only ever feeds a plain ranked list, tone-coloured by `sentiment`, not identity."""
+    name: str  # theme label
+    share: float  # % of answered responses
+    count: int  # number of answers in the theme
+    sentiment: float  # average sentiment, -1..+1
+
+
+@dataclass
+class OtherBreakdown:
+    """What the report's "Other" bucket is actually made of, for the >=30%-Other callout (docs/TODO.md,
+    2026-10-21 Phase 1). `ThemeNode`'s own merged "Other" node already combines these two numbers into
+    one count/share for charting; this is the same split BEFORE that merge, so the report can say
+    honestly how much is genuinely unclassifiable vs. real themes the treemap simply has no room to
+    show. `None` (not an instance with all-zero fields) when there is nothing to report - no genuine
+    noise and no real theme ranked 8th or beyond, the common case for most datasets."""
+    noise_count: int  # answers HDBSCAN itself could not place in any cluster
+    noise_share: float  # % of answered responses
+    hidden_real_count: int  # answers in real themes ranked 8th+ (not shown as their own ThemeNode)
+    hidden_real_share: float  # % of answered responses
+    hidden_real_theme_count: int  # number of DISTINCT real themes ranked 8th+
+    total_real_theme_count: int  # total distinct real themes found (7 shown + hidden_real_theme_count)
+
+
+@dataclass
 class ScoreBand:
     label: str  # band label, e.g. "Low (0-6)"
     mix: list[float]  # % of the band's answers per theme, in ReportData.themes order
