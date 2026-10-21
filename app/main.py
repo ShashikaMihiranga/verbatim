@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -33,6 +34,17 @@ from .security import SecurityHeadersMiddleware
 # env vars win), and does nothing at all when no .env file exists (true on every deploy - .env is
 # git-ignored, never shipped).
 load_dotenv()
+
+# Without this, every `log.info(...)` call anywhere in this codebase (e.g. labeling.py's cluster-count/
+# max_tokens line, clustering.py's noise-diagnostic line) is silently dropped - confirmed live, 2026-10-21:
+# nothing in this process ever called `logging.basicConfig`, so the root logger's effective level stays
+# at Python's own WARNING default, and INFO never reaches Railway's logs at all (only WARNING/ERROR did,
+# via Python's own `lastResort` handler - which is exactly why `_retry_on_labeling_error`'s
+# `log.warning(...)` calls were always visible but nothing at INFO ever was). `alembic upgrade head`
+# configures its OWN logging via `alembic.ini`, but that runs as a separate `preDeployCommand` process
+# before this one ever starts, so it has no effect here. Set once, at import time, before any router or
+# background job can log anything.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 _dev = get_settings().env == "dev"
 app = FastAPI(

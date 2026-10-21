@@ -1064,3 +1064,56 @@ dataset (game-related social text, not a structured survey) - which is exactly w
 distinct theme labels to repeatedly trip both the flat-token-budget bug and the streaming-requirement
 bug above. Confirms both of this day's fixes together (cluster-count-scaled `MAX_TOKENS`, plus the
 streaming API switch) resolve the original crash end to end on the real dataset that exposed it.
+
+## 2026-10-21 (same day: investigating an unexpectedly high "Other" share at large scale - diagnostics added, not yet root-caused)
+User reported a SECOND, unrelated large dataset (~40,000 rows, a structured workplace-facilities survey -
+building satisfaction, office noise, desk space, cleanliness, temperature) also landing at ~80.7% "Other"
+- essentially the same share as the 75,000-row meme/chat dataset above, despite being a completely
+different kind of content (a real structured survey, the kind this app's clustering was specifically
+validated against before).
+
+That similarity across two very different content types is suspicious enough to investigate properly
+rather than wave off as "diverse content." Checked this project's own prior record: the dataset that
+originally motivated the UMAP/HDBSCAN fix (23,486 rows, Amazon reviews) settled at only **18.7% Other**
+once correctly tuned (see this file's dated entry on soft-reassigning noise). 18.7% vs ~80% on datasets
+roughly 2-3x bigger is a real gap needing an explanation, not a restatement of "some data clusters worse."
+
+**One theory already ruled out by reading the code, not assumed**: `cluster_answers(..., finer_floor=True)`
+- the "recover small-but-real topics instead of writing them off" mechanism - is ALREADY the default for
+every build (`pipeline.py::embed_and_cluster_with_vectors` always passes `finer_floor=True`). It was
+previously suggested to the user as something to "try" - that was wrong information, now corrected. Worse:
+both the standard (`adaptive_min_cluster_size`, divisor 50) and fine (`adaptive_fine_min_cluster_size`,
+divisor 100) floors clamp to the SAME ceiling of 50 once a dataset passes roughly 2,500-5,000 answers - so
+for a 40,000 or 75,000-row dataset, the "finer" pass is mathematically IDENTICAL to the standard one. There
+is currently no tuning knob in this codebase more lenient than `min_cluster_size=50` for very large
+datasets, and that number is already a tiny fraction (0.07-0.1%) of either failing dataset's size, so a
+simple "the floor is too strict" explanation does not obviously fit either - worth confirming with real
+numbers rather than theorizing further.
+
+**What was done this pass**: added diagnostic-only logging, no behaviour change.
+- `app/text_pipeline/clustering.py::cluster_answers` now logs (at INFO): `n`, `dims`, whether UMAP
+  reduction ran, the actual `min_cluster_size`/`min_samples` HDBSCAN was given, how many raw groups
+  HDBSCAN itself found (top-10 sizes), how many of those were folded into noise purely for being under
+  `min_cluster_size`, HDBSCAN's OWN noise count (its density decision, independent of the size floor), and
+  the final cluster/noise counts and percentage. This distinguishes two very different root causes that
+  would otherwise look identical from the outside: (a) HDBSCAN finding plenty of real-sized dense groups
+  that the size floor then discards, vs (b) HDBSCAN's own density test calling almost everything noise
+  before the floor is even applied. Confirmed working locally against a synthetic 3000-answer fixture: the
+  log line correctly reported 15 real clusters and attributed noise entirely to HDBSCAN's own density
+  decision (0 folded for being under the floor) - proving the log distinguishes the two cases correctly.
+- **Separately found and fixed while adding this**: `log.info(...)` calls ANYWHERE in this codebase
+  (including `labeling.py`'s own cluster-count/`max_tokens` line from earlier today) were silently
+  dropped in production - nothing in this process ever called `logging.basicConfig`, so the root logger
+  stayed at Python's own WARNING default and only `log.warning`/`log.error` calls ever reached Railway's
+  logs (via Python's `lastResort` handler) - which is exactly why `_retry_on_labeling_error`'s warnings
+  were always visible in logs but no INFO line ever was. `alembic upgrade head` configures its own
+  logging via `alembic.ini`, but that runs as a separate `preDeployCommand` process before the web
+  server even starts, so it never affected this. Fixed in `app/main.py`: one `logging.basicConfig(level=
+  logging.INFO, ...)` call at import time, before any router or background job can log anything.
+- Full backend suite: 615 passed, 1 skipped, no regressions (logging output is not asserted on by any
+  existing test).
+
+**Not yet root-caused.** The actual explanation for why 40,000-75,000-row real datasets land at ~80%
+Other, versus 18.7% on a smaller real dataset, is still unknown - this pass only makes the real numbers
+visible for the next build. The honest next step is re-running a real large dataset through "Build
+themes" now that this logging is deployed, and reading what HDBSCAN actually decided from Railway logs.

@@ -20,11 +20,15 @@ enough that the problem above does not apply - see its docstring for the exact t
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import umap
 from sklearn.cluster import HDBSCAN
 
 from .schema import Cluster, ClusterMember, ClusterResult
+
+log = logging.getLogger("verbatim.clustering")
 
 MIN_MIN_CLUSTER_SIZE = 5  # never require fewer than this many answers to call something a theme
 MAX_MIN_CLUSTER_SIZE = 50  # never require more than this even for a huge dataset, or themes get too coarse
@@ -277,14 +281,18 @@ def cluster_answers(
     groups: dict[int, list[int]] = {}
     for i, label in enumerate(labels):
         groups.setdefault(int(label), []).append(i)
+    hdbscan_noise_count = len(groups.get(-1, []))  # HDBSCAN's own noise label, before the too-small fold-in below
+    hdbscan_group_sizes = sorted((len(positions) for label, positions in groups.items() if label != -1), reverse=True)
     noise_positions = list(groups.pop(-1, []))
 
     clusters: list[Cluster] = []
+    folded_for_being_too_small = 0
     for label, positions in groups.items():
         centroid = list(centroids[label]) if centroids is not None else None
         if len(positions) < min_cluster_size:
             # HDBSCAN itself found this group too small to trust; treat it as noise rather than a theme.
             noise_positions.extend(positions)
+            folded_for_being_too_small += 1
             continue
         cluster_members = []
         for i in positions:
@@ -295,6 +303,21 @@ def cluster_answers(
     clusters.sort(key=lambda c: len(c.members), reverse=True)
     for new_id, cluster in enumerate(clusters):
         cluster.id = new_id
+
+    # Diagnostic only (2026-10-21, investigating an unexpectedly high "Other" share on real large
+    # datasets - see docs/DECISIONS.md): logs exactly what HDBSCAN decided and why, so a real failing
+    # build's actual numbers are visible in Railway logs instead of guessed at. Never affects behaviour.
+    log.info(
+        "cluster_answers: n=%d dims=%d reduction_applied=%s min_cluster_size=%d min_samples=%d | "
+        "HDBSCAN found %d raw groups (sizes top-10: %s), %d of them folded into noise for being under "
+        "min_cluster_size | HDBSCAN's own noise: %d | final: %d real clusters (sizes: %s), %d noise "
+        "(%.1f%% of %d)",
+        n, dims, reduction_applied, min_cluster_size, min_samples,
+        len(hdbscan_group_sizes), hdbscan_group_sizes[:10], folded_for_being_too_small,
+        hdbscan_noise_count,
+        len(clusters), [len(c.members) for c in clusters], len(noise_positions),
+        100 * len(noise_positions) / n if n else 0.0, n,
+    )
 
     noise = [ClusterMember(row=row_indexes[i], text=texts[i], distance=None) for i in sorted(noise_positions)]
 
