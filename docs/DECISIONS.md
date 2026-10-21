@@ -1054,5 +1054,13 @@ how the SDK transports the response over the wire, not this method's blocking be
 upstream of `complete()` needed to change. No test mocked the internal `messages.create`/`.stream` SDK
 shape directly (confirmed via grep), so no test needed updating. Full suite: 615 passed, 1 skipped.
 
-**Not yet re-verified live** - this is the third attempt against the same 75,000-row dataset; deploying
-and re-running "Try again" is still the next step.
+**Verified live, third attempt, success**: deployed and re-ran "Try again" on the same 75,000-row
+dataset. Theme-build job completed with no error, the app auto-triggered the report-build job right
+after, and `GET .../report` returned 200 with a fully-rendered report - 7 top-level themes (Console/brand
+loyalty talk, General love for a game, Anger at NBA2K, Verizon service complaints, Nvidia product
+reactions, Twitch stream promotion, Anger at Madden NFL) plus sub-themes, "Other" absorbing 82.7% of
+answers. That high "Other" share is consistent with this being an unusually broad/noisy real-world
+dataset (game-related social text, not a structured survey) - which is exactly why it needed enough
+distinct theme labels to repeatedly trip both the flat-token-budget bug and the streaming-requirement
+bug above. Confirms both of this day's fixes together (cluster-count-scaled `MAX_TOKENS`, plus the
+streaming API switch) resolve the original crash end to end on the real dataset that exposed it.
