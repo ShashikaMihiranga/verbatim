@@ -35,7 +35,16 @@ _T = TypeVar("_T")
 DEFAULT_MODEL = "claude-sonnet-5"  # one tier up from claude-haiku-4-5: this is one batched call per
 # build regardless of dataset size (never per-row), so the extra cost buys better naming/merging
 # judgement where it matters most - see docs/DECISIONS.md's dated entry for why this was raised.
-MAX_TOKENS = 4096
+#
+# 16000, not 4096 (2026-10-21, confirmed bug on a real devapp build - see docs/DECISIONS.md): the whole
+# dataset's themes are labelled in ONE reply (never per-cluster), and JSON-heavy output tokenizes far
+# less efficiently than prose (~2.5-3 chars/token here, not ~4) - a dataset with enough distinct themes
+# reliably ran the reply past 4096 tokens, truncating it mid-JSON. Both the original call AND its one
+# retry (`_retry_on_labeling_error`) failed at nearly the same character offset in the response, which is
+# the signal that this was a hard budget ceiling, not the occasional malformed/dropped-cluster reply that
+# retry already exists for. Billing is per token actually generated, not per `max_tokens` ceiling, so a
+# generous budget costs nothing on the (overwhelming majority of) builds that never need it.
+MAX_TOKENS = 16000
 DEFAULT_SAMPLES_PER_CLUSTER = 20  # SPEC.md: "About 15 to 25 representative answers per cluster"
 DEFAULT_SAMPLES_PER_SUBCLUSTER = 12  # a sub-cluster is already a slice of one theme; fewer samples suffice
 

@@ -957,3 +957,34 @@ adaptivity" section already tracks (segment-kind heuristics, `open_text` uniquen
 as a new explicit line item there rather than fixed here, since it's a profiler-heuristic change (risk of
 affecting every dataset's column guesses), not a report-rendering bug, and out of scope for "fix the
 reporting crash."
+
+## 2026-10-21 (fixed: theme-labelling JSON truncation on datasets with enough distinct themes)
+Reported live on `devapp` (the new Railway staging environment): "Build themes" failed with "Theme
+labelling failed: Claude's reply was not valid JSON: Expecting ',' delimiter" - and it failed the SAME
+way on both the original call and its one automatic retry (`labeling.py::_retry_on_labeling_error`),
+breaking at nearly the same character offset both times (attempt 1: char 10605; attempt 2: char 10458,
+per `railway logs --environment devapp`). That near-identical-offset signature is the tell: this is not
+the occasional malformed/dropped-cluster reply the existing retry already exists for and usually fixes
+(see the retry's own docstring) - it's a hard ceiling being hit the same way every time, which a same-
+prompt, same-budget retry can never fix.
+
+Root cause: `app/text_pipeline/labeling.py`'s `MAX_TOKENS = 4096` bounds the ENTIRE theme-labelling
+reply, and by design (SPEC.md: "one batched call for all clusters, never one call per cluster") every
+theme for the whole dataset has to fit in that one response. JSON-heavy output (quotes, colons, commas
+around short label/description/merge_with/note fields) tokenizes far less efficiently than prose -
+roughly 2.5-3 characters per token here, not the usual ~4 - so a dataset with enough distinct themes
+reliably pushed the reply past 4096 tokens and got it truncated mid-string.
+
+Fix: raised `MAX_TOKENS` to 16000 (same constant used by both `label_clusters` and `label_sub_clusters`,
+so sub-theme labelling gets the same headroom). Billing is per token actually generated, not per
+`max_tokens` ceiling, so this costs nothing on the overwhelming majority of builds that never needed the
+extra room. Full backend suite: 611 passed, 1 skipped, no regressions (no test asserted the old literal
+value). Re-ran the exact failing build on `devapp` against the same dataset after deploying the fix -
+succeeded, themes built with no labelling error.
+
+Deliberately NOT done: scaling `MAX_TOKENS` dynamically with cluster count (mirroring
+`api_themes.py::_themes_deadline_for`'s pattern). The `ClaudeClient` protocol (`complete(system, prompt)
+-> str`) is shared across `labeling.py`, `sentiment.py`, `jev_sentiment.py`, `findings.py`, and their
+fakes/tests - threading a dynamic `max_tokens` through all of them for one constant's value is a much
+larger, riskier change than this bug warranted. A single generous static bump is the right-sized fix
+unless a future dataset's cluster count is large enough to need scaling too - if that happens, revisit.
