@@ -126,6 +126,51 @@ def test_patch_columns(env):
         assert len(rows) == 7
 
 
+def test_patch_columns_primary_open_text(env):
+    """docs/TODO.md (fixed 2026-10-22): a user can now explicitly pick which open_text column is the
+    report's subject. "Why haven't..." is this fixture's own single open_text column (position 5)."""
+    ds = env.post().json()
+    cols = _choices(ds["profile"])
+    open_text_name = next(c["name"] for c in cols if c["kind"] == "open_text")
+    r = env.client.patch(
+        f"/api/datasets/{ds['id']}/columns",
+        json={"columns": cols, "primary_open_text": open_text_name},
+    )
+    assert r.status_code == 200, r.text
+    conf = env.client.get(f"/api/datasets/{ds['id']}/profile").json()["profile"]["confirmed"]
+    assert conf["primary_open_text"] == open_text_name
+
+
+def test_patch_columns_primary_open_text_defaults_to_none(env):
+    ds = env.post().json()
+    cols = _choices(ds["profile"])
+    r = env.client.patch(f"/api/datasets/{ds['id']}/columns", json={"columns": cols})
+    assert r.status_code == 200, r.text
+    conf = env.client.get(f"/api/datasets/{ds['id']}/profile").json()["profile"]["confirmed"]
+    assert conf["primary_open_text"] is None
+
+
+def test_patch_columns_primary_open_text_rejects_unknown_column(env):
+    ds = env.post().json()
+    cols = _choices(ds["profile"])
+    r = env.client.patch(
+        f"/api/datasets/{ds['id']}/columns",
+        json={"columns": cols, "primary_open_text": "Not a real column"},
+    )
+    assert r.status_code == 422
+
+
+def test_patch_columns_primary_open_text_rejects_non_open_text_kind(env):
+    ds = env.post().json()
+    cols = _choices(ds["profile"])
+    numeric_name = next(c["name"] for c in cols if c["kind"] == "numeric")
+    r = env.client.patch(
+        f"/api/datasets/{ds['id']}/columns",
+        json={"columns": cols, "primary_open_text": numeric_name},
+    )
+    assert r.status_code == 422
+
+
 def test_patch_columns_rename(env):
     ds = env.post().json()
     cols = _choices(ds["profile"])

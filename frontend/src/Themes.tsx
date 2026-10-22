@@ -52,13 +52,23 @@ const UNIQUENESS_FLOOR = 0.3
 export function pickOpenTextColumn(profile: {
   columns: ColumnProfile[]
   row_count: number
-  confirmed?: { columns: Record<string, { kind: Kind; off?: boolean }> }
+  confirmed?: {
+    columns: Record<string, { kind: Kind; off?: boolean }>
+    primary_open_text?: string | null
+  }
 }): string | null {
   const conf = profile.confirmed
   const candidates = profile.columns.filter(
     (c) => (conf?.columns[c.name]?.kind ?? c.kind) === 'open_text' && !conf?.columns[c.name]?.off,
   )
   if (candidates.length === 0) return null
+
+  // docs/TODO.md (fixed 2026-10-22): an explicit user override wins outright, as long as it's still a
+  // real open_text candidate (defends against a confirmed primary that was later re-kinded away from
+  // open_text, or switched off, by a later edit this function was never told about).
+  if (conf?.primary_open_text && candidates.some((c) => c.name === conf.primary_open_text)) {
+    return conf.primary_open_text
+  }
 
   const qualifying = candidates.filter((c) => uniqueness(c, profile.row_count) >= UNIQUENESS_FLOOR)
   const pool = qualifying.length > 0 ? qualifying : candidates

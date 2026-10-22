@@ -17,6 +17,9 @@ export default function CheckColumns() {
   const [names, setNames] = useState<Record<string, string>>({})
   const [editingName, setEditingName] = useState<Record<string, boolean>>({})
   const [question, setQuestion] = useState('')
+  // docs/TODO.md (fixed 2026-10-22): `null` means "pick automatically" (today's only behaviour before
+  // this field existed) - an explicit column name overrides `Themes.tsx`'s own `pickOpenTextColumn`.
+  const [primaryOpenText, setPrimaryOpenText] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -43,6 +46,7 @@ export default function CheckColumns() {
         setNames(n)
         setEditingName(ed)
         setQuestion(conf?.question ?? d.profile.question?.text ?? '')
+        setPrimaryOpenText(conf?.primary_open_text ?? null)
       })
       .catch((e: Error) => setError(e.message))
   }, [id])
@@ -72,6 +76,12 @@ export default function CheckColumns() {
   const textCol = profile.columns.find(
     (c) => (kinds[c.name] ?? c.kind) === 'open_text' && !c.sensitive,
   )
+  // docs/TODO.md (fixed 2026-10-22): every column currently kinded open_text (live `kinds` state, not
+  // the original guess - a kind the user just changed should show up/drop out of this list immediately).
+  // The picker only appears when there's an actual choice to make (>1 candidate) - one or zero open_text
+  // columns has nothing to override.
+  const openTextNames = profile.columns.filter((c) => (kinds[c.name] ?? c.kind) === 'open_text').map((c) => c.name)
+  const effectivePrimary = primaryOpenText && openTextNames.includes(primaryOpenText) ? primaryOpenText : null
 
   async function save() {
     setSaving(true)
@@ -86,6 +96,7 @@ export default function CheckColumns() {
           off: !!off[c.name],
         })),
         question.trim() || null,
+        effectivePrimary,
       )
       nav(`/cleaning?dataset=${id}`)
     } catch (e) {
@@ -208,6 +219,24 @@ export default function CheckColumns() {
                 : 'Taken from the file. Edit it if it is not the exact wording.'
               : 'We could not find the question in the file. Add it so the report can use it.'}
           </div>
+          {openTextNames.length > 1 && (
+            <div style={{ marginTop: 20 }}>
+              <label htmlFor="primary-open-text" style={{ fontSize: 14, fontWeight: 500, display: 'block', marginBottom: 6 }}>
+                Which column is the report about?
+              </label>
+              <select
+                id="primary-open-text"
+                className="chip"
+                value={effectivePrimary ?? ''}
+                onChange={(e) => setPrimaryOpenText(e.target.value || null)}
+              >
+                <option value="">Pick automatically (longest, most varied answers)</option>
+                {openTextNames.map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {textCol && textCol.samples.length > 0 && (
             <>
               <div className="hint">First answers</div>

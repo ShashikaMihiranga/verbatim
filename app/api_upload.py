@@ -215,6 +215,11 @@ class ColumnChoice(BaseModel):
 class ConfirmBody(BaseModel):
     columns: list[ColumnChoice] = Field(max_length=300)
     question: str | None = Field(default=None, max_length=500)
+    # docs/TODO.md (fixed 2026-10-22): lets a user override which `open_text`-kind column becomes the
+    # report's subject, when more than one exists - previously there was no field anywhere for this,
+    # `Themes.tsx`'s `pickOpenTextColumn` always decided automatically with no way to overrule it. `None`
+    # (the default) keeps today's fully-automatic behaviour unchanged.
+    primary_open_text: str | None = Field(default=None, max_length=255)
 
 
 @router.patch("/datasets/{dataset_id}/columns")
@@ -257,10 +262,21 @@ def confirm_columns(dataset_id: int, body: ConfirmBody, db: Session = Depends(ge
     }
 
     question = (body.question or "").strip() or None
+
+    primary_open_text = (body.primary_open_text or "").strip() or None
+    if primary_open_text is not None:
+        chosen_names = {c.name for c in chosen_by_pos.values()}
+        if primary_open_text not in chosen_names:
+            raise HTTPException(422, "primary_open_text must be one of the submitted columns.")
+        chosen_kind = next(c.kind for c in chosen_by_pos.values() if c.name == primary_open_text)
+        if chosen_kind != "open_text":
+            raise HTTPException(422, "primary_open_text must be a column confirmed as open_text.")
+
     profile["confirmed"] = {
         "columns": {c.name: {"kind": c.kind, "off": c.off} for c in chosen_by_pos.values()},
         "renames": renames,  # original literal header -> final (possibly user-renamed) name
         "question": question,
+        "primary_open_text": primary_open_text,
         "at": datetime.now(timezone.utc).isoformat(),
     }
     for col in profile.get("columns", []):

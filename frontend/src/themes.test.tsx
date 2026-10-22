@@ -89,4 +89,37 @@ describe('pickOpenTextColumn', () => {
     }
     expect(pickOpenTextColumn(profile)).toBe('prices')
   })
+
+  // docs/TODO.md (fixed 2026-10-22): a user-set primary_open_text override.
+
+  it('respects an explicit primary_open_text override even when the automatic ranking would pick differently', () => {
+    const profile = {
+      row_count: 1597,
+      columns: [
+        col({ name: 'dimension', position: 0, distinct: 1, missing: 1032 }),
+        col({ name: 'reviews.text', position: 1, distinct: 1580, missing: 0 }),
+        col({ name: 'reviews.title', position: 2, distinct: 1270, missing: 17, median_words: 4 }),
+      ],
+      confirmed: {
+        columns: {},
+        primary_open_text: 'reviews.title',
+      },
+    }
+    expect(pickOpenTextColumn(profile)).toBe('reviews.title')
+  })
+
+  it('ignores a primary_open_text override that is no longer a valid open_text candidate (re-kinded or switched off since), falling back to automatic ranking', () => {
+    const profile = {
+      row_count: 1597,
+      columns: [
+        col({ name: 'dimension', position: 0, distinct: 1, missing: 1032 }),
+        col({ name: 'reviews.text', position: 1, distinct: 1580, missing: 0 }),
+      ],
+      confirmed: {
+        columns: { dimension: { kind: 'segment' as const, off: false } },
+        primary_open_text: 'dimension', // stale - dimension was re-kinded to segment after this was set
+      },
+    }
+    expect(pickOpenTextColumn(profile)).toBe('reviews.text')
+  })
 })

@@ -50,6 +50,10 @@ export interface Profile {
     columns: Record<string, { kind: Kind; off: boolean }>
     renames?: Record<string, string>
     question: string | null
+    // docs/TODO.md (fixed 2026-10-22): which open_text column is the report's subject, when the user
+    // explicitly overrode the automatic pick (`pickOpenTextColumn` in Themes.tsx). `null`/absent means
+    // "no override - keep picking automatically", the only behaviour that existed before this field.
+    primary_open_text?: string | null
   }
 }
 
@@ -110,11 +114,12 @@ export async function confirmColumns(
   id: number,
   columns: { position: number; name: string; kind: Kind; off: boolean }[],
   question: string | null,
+  primaryOpenText?: string | null,
 ): Promise<DatasetView> {
   const r = await authFetch(`/api/datasets/${id}/columns`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ columns, question }),
+    body: JSON.stringify({ columns, question, primary_open_text: primaryOpenText ?? null }),
   })
   if (!r.ok) throw await asError(r)
   return r.json()

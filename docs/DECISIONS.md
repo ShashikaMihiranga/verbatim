@@ -1545,3 +1545,32 @@ and the "Columns used" chip already render whatever role string the backend send
 been live-verified in a browser against a real numeric/yes_no-confirmed dataset yet.
 
 Committed to `staging`, not pushed yet.
+
+## 2026-10-22 (Stage 3 of column-profiling fixes: UI to override the auto-picked open-text column)
+`Themes.tsx` called `pickOpenTextColumn` exactly once with zero override path (no URL param, no
+dropdown, no backend field) - confirmed via exhaustive grep before this fix. Added:
+
+- Backend: `ConfirmBody` (`app/api_upload.py`) gains an optional `primary_open_text: str | None`,
+  validated against the SAME request's own `columns` (must be one of the submitted columns, and must be
+  confirmed `open_text`) before being saved into `profile["confirmed"]["primary_open_text"]` - the same
+  place `renames`/`off`/`kind` already live.
+- Frontend: `CheckColumns.tsx` shows a "Which column is the report about?" picker, but ONLY when more
+  than one column is currently kinded `open_text` (live state, not the original guess) - one or zero
+  candidates has nothing to override, so the picker stays out of the way for the common case.
+  `pickOpenTextColumn` (`Themes.tsx`) now checks `confirmed.primary_open_text` first, falling back to
+  its existing automatic ranking unchanged when there's no override OR the stored override is no longer
+  a valid open_text candidate (re-kinded or switched off since it was set - defends against a stale
+  confirmed value, not just a live one).
+
+**Tests**: 4 new in `tests/test_upload_api.py` (override saved and read back, defaults to `None`, 422 on
+an unknown column name, 422 on a non-open_text kind), 2 new in `frontend/src/themes.test.tsx`
+(`pickOpenTextColumn` respects the override; falls back when the stored override is stale). Backend
+suite: 678 passed (674 + 4), 1 skipped. Frontend: 76 passed (70 + 6 across Stages 2-3); `tsc -b && vite
+build` clean.
+
+**Not yet done**: not live-verified in a browser (the picker's conditional visibility - appearing only
+with 2+ open_text candidates - has not been visually confirmed against a real multi-open-text-column
+dataset).
+
+All three profiling-gap stages (Stages 1-3) are now complete and committed to `staging`, not pushed yet.
+Moving on to the bigger unbuilt report features (theme editing, sharing/roles, export) next.
