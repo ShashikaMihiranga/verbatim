@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -152,4 +152,52 @@ class SigninVariantLog(Base):
     __tablename__ = "signin_variant_log"
     id: Mapped[int] = mapped_column(primary_key=True)
     variant: Mapped[str] = mapped_column(String(8))
+    created_at: Mapped[datetime] = _created()
+
+
+class DatasetCollaborator(Base):
+    """Sharing/roles (SPEC.md section 5; docs/TODO.md, fixed 2026-10-22): a signed-in `User` other than
+    the dataset's own owner, with an "editor" or "viewer" role on that dataset. The owner is never a row
+    here - ownership stays implicit via the existing `Dataset.project.user_id` path (`app/api_upload.py`'s
+    `_own_dataset`, now role-aware - see that function's own docstring), unchanged by this feature. Added
+    via an accepted invite link (`app/api_sharing.py`), never directly - there is no way to add a
+    collaborator by email/account lookup: Clerk auth here is JWT-verification only (no Clerk secret key,
+    no user directory API - confirmed via `app/auth.py`), so this app has no way to resolve "the person
+    with this email" to a `User` row before they have signed in at least once themselves."""
+    __tablename__ = "dataset_collaborators"
+    __table_args__ = (UniqueConstraint("dataset_id", "user_id", name="uq_dataset_collaborator"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(16))  # "editor" | "viewer"
+    created_at: Mapped[datetime] = _created()
+
+
+class DatasetInviteLink(Base):
+    """An owner-created link that grants "editor" access to WHOEVER signs in and visits it
+    (`app/api_sharing.py`'s accept route) - the realistic stand-in for "invite a teammate by email" given
+    the Clerk-JWT-only constraint `DatasetCollaborator`'s own docstring explains. Reusable (not single-use)
+    unless the owner revokes it; no expiry field - an editor invite is meant to stay valid until revoked,
+    unlike a read-only share link below, which SPEC.md explicitly asks to support an optional expiry."""
+    __tablename__ = "dataset_invite_links"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = _created()
+
+
+class DatasetShareLink(Base):
+    """A read-only, no-sign-in-required share-by-link (SPEC.md section 5), with an optional expiry. Grants
+    "viewer" access ONLY, resolved via a token-gated public route (`app/api_sharing.py`'s `GET
+    /api/share/{token}/...`), never through the normal authenticated dataset routes - those stay
+    `current_user`-gated regardless of a valid share token, so a share link can never see more than the
+    specific read-only views that public route set exposes (notably: no verbatim-answer route exists on
+    that path at all - see `app/api_sharing.py`'s own module docstring for why that is the real
+    "hide verbatims for external audiences" mechanism, not a redaction toggle)."""
+    __tablename__ = "dataset_share_links"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    column_name: Mapped[str] = mapped_column(String(255))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created()

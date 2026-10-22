@@ -74,7 +74,9 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(current_us
 
 @router.delete("/datasets/{dataset_id}")
 def delete_dataset(dataset_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    ds = _own_dataset(db, user, dataset_id)
+    # Sharing/roles (fixed 2026-10-22): deletion is owner-only - an editor collaborator can mutate a
+    # dataset's content but must never be able to destroy the dataset itself.
+    ds = _own_dataset(db, user, dataset_id, min_role="owner")
     # Explicit, ordered deletes - matching this codebase's existing convention (see api_upload.confirm_columns
     # and api_themes.build_themes, both of which delete old rows in a loop rather than relying on the
     # database to cascade) so this behaves the same on sqlite (tests) and Postgres (production) alike.

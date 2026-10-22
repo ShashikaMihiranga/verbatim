@@ -53,7 +53,9 @@ export interface ThemeChartResponse {
 
 export interface ThemeAnswer {
   row: number
-  text: string
+  // Sharing/roles (docs/TODO.md, fixed 2026-10-22): `null` for a "viewer"-role collaborator - the real
+  // text is deliberately withheld server-side (app/api_themes.py's own `_answers_page`), not redacted.
+  text: string | null
   tone: 'neg' | 'neu' | 'pos'
 }
 

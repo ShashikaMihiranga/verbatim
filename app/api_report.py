@@ -358,7 +358,7 @@ def build_report(
     known once `app.findings.build_findings` actually runs, so - like `TooFewAnswers` on the themes side -
     it now surfaces as `job.error` rather than a synchronous 422; `_report_build_error` maps it to the same
     message text a caller used to receive in the HTTP body. See docs/DECISIONS.md for why 202, not 200."""
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     column = body.column
 
     themes = list(db.scalars(

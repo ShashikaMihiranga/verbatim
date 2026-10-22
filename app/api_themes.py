@@ -44,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import db as _db
-from .api_upload import _own_dataset, current_user
+from .api_upload import _dataset_role, _own_dataset, current_user
 from .chart_data import (
     ContextData, FreqData, MapData, OverviewData, PhraseData, QualityData, QuoteData, ReportData,
     ScoreData, SegmentData, TrendData,
@@ -452,7 +452,7 @@ def build_themes(
     pipeline (embed, cluster, label, score) runs in a background daemon thread; this route returns as soon
     as the `Job` row exists, never blocking on the pipeline itself. See docs/DECISIONS.md for why this
     returns 202, not 200."""
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     clean_df, plan = _load_clean_df(ds, db)
     column = body.column
     if column not in plan.columns:
@@ -554,7 +554,7 @@ def look_inside_other(
     validate-cheap-things-synchronously-then-run-in-a-background-job shape as `build_themes` above,
     sharing its `_SLOTS` concurrency pool (this is the same class of heavy embed+Claude+Jev work, not a
     separate budget)."""
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     clean_df, plan = _load_clean_df(ds, db)
     column = body.column
     if column not in plan.columns:
@@ -672,7 +672,7 @@ def rename_theme(
     on one stored `Theme` row in place, same "load the affected row(s) by id, mutate, commit" shape
     `_apply_other_classification` already established, not `_write_theme_rows`'s full delete-and-
     replace. Synchronous (no background job): nothing here re-embeds or re-clusters anything."""
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     theme = db.get(Theme, theme_id)
     if theme is None or theme.dataset_id != ds.id:
         raise HTTPException(404, "Theme not found.")
@@ -708,7 +708,7 @@ def merge_themes(
     text, same `_load_clean_df` access `_write_theme_rows` already uses, not masked: nothing here
     crosses to an external model), and deletes the absorbed rows (cascading any `Finding.theme_id`
     pointing at one to `NULL` - handled by `_invalidate_report_for_edit` below regardless)."""
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     rows = list(db.scalars(
         select(Theme).where(
             Theme.dataset_id == ds.id, Theme.column_name == body.column, Theme.id.in_(body.theme_ids),
@@ -846,7 +846,7 @@ def split_theme(
     has no vectors to slice and must re-embed, exactly like "Look inside Other" does for the Other
     bucket). A background job (`app/jobs.py`, like that feature) since re-embedding/re-clustering/
     labeling is real, possibly-slow work - unlike rename/merge above, which are synchronous."""
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     theme = db.get(Theme, theme_id)
     if theme is None or theme.dataset_id != ds.id:
         raise HTTPException(404, "Theme not found.")
@@ -981,11 +981,20 @@ def themes_chart(
 
 def _answers_page(
     ds: Dataset, db: Session, column: str | None, refs: list[int], limit: int, offset: int,
+    *, hide_text: bool = False,
 ) -> tuple[int, int, list[dict]]:
     """Shared pagination/real-text lookup, extracted from what used to be `theme_answers`'s own inline
     body so `sub_theme_answers` below can reuse it against a sub-theme's own `answer_refs` instead of a
     parent `Theme` row's. Returns the clamped `(limit, offset, answers)` - same clamping/lookup behaviour
-    as before this extraction, byte-identical for `theme_answers` itself."""
+    as before this extraction, byte-identical for `theme_answers` itself when `hide_text` is left at its
+    default `False` (every caller before sharing/roles existed).
+
+    `hide_text` (sharing/roles, fixed 2026-10-22): `True` for a "viewer"-role caller - `text` comes back
+    `None` instead of the real verbatim ("hide verbatims for external audiences", SPEC.md section 5).
+    This is NOT the same mechanism as `model_safe_column`'s masking (that redacts PII for a MODEL prompt,
+    still showing the owner real surrounding text); a viewer gets no verbatim text at all, full stop -
+    the real text is still read server-side (needed for `tone`, computed locally, no network) but never
+    serialized back to a viewer-role caller."""
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     page = refs[offset: offset + limit]
@@ -1005,7 +1014,7 @@ def _answers_page(
             # Per-answer tone, computed on the fly with the free lexicon (no network, no stored table) -
             # see docs/DECISIONS.md for why per-row sentiment is not persisted separately from this.
             _polarity, tone = score_text(raw)
-            answers.append({"row": int(row), "text": raw, "tone": tone})
+            answers.append({"row": int(row), "text": None if hide_text else raw, "tone": tone})
 
     return limit, offset, answers
 
@@ -1021,7 +1030,8 @@ def theme_answers(
         raise HTTPException(404, "Theme not found.")
 
     refs = theme.answer_refs or []
-    limit, offset, answers = _answers_page(ds, db, theme.column_name, refs, limit, offset)
+    hide_text = _dataset_role(db, user, ds) == "viewer"
+    limit, offset, answers = _answers_page(ds, db, theme.column_name, refs, limit, offset, hide_text=hide_text)
     return {"theme_id": theme.id, "total": len(refs), "limit": limit, "offset": offset, "answers": answers}
 
 
@@ -1042,7 +1052,8 @@ def sub_theme_answers(
         raise HTTPException(404, "Sub-theme not found.")
     sub = subs[index]
     refs = sub.get("answer_refs") or []
-    limit, offset, answers = _answers_page(ds, db, theme.column_name, refs, limit, offset)
+    hide_text = _dataset_role(db, user, ds) == "viewer"
+    limit, offset, answers = _answers_page(ds, db, theme.column_name, refs, limit, offset, hide_text=hide_text)
     return {
         "theme_id": theme.id, "sub_theme_index": index, "total": len(refs),
         "limit": limit, "offset": offset, "answers": answers,

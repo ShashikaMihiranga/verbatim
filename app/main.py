@@ -13,6 +13,7 @@ from .api_cleaning import router as cleaning_router
 from .api_jobs import router as jobs_router
 from .api_projects import router as projects_router
 from .api_report import router as report_router
+from .api_sharing import router as sharing_router
 from .api_themes import router as themes_router
 from .api_upload import router as upload_router
 from .charts import FRAMES, render
@@ -64,6 +65,7 @@ app.include_router(themes_router)
 app.include_router(report_router)
 app.include_router(projects_router)
 app.include_router(jobs_router)
+app.include_router(sharing_router)
 
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 

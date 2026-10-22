@@ -1631,3 +1631,69 @@ have not been visually confirmed against a real running app yet).
 
 Committed to `staging`, not pushed yet. Moving on to sharing/roles and export next - both substantially
 larger, ground-up builds (new ACL model; a new Playwright-based rendering dependency).
+
+## 2026-10-22 (Stage 5: sharing and roles - owner/editor/viewer, editor invite links, read-only share links)
+SPEC.md section 5: owner/editor/viewer roles, share-by-link with optional expiry, hiding verbatims for
+external audiences. No existing roles/permissions concept anywhere before this (confirmed via
+exhaustive grep). New `DatasetCollaborator`/`DatasetInviteLink`/`DatasetShareLink` tables (migration
+`c4e9a1f7b3d6`), a new `app/api_sharing.py`, and `app/api_upload.py`'s `_own_dataset` (the one real
+ownership choke point every data route already shared) made role-aware.
+
+**Two design decisions made during this stage, not assumed from the plan - both forced by a real
+constraint found during investigation, not a choice**:
+
+1. **"Invite by email/account" is not buildable as literally worded.** Clerk auth here is pure JWT
+   verification (`app/auth.py`) - no Clerk secret key, no user-directory API - so there is no way to
+   resolve "the person with this email" to a `User` row before they have signed in at least once
+   themselves. Built instead: an owner-generated, reusable `DatasetInviteLink` - whoever signs in and
+   visits `POST /invite-links/{token}/accept` becomes an "editor" collaborator. Idempotent (visiting an
+   already-accepted link again is a no-op) and never downgrades existing access.
+2. **"Hide verbatims for external audiences" is two different mechanisms for two different audiences,
+   not one redaction toggle**: a signed-in "viewer" collaborator reaches the normal authenticated routes,
+   where `app/api_themes.py::_answers_page` now takes a `hide_text` param (`text: null` instead of the
+   real verbatim - computed server-side for `tone` but never serialized back); an anonymous share-link
+   visitor instead hits a BRAND NEW public route, `GET /api/share/{token}/report` (no `current_user`
+   dependency at all - the token itself is the authorization), which only ever calls the same
+   `_render_report` a signed-in viewer's `GET /report` uses - that renderer has no verbatim-answer data
+   in it at all, so omission (no such route exists on the public path), not a toggle, is what actually
+   enforces this for that audience.
+
+**Role hierarchy**: owner > editor > viewer, `ROLE_RANK` in `app/api_upload.py`. `_own_dataset` kept its
+exact name and its exact default behaviour (`min_role="viewer"`, matching every call site's old
+unparameterized behaviour byte-for-byte when the caller is the owner - the only caller that existed
+before this feature) - extended, not replaced, so all 20 existing call sites across
+`api_cleaning.py`/`api_jobs.py`/`api_report.py`/`api_themes.py`/`api_upload.py`/`api_projects.py` kept
+working unchanged except the ones that mutate data, which now pass `min_role="editor"` explicitly (9
+routes: build/edit/apply cleaning, build report, build themes, look-inside-other, rename/merge/split
+theme, confirm-columns) - and the one truly destructive route, `delete_dataset`, which passes
+`min_role="owner"` (an editor can change everything about a dataset except destroy it).
+
+Frontend: new `sharingApi.ts`, `SharePanel.tsx` (owner-only panel on the report page: create/revoke
+invite links, list/remove collaborators, create/revoke read-only share links with an optional expiry
+date), `AcceptInvite.tsx` (behind the normal sign-in guard - a visitor who isn't signed in is sent to
+sign in first, then lands back here), `SharedReport.tsx` (a new, deliberately UNGUARDED `/shared` route
+- plain `fetch`, not `authFetch`, so nothing depends on any Clerk session state).
+
+**Tests**: 12 new in `tests/test_sharing.py` (invite-link create/accept/idempotent/404/revoke, viewer
+can read but not write, viewer gets no verbatim text while owner/editor both do, delete stays owner-only
+even for an editor, share-link create/public-fetch-with-no-auth/expired/revoked). Reuses
+`tests/test_api_themes.py`'s own `env`/`as_user`/`make_users` multi-user test infrastructure (already
+built for ownership-isolation tests) rather than duplicating it - same precedent `test_api_projects.py`
+already set by importing `install_fakes` across files. Backend suite: 703 passed (691 + 12), 1 skipped -
+no regressions at any of the 20 `_own_dataset` call sites. Frontend: 82 passed (unchanged - the new
+sharing components are thin fetch-effect wrappers, same "no test coverage for a data-fetching wrapper"
+precedent `Themes.tsx` itself already documents); `tsc -b && vite build` clean.
+
+**Not yet done / known rough edges**:
+- `SharedReport.tsx` still renders `FindingBlock`'s "See answers" button (it checks `finding.theme_id !=
+  null`, not audience) - clicking it on the public share page would try the authenticated verbatim route
+  with a placeholder `datasetId=0` and fail gracefully (caught by `AnswerList`'s own error state, not a
+  crash) rather than being hidden outright. A real fix threads a "read-only, no answers" flag through
+  `Report.tsx`/`FindingBlock` - not done this pass.
+- No UI anywhere lists "datasets shared with me" (a collaborator must be given the dataset's own `/report?
+  dataset=` URL directly by the owner) - `Projects.tsx` still only lists the signed-in user's own
+  `Project.user_id` datasets, unchanged.
+- Not live-verified in a browser (every test here uses the FastAPI TestClient).
+
+Committed to `staging`, not pushed yet. Moving on to export (PNG/SVG/PPTX/PDF) next - the last stage,
+needing a new Playwright-based rendering dependency.

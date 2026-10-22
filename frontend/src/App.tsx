@@ -1,9 +1,11 @@
 import { useAuth, useUser } from '@clerk/clerk-react'
 import type { ReactNode } from 'react'
 import { Link, Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import AcceptInvite from './AcceptInvite'
 import CheckColumns from './CheckColumns'
 import Cleaning from './Cleaning'
 import Projects from './Projects'
+import SharedReport from './SharedReport'
 import Themes from './Themes'
 import Upload from './Upload'
 import Landing from './home/Landing'
@@ -98,12 +100,17 @@ export default function App() {
           path="/"
           element={clerkConfigured ? <ClerkHome /> : devUserAllowed ? <Navigate to="/upload" replace /> : <Landing />}
         />
+        {/* Sharing/roles (docs/TODO.md, fixed 2026-10-22): deliberately OUTSIDE the <Shell/> group below -
+            a share link means "no sign-in required", so this page carries none of Shell's signed-in-nav
+            assumptions. */}
+        <Route path="/shared" element={<SharedReport />} />
         <Route element={<Shell />}>
           <Route path="/projects" element={guard(<Projects />)} />
           <Route path="/upload" element={guard(<Upload />)} />
           <Route path="/check-columns" element={guard(<CheckColumns />)} />
           <Route path="/cleaning" element={guard(<Cleaning />)} />
           <Route path="/report" element={guard(<Themes />)} />
+          <Route path="/accept-invite" element={guard(<AcceptInvite />)} />
           <Route path="*" element={<Placeholder title="Not found" />} />
         </Route>
       </Routes>

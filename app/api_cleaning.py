@@ -153,7 +153,7 @@ def _clean_params(key: str, params: dict[str, Any]) -> dict[str, Any]:
 @router.post("/datasets/{dataset_id}/clean/plan")
 def build_plan(dataset_id: int, body: PlanRequest | None = None, db: Session = Depends(get_db),
                user: User = Depends(current_user)):
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     df = _load_df(db, ds)
     settings = {"min_group_size": body.min_group_size} if body and body.min_group_size else None
     with _Slot():
@@ -164,7 +164,7 @@ def build_plan(dataset_id: int, body: PlanRequest | None = None, db: Session = D
 
 @router.patch("/datasets/{dataset_id}/clean/plan")
 def edit_plan(dataset_id: int, body: PlanPatch, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     stored = _stored(ds)
     if "plan" not in stored:
         raise HTTPException(409, "Build the plan first.")
@@ -204,7 +204,7 @@ def edit_plan(dataset_id: int, body: PlanPatch, db: Session = Depends(get_db), u
 
 @router.post("/datasets/{dataset_id}/clean/apply")
 def apply_cleaning(dataset_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     stored = _stored(ds)
     df = _load_df(db, ds)
     with _Slot():

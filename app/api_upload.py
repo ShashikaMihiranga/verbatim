@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from .auth import authenticate
 from .db import get_db
-from .models import Column, Dataset, Project, UploadedFile, User
+from .models import Column, Dataset, DatasetCollaborator, Project, UploadedFile, User
 from .profiling import KINDS, LoadError, profile_file
 from .profiling.claude_hook import collect_samples, refine_profile
 
@@ -97,9 +97,39 @@ def safe_filename(raw: str | None, ext: str) -> str:
     return name or f"upload{ext}"
 
 
-def _own_dataset(db: Session, user: User, dataset_id: int) -> Dataset:
+# Sharing/roles (SPEC.md section 5; docs/TODO.md, fixed 2026-10-22): owner > editor > viewer. The owner
+# always has every role implicitly (`Dataset.project.user_id`, unchanged); a `DatasetCollaborator` row
+# grants exactly one of the other two roles to a second signed-in `User`.
+ROLE_RANK = {"viewer": 0, "editor": 1, "owner": 2}
+
+
+def _dataset_role(db: Session, user: User, ds: Dataset) -> str | None:
+    """The caller's own role on `ds` - `"owner"`, `"editor"`, `"viewer"`, or `None` if they have no access
+    at all. Never raises; `_own_dataset` below is what turns `None` into a 404."""
+    if ds.project.user_id == user.id:
+        return "owner"
+    collab = db.scalar(
+        select(DatasetCollaborator).where(DatasetCollaborator.dataset_id == ds.id, DatasetCollaborator.user_id == user.id)
+    )
+    return collab.role if collab is not None else None
+
+
+def _own_dataset(db: Session, user: User, dataset_id: int, min_role: str = "viewer") -> Dataset:
+    """Every data route's one ownership choke point (`app/api_cleaning.py`, `app/api_jobs.py`,
+    `app/api_report.py`, `app/api_themes.py`, `app/api_projects.py` all call this, never a second check of
+    their own) - extended for sharing/roles rather than replaced, so every existing call site keeps
+    working unchanged at its default `min_role="viewer"` (today's exact behaviour before this feature:
+    only the owner ever had any access at all, and every existing caller WAS effectively requiring full
+    access, so this default is a deliberate, documented widening - callers that mutate data must now pass
+    `min_role="editor"` explicitly, and the one truly destructive route, `delete_dataset`, passes
+    `min_role="owner"`). Still returns a generic 404 (not 403) for "doesn't exist", "not yours", and "yours
+    but your role isn't high enough" alike - deliberately not revealing which, same as before this
+    feature."""
     ds = db.get(Dataset, dataset_id)
-    if ds is None or ds.project.user_id != user.id:
+    if ds is None:
+        raise HTTPException(404, "Dataset not found.")
+    role = _dataset_role(db, user, ds)
+    if role is None or ROLE_RANK[role] < ROLE_RANK[min_role]:
         raise HTTPException(404, "Dataset not found.")
     return ds
 
@@ -232,7 +262,7 @@ def confirm_columns(dataset_id: int, body: ConfirmBody, db: Session = Depends(ge
     `_load_df` applies that same map every time it reloads the raw file, so cleaning/themes/reports all
     see the final name consistently - see that function's own comment for why this is the one other place
     that needs it."""
-    ds = _own_dataset(db, user, dataset_id)
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
     profile = dict(ds.profile or {})
     guessed_by_pos = {c["position"]: c for c in profile.get("columns", [])}
     chosen_by_pos = {c.position: c for c in body.columns}

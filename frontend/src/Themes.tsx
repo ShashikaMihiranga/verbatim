@@ -9,6 +9,7 @@ import type { ReportFilters, ReportResponse } from './reportApi'
 import { getLatestJob, pollJob } from './jobsApi'
 import type { Job } from './jobsApi'
 import JobProgress from './JobProgress'
+import SharePanel from './SharePanel'
 import ReportView from './Report'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
@@ -144,7 +145,7 @@ export function AnswerList({ id, themeId, subIndex }: { id: number; themeId: num
       {answers.map((a) => (
         <div key={a.row} className="th-answer">
           <span className={`tag ${a.tone}`}>{toneLabel(a.tone)}</span>
-          <div>{a.text}</div>
+          <div>{a.text ?? <span className="muted">Verbatim text is hidden for your role.</span>}</div>
         </div>
       ))}
       {error && <div className="err" role="alert">{error}</div>}
@@ -171,6 +172,7 @@ export default function Themes() {
   const [lookInsideOtherJob, setLookInsideOtherJob] = useState<Job | null>(null)
   const [filters, setFilters] = useState<ReportFilters>({})
   const [manageThemes, setManageThemes] = useState(false)
+  const [showShare, setShowShare] = useState(false)
   const [error, setError] = useState('')
   const [themesChart, setThemesChart] = useState<ThemeChartResponse | null>(null)
   const [selectedThemeId, setSelectedThemeId] = useState<number | null>(null)
@@ -558,7 +560,11 @@ export default function Themes() {
             <button type="button" className="btn quiet" onClick={() => setManageThemes(true)}>
               Manage themes
             </button>
+            <button type="button" className="btn quiet" onClick={() => setShowShare(!showShare)}>
+              {showShare ? 'Hide sharing' : 'Share'}
+            </button>
           </div>
+          {showShare && column && <SharePanel datasetId={id} column={column} />}
         </>
       )}
 
