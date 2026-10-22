@@ -1,6 +1,6 @@
 import { authFetch } from './authFetch'
 
-export type JobKind = 'themes' | 'report' | 'look_inside_other'
+export type JobKind = 'themes' | 'report' | 'look_inside_other' | 'split_theme'
 export type JobStatus = 'running' | 'done' | 'failed'
 
 // "Look inside Other" (docs/TODO.md, 2026-10-21 Stage 3): the real Known/New/Still-in-Other counts the
@@ -12,6 +12,13 @@ export interface LookInsideOtherResult {
   still_other_count: number
 }
 
+// Theme editing (docs/TODO.md, fixed 2026-10-22): "split theme"'s own job result - the real pieces a
+// theme split into, written the same way (app/api_themes.py's own `_apply_theme_split`).
+export interface SplitThemeResult {
+  new_themes: Array<{ label: string; count: number }>
+  remainder_count: number
+}
+
 export interface Job {
   id: number
   dataset_id: number
@@ -21,8 +28,8 @@ export interface Job {
   step: string
   error: string | null
   // `null` for every job kind that has nothing to summarize (themes, report) - only "look_inside_other"
-  // ever populates this, once it reaches "done".
-  result: LookInsideOtherResult | null
+  // and "split_theme" ever populate this, once they reach "done".
+  result: LookInsideOtherResult | SplitThemeResult | null
 }
 
 export interface BuildStarted {

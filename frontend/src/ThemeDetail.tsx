@@ -28,8 +28,33 @@ function SubThemeRow({ id, themeId, sub }: { id: number; themeId: number; sub: S
 // same content once per theme, in a grid) so the same content can render once, for whichever theme is
 // currently selected, below the shared treemap chart - on both the Themes screen's browse view and the
 // report page's overview block.
-export default function ThemeDetail({ id, theme }: { id: number; theme: ThemeCard }) {
+//
+// `onRename` (docs/TODO.md, fixed 2026-10-22): optional - only `Themes.tsx`'s own "Manage themes" mode
+// passes it, so the rename affordance never shows up on the live report page's overview block (editing a
+// theme belongs to Manage themes, not to the read-only report view that reuses this same component).
+export default function ThemeDetail({
+  id, theme, onRename,
+}: {
+  id: number
+  theme: ThemeCard
+  onRename?: (label: string, description: string | null) => void
+}) {
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editLabel, setEditLabel] = useState('')
+  const [editDesc, setEditDesc] = useState('')
+
+  function startEditing() {
+    setEditLabel(theme.label)
+    setEditDesc(theme.description ?? '')
+    setEditing(true)
+  }
+
+  function saveEdit() {
+    const label = editLabel.trim()
+    if (label && onRename) onRename(label, editDesc.trim() || null)
+    setEditing(false)
+  }
   // theme.size_pct and each sub-theme's size_pct are both "% of ALL answered" (the whole dataset), not
   // "% of this theme" - see app/chart_data.py's SubTheme.share docstring and app/api_themes.py's
   // _theme_dict, which compute both against the identical `total`. The remainder is therefore this
@@ -37,11 +62,40 @@ export default function ThemeDetail({ id, theme }: { id: number; theme: ThemeCar
   const unassignedPct = Math.max(0, theme.size_pct - theme.sub_themes.reduce((sum, s) => sum + s.size_pct, 0))
   return (
     <div className="th-detail">
-      <div className="th-top">
-        <div className="th-label">{theme.label}</div>
-        <span className={`th-badge ${theme.confidence}`}>{theme.confidence === 'solid' ? 'Solid' : 'Tentative'}</span>
-      </div>
-      {theme.description && <div className="th-desc">{theme.description}</div>}
+      {editing ? (
+        <div className="th-edit">
+          <input
+            type="text"
+            className="chip"
+            aria-label="Theme label"
+            value={editLabel}
+            onChange={(e) => setEditLabel(e.target.value)}
+            autoFocus
+          />
+          <textarea
+            className="th-edit-desc"
+            aria-label="Theme description"
+            value={editDesc}
+            onChange={(e) => setEditDesc(e.target.value)}
+            placeholder="Description (optional)"
+          />
+          <div className="th-edit-actions">
+            <button type="button" className="btn" onClick={saveEdit}>Save</button>
+            <button type="button" className="btn quiet" onClick={() => setEditing(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div className="th-top">
+          <div className="th-label">{theme.label}</div>
+          <span className={`th-badge ${theme.confidence}`}>{theme.confidence === 'solid' ? 'Solid' : 'Tentative'}</span>
+          {onRename && (
+            <button type="button" className="name-edit-btn" aria-label={`Rename ${theme.label}`} onClick={startEditing}>
+              ✎
+            </button>
+          )}
+        </div>
+      )}
+      {!editing && theme.description && <div className="th-desc">{theme.description}</div>}
       <div className="th-pct">
         {Math.round(theme.size_pct)}%<span>of answers</span>
       </div>

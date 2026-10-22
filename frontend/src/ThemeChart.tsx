@@ -24,6 +24,13 @@ interface ThemeChartProps {
   // including one of its sub-theme rects (a click there still resolves to the parent theme's own
   // `[data-theme]` group via `closest()`).
   onThemeSelect?: (name: string) => void
+  // Theme editing (docs/TODO.md, fixed 2026-10-22): a PERSISTED highlight (dims every other theme group
+  // to the same DIM_OPACITY), independent of hover - `null`/undefined means "nothing selected, dim
+  // nothing" (today's only behaviour before this prop existed). Unlike hover (transient, cleared on
+  // mouseout), this stays applied across re-renders until the caller changes it - the "selecting a theme
+  // in one chart highlights it in all charts" feature from docs/TODO.md's "also unbuilt" note, now wired
+  // by having every `ThemeChart` instance on a page receive the SAME selected name from its caller.
+  selectedTheme?: string | null
 }
 
 // Shared chart-fragment renderer used by both Report.tsx's overview block and Themes.tsx's browse view.
@@ -33,7 +40,7 @@ interface ThemeChartProps {
 // itself is not tracked here - the caller decides what "selected" means (e.g. which ThemeDetail to show)
 // and keeps that as its own state; this component only ever dims on hover, never persists a "selected"
 // look across renders.
-export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChartProps) {
+export default function ThemeChart({ fragment, title, onThemeSelect, selectedTheme }: ThemeChartProps) {
   const ref = useRef<HTMLDivElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -67,6 +74,16 @@ export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChar
       return target ? (target.closest('[data-theme]') as HTMLElement | null) : null
     }
 
+    function applySelection() {
+      for (const el of themeGroups()) {
+        if (!selectedTheme) {
+          el.style.opacity = ''
+        } else {
+          el.style.opacity = el.getAttribute('data-theme') === selectedTheme ? '' : DIM_OPACITY
+        }
+      }
+    }
+
     function onOver(e: Event) {
       const hovered = closestThemeEl(e)
       if (!hovered) return
@@ -78,7 +95,7 @@ export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChar
     function onOut(e: Event) {
       const left = closestThemeEl(e)
       if (!left) return
-      for (const el of themeGroups()) el.style.opacity = ''
+      applySelection() // restore the PERSISTED selection state, not a blanket clear - see selectedTheme's own comment
     }
 
     function onClick(e: Event) {
@@ -91,6 +108,8 @@ export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChar
     root.addEventListener('mouseover', onOver)
     root.addEventListener('mouseout', onOut)
     root.addEventListener('click', onClick)
+    applySelection() // apply the persisted selection immediately - dangerouslySetInnerHTML just replaced
+                     // every node, so nothing carries the previous render's inline opacity forward.
     return () => {
       root.removeEventListener('mouseover', onOver)
       root.removeEventListener('mouseout', onOut)
@@ -98,9 +117,9 @@ export default function ThemeChart({ fragment, title, onThemeSelect }: ThemeChar
     }
     // Re-run (detach then re-attach) whenever the fragment's own HTML changes: dangerouslySetInnerHTML
     // replaces the DOM nodes wholesale, so anything bound to the PREVIOUS nodes would otherwise be
-    // attached to now-detached elements. `onThemeSelect` is also a dependency so a caller that passes a
-    // fresh closure per render (e.g. one capturing different state) is honoured on the next interaction.
-  }, [fragment.chart_html, onThemeSelect])
+    // attached to now-detached elements. `onThemeSelect`/`selectedTheme` are also dependencies so a
+    // caller passing a fresh closure or a new selection is honoured on the next interaction/render.
+  }, [fragment.chart_html, onThemeSelect, selectedTheme])
 
   return (
     <div className="rp-chart-scroll" ref={scrollRef}>

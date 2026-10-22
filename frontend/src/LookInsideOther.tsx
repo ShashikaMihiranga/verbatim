@@ -1,4 +1,4 @@
-import type { Job } from './jobsApi'
+import type { Job, LookInsideOtherResult } from './jobsApi'
 
 // Stage 3 of the "Look inside Other" feature (docs/TODO.md, 2026-10-21 - mockup: Other-Flow*.dc.html in
 // the separate verbatim-visual-system project). The mockup's own ribbon diagram draws one precise path per
@@ -67,7 +67,12 @@ export default function LookInsideOther({
   onStart: () => void
 }) {
   const isRunning = job !== null && job.status === 'running'
-  const isDone = job !== null && job.status === 'done' && job.result !== null
+  // This component only ever receives a "look_inside_other" job (Report.tsx's own call site) - the
+  // `'known_added' in` check narrows `Job['result']`'s union down to `LookInsideOtherResult` for
+  // TypeScript, since the two job kinds' results share no discriminant field of their own.
+  const result: LookInsideOtherResult | null =
+    job !== null && job.result !== null && 'known_added' in job.result ? job.result : null
+  const isDone = job !== null && job.status === 'done' && result !== null
   const isFailed = job !== null && job.status === 'failed'
 
   return (
@@ -120,13 +125,13 @@ export default function LookInsideOther({
         </div>
       )}
 
-      {isDone && job?.result && (
+      {isDone && result && (
         <div className="lio-results">
           <ResultColumn
             title="Known themes"
             note="Answers that now match a theme already in the chart"
             accentVar="--t1"
-            count={job.result.known_added}
+            count={result.known_added}
             unit="answers"
             rows={[]}
           />
@@ -134,15 +139,15 @@ export default function LookInsideOther({
             title="New themes found"
             note="Patterns no known theme covered"
             accentVar="--accent"
-            count={job.result.new_themes.reduce((sum, t) => sum + t.count, 0)}
+            count={result.new_themes.reduce((sum, t) => sum + t.count, 0)}
             unit="answers"
-            rows={job.result.new_themes.map((t) => ({ label: t.label, count: t.count }))}
+            rows={result.new_themes.map((t) => ({ label: t.label, count: t.count }))}
           />
           <ResultColumn
             title="Still in Other"
             note="Varied answers that don't repeat enough to group"
             accentVar="--other"
-            count={job.result.still_other_count}
+            count={result.still_other_count}
             unit="answers"
             rows={[]}
           />

@@ -30,15 +30,30 @@ function Badge({ confidence }: { confidence: 'solid' | 'tentative' }) {
 // size. Rendering itself, and the click/hover delegation for chart fragments that draw `[data-theme]`
 // groups (currently only the overview block's treemap), now live in the shared `ThemeChart` component -
 // also used by Themes.tsx's browse view - rather than a second, near-identical implementation here.
-function ChartFragment({ block, onThemeSelect }: { block: ReportBlock; onThemeSelect?: (name: string) => void }) {
-  return <ThemeChart fragment={block} title={block.chart_title} onThemeSelect={onThemeSelect} />
+function ChartFragment({
+  block, onThemeSelect, selectedTheme,
+}: {
+  block: ReportBlock
+  onThemeSelect?: (name: string) => void
+  // Theme editing (docs/TODO.md, fixed 2026-10-22): "selecting a theme in one chart highlights it in all
+  // charts" - every ChartFragment on the page receives the SAME selected name from ReportView's own
+  // `selectedThemeName` state, not just the overview block it originated from.
+  selectedTheme?: string | null
+}) {
+  return <ThemeChart fragment={block} title={block.chart_title} onThemeSelect={onThemeSelect} selectedTheme={selectedTheme} />
 }
 
 function Divider({ children }: { children: ReactNode }) {
   return <div className="rp-section">{children}</div>
 }
 
-function FindingBlock({ datasetId, block }: { datasetId: number; block: ReportBlock }) {
+function FindingBlock({
+  datasetId, block, selectedTheme,
+}: {
+  datasetId: number
+  block: ReportBlock
+  selectedTheme?: string | null
+}) {
   const [open, setOpen] = useState(false)
   const finding = block.finding
   if (!finding) return null
@@ -55,7 +70,7 @@ function FindingBlock({ datasetId, block }: { datasetId: number; block: ReportBl
           )}
         </div>
       </div>
-      <ChartFragment block={block} />
+      <ChartFragment block={block} selectedTheme={selectedTheme} />
       {open && finding.theme_id != null && <AnswerList id={datasetId} themeId={finding.theme_id} />}
     </Divider>
   )
@@ -140,6 +155,7 @@ export default function ReportView({
             overview={overview}
             variants={report.theme_chart_variants}
             onThemeSelect={setSelectedThemeName}
+            selectedTheme={selectedThemeName}
           />
           {selectedTheme && <ThemeDetail id={datasetId} theme={selectedTheme} />}
         </Divider>
@@ -152,7 +168,9 @@ export default function ReportView({
       )}
 
       {findings.length > 0
-        ? findings.map((b) => <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} />)
+        ? findings.map((b) => (
+            <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} selectedTheme={selectedThemeName} />
+          ))
         : report.also_checked_nothing_notable && (
             <Divider>
               <div className="rp-nothing">Also checked, nothing notable.</div>
@@ -161,7 +179,7 @@ export default function ReportView({
 
       {quality && (
         <Divider>
-          <ChartFragment block={quality} />
+          <ChartFragment block={quality} selectedTheme={selectedThemeName} />
         </Divider>
       )}
     </div>

@@ -54,7 +54,7 @@ from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, theme_nodes
 from .jobs import create_job, start_job
-from .models import CleanedFile, Column, Dataset, Job, Theme, User
+from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
     AnswerScore,
     AnthropicClaudeClient,
@@ -635,6 +635,275 @@ def look_inside_other(
         deadline_seconds=deadline,
         deadline_message=(
             f"Looking inside Other took longer than {int(deadline)} seconds and did not finish in time. "
+            "Try again."
+        ),
+    )
+    return {"job_id": job.id, "status": "running"}
+
+
+def _invalidate_report_for_edit(db: Session, dataset_id: int, column: str) -> None:
+    """Theme editing (docs/TODO.md, fixed 2026-10-22: rename/merge/split). A rename/merge/split changes
+    what a theme IS, which makes every stored `Finding.sentence` for this column (plain-English prose
+    written about the theme's OLD shape) stale - deletes the dataset+column's `Report` row outright,
+    rather than trying to patch individual `Finding` rows (which would still need a real Claude call to
+    write a correct replacement sentence anyway). This is the SAME "no report built yet" state `GET
+    /report` already handles gracefully (`app/api_report.py::get_report`'s own 404), so the owner just
+    re-clicks the existing "Build report"/"Rebuild report" button to get fresh, correct findings - no new
+    rebuild-trigger plumbing needed. Mirrors `app/api_report.py::_latest_report_for_column`'s own
+    "match by stored content.column" lookup (not imported from there - that module imports FROM this one,
+    so importing back would be circular)."""
+    for report in db.scalars(select(Report).where(Report.dataset_id == dataset_id)).all():
+        if isinstance(report.content, dict) and report.content.get("column") == column:
+            db.delete(report)
+
+
+class RenameThemeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+@router.patch("/datasets/{dataset_id}/themes/{theme_id}")
+def rename_theme(
+    dataset_id: int, theme_id: int, body: RenameThemeRequest,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Theme editing (docs/TODO.md, fixed 2026-10-22): the trivial case - updates `label`/`description`
+    on one stored `Theme` row in place, same "load the affected row(s) by id, mutate, commit" shape
+    `_apply_other_classification` already established, not `_write_theme_rows`'s full delete-and-
+    replace. Synchronous (no background job): nothing here re-embeds or re-clusters anything."""
+    ds = _own_dataset(db, user, dataset_id)
+    theme = db.get(Theme, theme_id)
+    if theme is None or theme.dataset_id != ds.id:
+        raise HTTPException(404, "Theme not found.")
+
+    theme.label = body.label.strip()
+    if body.description is not None:
+        theme.description = body.description.strip() or None
+    _invalidate_report_for_edit(db, ds.id, theme.column_name)
+    db.commit()
+
+    total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
+    return _theme_dict(theme, total)
+
+
+class MergeThemesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    column: str = Field(max_length=255)
+    theme_ids: list[int] = Field(min_length=2, max_length=20)
+    label: str | None = Field(default=None, max_length=255)
+
+
+@router.post("/datasets/{dataset_id}/themes/merge")
+def merge_themes(
+    dataset_id: int, body: MergeThemesRequest,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Theme editing (docs/TODO.md, fixed 2026-10-22): unions `answer_refs` across the given `Theme`
+    rows into the largest one (the same "largest wins" survivor convention
+    `app/text_pipeline/merging.py::_merge_one_level` already uses for the pipeline's own automatic
+    same-label merging - not that function's own entry point, which operates on `Cluster`/`ThemeLabel`
+    objects that only exist transiently during a build, never on live ORM rows), recomputes `tone`/
+    `sentiment` from scratch via `score_text` over the real cleaned text (no network - the owner's own
+    text, same `_load_clean_df` access `_write_theme_rows` already uses, not masked: nothing here
+    crosses to an external model), and deletes the absorbed rows (cascading any `Finding.theme_id`
+    pointing at one to `NULL` - handled by `_invalidate_report_for_edit` below regardless)."""
+    ds = _own_dataset(db, user, dataset_id)
+    rows = list(db.scalars(
+        select(Theme).where(
+            Theme.dataset_id == ds.id, Theme.column_name == body.column, Theme.id.in_(body.theme_ids),
+        )
+    ).all())
+    found_ids = {t.id for t in rows}
+    missing = sorted(set(body.theme_ids) - found_ids)
+    if missing:
+        raise HTTPException(404, f"Theme id(s) not found: {missing}")
+    if len(rows) < 2:
+        raise HTTPException(422, "Merging needs at least 2 distinct themes.")
+
+    clean_df, _plan = _load_clean_df(ds, db)
+    survivor = max(rows, key=lambda t: t.size)
+    label = (body.label or "").strip() or survivor.label
+
+    refs = sorted({r for t in rows for r in (t.answer_refs or [])})
+    scores: dict[int, AnswerScore] = {}
+    for r in refs:
+        try:
+            text = clean_df.at[r, body.column]
+        except KeyError:
+            continue
+        if not isinstance(text, str) or not text:
+            continue
+        polarity, tone = score_text(text)
+        scores[r] = AnswerScore(row=r, text=text, polarity=polarity, tone=tone)
+    tone, sentiment = _aggregate_tone(refs, scores)
+
+    survivor.label = label
+    survivor.answer_refs = refs
+    survivor.size = len(refs)
+    survivor.tone = tone
+    survivor.sentiment = sentiment
+    for t in rows:
+        if t.id != survivor.id:
+            db.delete(t)
+
+    _invalidate_report_for_edit(db, ds.id, body.column)
+    db.commit()
+
+    total = sum(t.size for t in _stored_themes(db, ds.id, body.column))
+    return _theme_dict(survivor, total)
+
+
+def _split_theme_error(e: BaseException) -> str | None:
+    """Same shape as `_look_inside_other_error` - the split job's only real-network step is the one
+    batched Claude labeling call (`label_and_consolidate`); re-embedding is Voyage, not Claude/Jev, and
+    `EmbeddingNotConfigured`/network errors there are unanticipated (no masking-boundary issue specific
+    to splitting an existing theme), so they fall through to the generic `job.error` message."""
+    if isinstance(e, LabelingError):
+        return f"Finding new themes failed: {e}"
+    return None
+
+
+def _apply_theme_split(
+    db: Session, dataset_id: int, column: str, theme_id: int,
+    candidates: "ConsolidatedCandidates", row_text: dict[int, str],
+) -> dict | None:
+    """Theme editing (docs/TODO.md, fixed 2026-10-22): split - writes `label_and_consolidate`'s output as
+    new `Theme` rows, same "load the affected row(s), mutate/add, commit" shape `_apply_other_classification`
+    already established. Unlike that function, there is no Jev classification step here (nothing to match
+    a leftover remainder against known themes) - a piece too small to count as its own theme
+    (`MIN_OTHER_NEW_THEME_SIZE`, reused rather than a second magic number) and `label_and_consolidate`'s own
+    dropped noise both fold back into the ORIGINAL theme's shrunk `answer_refs`, not a classification
+    target. The original is deleted outright only if nothing remains (mirrors `_apply_other_classification`'s
+    own "delete rather than keep a zero-size row" rule) - in practice a genuine split almost always leaves
+    SOME remainder (the merged-cluster noise), so this is the less common path here than in that function.
+
+    Returns `{"new_themes": [{"label","count"}], "remainder_count": int}`, or `None` if the original
+    theme was already gone (dataset/column deleted or rebuilt from under this job)."""
+    original = db.get(Theme, theme_id)
+    if original is None:
+        return None
+
+    column_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
+    column_id = column_row.id if column_row else None
+
+    def _scores_for(rows) -> dict[int, AnswerScore]:
+        out: dict[int, AnswerScore] = {}
+        for row in rows:
+            text = row_text.get(row)
+            if text is None:
+                continue
+            polarity, tone = score_text(text)
+            out[row] = AnswerScore(row=row, text=text, polarity=polarity, tone=tone)
+        return out
+
+    cluster_by_id = {c.id: c for c in candidates.result.clusters}
+    remainder: set[int] = {m.row for m in candidates.result.noise}
+    new_themes_summary: list[dict] = []
+    for label in candidates.labels:
+        cluster = cluster_by_id.get(label.cluster_id)
+        if cluster is None:
+            continue
+        rows = [m.row for m in cluster.members]
+        if len(rows) < MIN_OTHER_NEW_THEME_SIZE:
+            remainder.update(rows)  # too small to count as its own theme - folds back into the remainder
+            continue
+        tone, sentiment = _aggregate_tone(rows, _scores_for(rows))
+        db.add(Theme(
+            dataset_id=dataset_id, column_id=column_id, column_name=column,
+            label=label.label, description=label.description, size=len(rows),
+            sentiment=sentiment, tone=tone, answer_refs=sorted(rows), sub_themes=[],
+        ))
+        new_themes_summary.append({"label": label.label, "count": len(rows)})
+
+    if remainder:
+        remainder_rows = sorted(remainder)
+        tone, sentiment = _aggregate_tone(remainder_rows, _scores_for(remainder_rows))
+        original.answer_refs = remainder_rows
+        original.size = len(remainder_rows)
+        original.tone = tone
+        original.sentiment = sentiment
+    else:
+        db.delete(original)
+
+    _invalidate_report_for_edit(db, dataset_id, column)
+    db.commit()
+    return {"new_themes": new_themes_summary, "remainder_count": len(remainder)}
+
+
+@router.post("/datasets/{dataset_id}/themes/{theme_id}/split", status_code=202)
+def split_theme(
+    dataset_id: int, theme_id: int,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+    embedding_client: EmbeddingClient = Depends(get_embedding_client),
+    claude_client: ClaudeClient = Depends(get_claude_client),
+):
+    """Theme editing (docs/TODO.md, fixed 2026-10-22): the big case - re-embeds and re-clusters ONE
+    theme's own `answer_refs`, same technique "Look inside Other" already uses
+    (`other_classify.recluster_other`/`label_and_consolidate`, completely unchanged - this reuses them
+    directly rather than `subthemes.sub_cluster_themes`, which needs vectors already in memory from a
+    just-finished build; `Theme` rows never persist embedding vectors, so a split triggered days later
+    has no vectors to slice and must re-embed, exactly like "Look inside Other" does for the Other
+    bucket). A background job (`app/jobs.py`, like that feature) since re-embedding/re-clustering/
+    labeling is real, possibly-slow work - unlike rename/merge above, which are synchronous."""
+    ds = _own_dataset(db, user, dataset_id)
+    theme = db.get(Theme, theme_id)
+    if theme is None or theme.dataset_id != ds.id:
+        raise HTTPException(404, "Theme not found.")
+    column = theme.column_name
+    if not column:
+        raise HTTPException(409, "This theme has no column recorded; cannot split it.")
+    refs = list(theme.answer_refs or [])
+    if len(refs) < 2 * MIN_OTHER_NEW_THEME_SIZE:
+        raise HTTPException(
+            409, f"Need at least {2 * MIN_OTHER_NEW_THEME_SIZE} answers to split this theme into real pieces.",
+        )
+
+    clean_df, plan = _load_clean_df(ds, db)
+    confirmed = (ds.profile or {}).get("confirmed") or {}
+    question = (confirmed.get("question") or "").strip()
+    if not question:
+        question = ((ds.profile or {}).get("question") or {}).get("text") or column
+
+    if not _SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
+
+    dataset_id_ = ds.id
+    theme_id_ = theme.id
+    job = create_job(db, dataset_id_, column, "split_theme")
+    deadline = _themes_deadline_for(len(refs))
+
+    def _work(step: Callable[[str], None]) -> None:
+        step("Re-embedding this theme's answers")
+        refs_set = set(refs)
+        masked = model_safe_column(clean_df, plan, column)
+        row_text: dict[int, str] = {
+            int(row_index): text
+            for row_index, text in zip(clean_df.index, masked)
+            if text and int(row_index) in refs_set
+        }
+        rows = [r for r in refs if r in row_text]
+        texts = [row_text[r] for r in rows]
+        vectors = embedding_client.embed(texts)
+        reclustered = recluster_other(rows, texts, vectors)
+
+        step("Naming the pieces")
+        candidates = label_and_consolidate(reclustered, question, claude_client)
+
+        step("Finalizing")
+        with _db.SessionLocal() as job_db:
+            summary = _apply_theme_split(job_db, dataset_id_, column, theme_id_, candidates, row_text)
+            if summary is not None:
+                job_row = job_db.get(Job, job.id)
+                if job_row is not None:
+                    job_row.result = summary
+                    job_db.commit()
+
+    start_job(
+        job, _SLOTS, _work, _split_theme_error,
+        deadline_seconds=deadline,
+        deadline_message=(
+            f"Splitting this theme took longer than {int(deadline)} seconds and did not finish in time. "
             "Try again."
         ),
     )

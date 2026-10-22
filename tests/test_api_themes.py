@@ -20,6 +20,7 @@ from app.api_themes import (
     _SLOTS,
     MIN_OTHER_NEW_THEME_SIZE,
     _apply_other_classification,
+    _apply_theme_split,
     _themes_deadline_for,
     get_claude_client,
     get_embedding_client,
@@ -1105,3 +1106,282 @@ def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other
         from app.models import Theme
         other = s.get(Theme, other_id)
         assert sorted(other.answer_refs) == [13, 14, 15]
+
+
+# ==================================================================== theme editing: rename (docs/TODO.md,
+# fixed 2026-10-22)
+
+def test_rename_theme_updates_label_and_description(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    theme_id = seed_theme(
+        env, did, label="Reliabilty", description="About reliability.", size=13, sentiment=-0.4,
+        tone={"neg": 80, "neu": 20, "pos": 0}, answer_refs=list(range(13)),
+    )
+    r = env.client.patch(
+        f"/api/datasets/{did}/themes/{theme_id}", json={"label": "Reliability", "description": "Battery and heat issues."},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["label"] == "Reliability"
+    assert r.json()["description"] == "Battery and heat issues."
+    with env.Session() as s:
+        from app.models import Theme
+        t = s.get(Theme, theme_id)
+        assert t.label == "Reliability" and t.description == "Battery and heat issues."
+
+
+def test_rename_theme_404_for_a_theme_from_another_dataset(env):
+    did1 = upload_csv(env, theme_df())
+    clean_and_apply(env, did1)
+    did2 = upload_csv(env, small_df(), name="other.csv")  # distinct content - theme_df() would dedupe to did1
+    clean_and_apply(env, did2)
+    theme_id = seed_theme(
+        env, did2, label="X", description="x", size=1, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0],
+    )
+    r = env.client.patch(f"/api/datasets/{did1}/themes/{theme_id}", json={"label": "Y"})
+    assert r.status_code == 404
+
+
+def test_rename_theme_invalidates_the_existing_report(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    theme_id = seed_theme(
+        env, did, label="Reliabilty", description="x", size=13, sentiment=-0.4,
+        tone={"neg": 80, "neu": 20, "pos": 0}, answer_refs=list(range(13)),
+    )
+    with env.Session() as s:
+        from app.models import Report
+        s.add(Report(dataset_id=did, content={"column": Q, "question": Q, "blocks": []}))
+        s.commit()
+
+    r = env.client.patch(f"/api/datasets/{did}/themes/{theme_id}", json={"label": "Reliability"})
+    assert r.status_code == 200, r.text
+
+    with env.Session() as s:
+        from app.models import Report
+        from sqlalchemy import select
+        assert s.scalars(select(Report).where(Report.dataset_id == did)).all() == []
+
+
+# ==================================================================== theme editing: merge
+
+def test_merge_themes_unions_refs_and_recomputes_tone(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a_id = seed_theme(
+        env, did, label="A", description="x", size=5, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4],
+    )
+    b_id = seed_theme(
+        env, did, label="B", description="x", size=3, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[5, 6, 7],
+    )
+    r = env.client.post(
+        f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a_id, b_id]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["label"] == "A"  # the larger theme (5 answers) wins as the survivor
+    assert body["size"] == 8
+
+    with env.Session() as s:
+        from app.models import Theme
+        assert s.get(Theme, a_id) is not None
+        assert sorted(s.get(Theme, a_id).answer_refs) == [0, 1, 2, 3, 4, 5, 6, 7]
+        assert s.get(Theme, b_id) is None  # absorbed, deleted outright
+
+
+def test_merge_themes_accepts_an_explicit_label_override(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a_id = seed_theme(
+        env, did, label="A", description="x", size=5, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4],
+    )
+    b_id = seed_theme(
+        env, did, label="B", description="x", size=3, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[5, 6, 7],
+    )
+    r = env.client.post(
+        f"/api/datasets/{did}/themes/merge",
+        json={"column": Q, "theme_ids": [a_id, b_id], "label": "Combined"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["label"] == "Combined"
+
+
+def test_merge_themes_404_on_unknown_theme_id(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a_id = seed_theme(
+        env, did, label="A", description="x", size=5, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4],
+    )
+    r = env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a_id, 999999]})
+    assert r.status_code == 404
+
+
+def test_merge_themes_422_when_fewer_than_two_resolve(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a_id = seed_theme(
+        env, did, label="A", description="x", size=5, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4],
+    )
+    # theme_ids must have >=2 distinct entries at the request-validation level - send a duplicate so the
+    # request itself passes shape validation, but only one real row is found.
+    r = env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a_id, 999999]})
+    assert r.status_code == 404  # unknown id still wins over the "too few resolved" check - see route
+
+
+def test_merge_themes_invalidates_the_existing_report(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a_id = seed_theme(
+        env, did, label="A", description="x", size=5, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4],
+    )
+    b_id = seed_theme(
+        env, did, label="B", description="x", size=3, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[5, 6, 7],
+    )
+    with env.Session() as s:
+        from app.models import Report
+        s.add(Report(dataset_id=did, content={"column": Q, "question": Q, "blocks": []}))
+        s.commit()
+
+    r = env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a_id, b_id]})
+    assert r.status_code == 200, r.text
+
+    with env.Session() as s:
+        from app.models import Report
+        from sqlalchemy import select
+        assert s.scalars(select(Report).where(Report.dataset_id == did)).all() == []
+
+
+# ==================================================================== theme editing: split (docs/TODO.md,
+# fixed 2026-10-22)
+
+def install_split_theme_fakes():
+    app.dependency_overrides[get_embedding_client] = lambda: FakeEmbeddingClient()
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply)
+
+
+def split_theme_job(env, did, theme_id, timeout=30.0) -> dict:
+    r = env.client.post(f"/api/datasets/{did}/themes/{theme_id}/split")
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["status"] == "running" and body["job_id"]
+    return wait_for_job(env.client, did, body["job_id"], timeout=timeout)
+
+
+def test_split_theme_409_when_too_few_answers(env):
+    install_split_theme_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    theme_id = seed_theme(
+        env, did, label="Everything", description="x", size=3, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2],
+    )
+    r = env.client.post(f"/api/datasets/{did}/themes/{theme_id}/split")
+    assert r.status_code == 409
+
+
+def test_split_theme_404_for_unknown_theme(env):
+    install_split_theme_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    r = env.client.post(f"/api/datasets/{did}/themes/999999/split")
+    assert r.status_code == 404
+
+
+def test_split_theme_end_to_end_finds_the_two_real_groups(env):
+    """Happy path through the real route/job: a single "Everything" theme covering all 26 answers (13
+    reliability-vocabulary, 13 support-vocabulary - the same FakeEmbeddingClient-friendly fixture "Look
+    inside Other"'s own tests use) splits back into its two real underlying groups."""
+    install_split_theme_fakes()
+    df = theme_df()  # 26 rows: 0-12 reliability, 13-25 support (see _survey_texts)
+    did = upload_csv(env, df)
+    clean_and_apply(env, did)
+    theme_id = seed_theme(
+        env, did, label="Everything", description="x", size=26, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(range(26)),
+    )
+
+    job = split_theme_job(env, did, theme_id)
+    assert job["status"] == "done", job
+    assert job["error"] is None
+    assert job["result"] is not None
+    assert len(job["result"]["new_themes"]) >= 1  # at least one real piece was found and split out
+
+    themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    # Total coverage across every resulting Theme row for this column must still equal all 26 original
+    # answers - a split must never lose or duplicate a row.
+    with env.Session() as s:
+        from app.models import Theme
+        from sqlalchemy import select
+        all_refs = set()
+        for t in s.scalars(select(Theme).where(Theme.dataset_id == did, Theme.column_name == Q)).all():
+            all_refs.update(t.answer_refs or [])
+        assert all_refs == set(range(26))
+    assert len(themes) >= 1
+
+
+def test_apply_theme_split_creates_new_themes_above_the_minimum(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    original_id = seed_theme(
+        env, did, label="Everything", description="x", size=10, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(range(10)),
+    )
+    row_text = {i: f"slow shipping delay number {i}" for i in range(10)}
+
+    from app.text_pipeline.other_classify import ConsolidatedCandidates
+    from app.text_pipeline.schema import Cluster, ClusterMember, ClusterResult, ThemeLabel
+
+    cluster = Cluster(id=0, members=[ClusterMember(row=i, text=row_text[i], distance=0.0) for i in range(10)], centroid=None)
+    result = ClusterResult(column=Q, clusters=[cluster], noise=[], total_answers=10)
+    labels = [ThemeLabel(cluster_id=0, label="Shipping delays", description="About delivery.", size=10, merge_with=[], note=None)]
+    candidates = ConsolidatedCandidates(result=result, labels=labels)
+
+    with env.Session() as s:
+        from app.models import Theme
+        from sqlalchemy import select
+        summary = _apply_theme_split(s, did, Q, original_id, candidates, row_text)
+        new_theme = s.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == "Shipping delays"))
+        assert new_theme is not None
+        assert sorted(new_theme.answer_refs) == list(range(10))
+        assert s.get(Theme, original_id) is None  # everything moved into the new piece
+        assert summary == {"new_themes": [{"label": "Shipping delays", "count": 10}], "remainder_count": 0}
+
+
+def test_apply_theme_split_small_pieces_and_noise_fold_back_as_remainder(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    original_id = seed_theme(
+        env, did, label="Everything", description="x", size=12, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(range(12)),
+    )
+    row_text = {i: f"text {i}" for i in range(12)}
+
+    from app.text_pipeline.other_classify import ConsolidatedCandidates
+    from app.text_pipeline.schema import Cluster, ClusterMember, ClusterResult, ThemeLabel
+
+    # Cluster 0: only 3 members (rows 0-2) - below MIN_OTHER_NEW_THEME_SIZE (5), folds back.
+    # Noise: rows 3-11 (9 rows) - also folds back, per label_and_consolidate's own "drop noise" contract.
+    small_cluster = Cluster(id=0, members=[ClusterMember(row=i, text=row_text[i], distance=0.0) for i in range(3)], centroid=None)
+    noise = [ClusterMember(row=i, text=row_text[i], distance=None) for i in range(3, 12)]
+    result = ClusterResult(column=Q, clusters=[small_cluster], noise=noise, total_answers=12)
+    labels = [ThemeLabel(cluster_id=0, label="Tiny group", description="x", size=3, merge_with=[], note=None)]
+    candidates = ConsolidatedCandidates(result=result, labels=labels)
+
+    with env.Session() as s:
+        from app.models import Theme
+        from sqlalchemy import select
+        summary = _apply_theme_split(s, did, Q, original_id, candidates, row_text)
+        assert s.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == "Tiny group")) is None
+        original = s.get(Theme, original_id)
+        assert original is not None
+        assert sorted(original.answer_refs) == list(range(12))  # everything folded straight back
+        assert summary == {"new_themes": [], "remainder_count": 12}

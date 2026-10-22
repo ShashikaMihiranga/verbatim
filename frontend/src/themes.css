@@ -16,6 +16,18 @@
 .th-badge.solid { color: var(--pos); border-color: var(--pos); }
 .th-badge.tentative { color: var(--muted); }
 .th-desc { color: var(--muted); font-size: 14px; margin: 6px 0 14px; }
+
+/* Theme editing (docs/TODO.md, fixed 2026-10-22) - ThemeDetail.tsx's own inline rename form, shown only
+   when `onRename` is passed (Manage themes mode, never the read-only report page). Reuses .chip/.btn's
+   own tokens rather than inventing a second input style. */
+.th-edit { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.th-edit-desc { font: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); resize: vertical; min-height: 54px; }
+.th-edit-actions { display: flex; gap: 8px; }
+
+/* Merge control (same feature): a compact checklist of every theme, shown only in Manage themes mode. */
+.th-merge-list { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 14px 18px; margin-top: 16px; }
+.th-merge-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 14px; }
+.th-merge-row input { flex: none; }
 .th-pct { font-weight: 300; font-size: 28px; margin: 0 0 10px; font-variant-numeric: tabular-nums; }
 .th-pct span { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }
 

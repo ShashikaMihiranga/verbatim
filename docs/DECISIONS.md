@@ -1574,3 +1574,60 @@ dataset).
 
 All three profiling-gap stages (Stages 1-3) are now complete and committed to `staging`, not pushed yet.
 Moving on to the bigger unbuilt report features (theme editing, sharing/roles, export) next.
+
+## 2026-10-22 (Stage 4: theme editing - rename, merge, split - plus cross-chart selection highlight)
+SPEC.md section 5's "editing a theme (rename, merge, split) updates the whole report" and "selecting a
+theme in one chart highlights it in all charts" - both named in `docs/TODO.md` as unbuilt. All three edit
+operations follow `_apply_other_classification`'s own precedent ("Look inside Other"): load the affected
+`Theme` row(s) by id, mutate/add in place, commit - never `_write_theme_rows`'s full delete-and-replace.
+
+- **Rename** (`PATCH /datasets/{id}/themes/{theme_id}`): trivial, synchronous - updates `label`/
+  `description` on one row.
+- **Merge** (`POST .../themes/merge`): unions `answer_refs` across the given theme rows into the
+  largest one (survivor), recomputes `tone`/`sentiment` from scratch via `score_text` over the real
+  cleaned text (no masking - nothing here crosses to an external model), deletes the absorbed rows.
+- **Split** (`POST .../themes/{theme_id}/split`, a background job - the only one of the three that
+  re-embeds/re-clusters, so it can be slow): reuses `other_classify.recluster_other`/
+  `label_and_consolidate` DIRECTLY, unchanged - not `subthemes.sub_cluster_themes`, which needs vectors
+  already in memory from a just-finished build (`Theme` rows never persist embedding vectors, confirmed
+  the same way "Look inside Other" already established this). New `_apply_theme_split` writes the
+  result: pieces above `MIN_OTHER_NEW_THEME_SIZE` become new `Theme` rows, everything else (small pieces,
+  and `label_and_consolidate`'s own dropped noise) folds back into the original theme's shrunk
+  `answer_refs` - the original is deleted outright only if nothing remains.
+
+**Stale-findings problem, solved the same way for all three**: a rename/merge/split changes what a theme
+IS, which makes every stored `Finding.sentence` (plain-English prose about the theme's OLD shape) stale.
+New `_invalidate_report_for_edit` deletes the dataset+column's `Report` row outright after any edit -
+the SAME "no report built yet" state `GET /report` already handles gracefully, so the owner just
+re-clicks the existing "Build report"/"Rebuild report" button for fresh, correct findings. No new
+rebuild-trigger plumbing, no attempt to patch individual `Finding` rows (which would still need a real
+Claude call anyway).
+
+**Cross-chart highlight**: `ThemeChart.tsx` previously only ever dimmed on HOVER, never persisted a
+"selected" look, and `Report.tsx`'s own `selectedThemeName` state only drove the detail panel below the
+overview chart - not even that chart's own visual highlight, let alone any other chart on the page. New
+`selectedTheme` prop on `ThemeChart` applies a PERSISTED dim (restored after a hover ends, not cleared to
+blank), threaded into every `ThemeChart` instance on the report page (overview/tabs, every finding
+block, quality) and the Themes screen's own browse view - one page-level selection, not four independent
+hover states.
+
+Frontend: `Themes.tsx`'s "Manage themes" mode (previously pure read-only browse, confirmed via
+investigation before building this) gained the actual edit affordances - an inline rename form in
+`ThemeDetail.tsx` (shown only when `onRename` is passed, so the read-only report page never sees it), a
+compact merge checklist, and a "Split this theme" button with its own job progress (reusing
+`JobProgress.tsx`, extended with a `split_theme` kind).
+
+**Tests**: 13 new in `tests/test_api_themes.py` (rename: update + cross-dataset 404 + report
+invalidation; merge: union + label-override + 404/422 + report invalidation; split: 409 too-few-answers,
+404 unknown theme, a real end-to-end job test using the same FakeEmbeddingClient-friendly reliability/
+support fixture "Look inside Other"'s own tests use, plus 2 direct unit tests of `_apply_theme_split`
+covering the above-floor and below-floor/noise-folds-back cases). Frontend: 4 new (`ThemeDetail`'s
+rename-button visibility; `ThemeChart`'s persisted-selection behavior - dims on initial render, survives
+a hover ending, updates on re-render, stays off when unset). Backend suite: 691 passed (686 + 5 route/
+job tests, plus unit tests counted above), 1 skipped. Frontend: 82 passed; `tsc -b && vite build` clean.
+
+**Not yet done**: not live-verified in a browser (the rename/merge/split UI and the cross-chart highlight
+have not been visually confirmed against a real running app yet).
+
+Committed to `staging`, not pushed yet. Moving on to sharing/roles and export next - both substantially
+larger, ground-up builds (new ACL model; a new Playwright-based rendering dependency).

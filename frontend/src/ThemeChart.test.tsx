@@ -106,6 +106,65 @@ describe('ThemeChart', () => {
     expect(onThemeSelect).toHaveBeenCalledWith('Charging')
   })
 
+  // Theme editing (docs/TODO.md, fixed 2026-10-22): a PERSISTED highlight, independent of hover.
+
+  it('dims every OTHER group when selectedTheme is set, on initial render', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} selectedTheme="Cost" />)
+    })
+    const costGroup = container.querySelector('[data-theme="Cost"]') as HTMLElement
+    const chargingGroup = container.querySelector('[data-theme="Charging"]') as HTMLElement
+    expect(costGroup.style.opacity).toBe('')
+    expect(chargingGroup.style.opacity).toBe('0.28')
+  })
+
+  it('restores the persisted selection (not a blanket clear) after a hover ends', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} selectedTheme="Charging" />)
+    })
+    const costGroup = container.querySelector('[data-theme="Cost"]') as HTMLElement
+    const chargingGroup = container.querySelector('[data-theme="Charging"]') as HTMLElement
+    const costRect = container.querySelector('#cost-rect') as HTMLElement
+
+    act(() => {
+      costRect.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    })
+    expect(chargingGroup.style.opacity).toBe('0.28') // dimmed by hover over Cost
+
+    act(() => {
+      costRect.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }))
+    })
+    // Charging is the PERSISTED selection - it must stay highlighted, and Cost must go back to dimmed,
+    // not both cleared to '' the way a plain hover-only mouseout would.
+    expect(chargingGroup.style.opacity).toBe('')
+    expect(costGroup.style.opacity).toBe('0.28')
+  })
+
+  it('updates the highlight when selectedTheme changes on a re-render, without changing the fragment', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} selectedTheme="Cost" />)
+    })
+    const costGroup = container.querySelector('[data-theme="Cost"]') as HTMLElement
+    const chargingGroup = container.querySelector('[data-theme="Charging"]') as HTMLElement
+    expect(costGroup.style.opacity).toBe('')
+
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} selectedTheme="Charging" />)
+    })
+    expect(costGroup.style.opacity).toBe('0.28')
+    expect(chargingGroup.style.opacity).toBe('')
+  })
+
+  it('dims nothing when selectedTheme is null/omitted - today\'s behaviour unchanged', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} />)
+    })
+    const costGroup = container.querySelector('[data-theme="Cost"]') as HTMLElement
+    const chargingGroup = container.querySelector('[data-theme="Charging"]') as HTMLElement
+    expect(costGroup.style.opacity).toBe('')
+    expect(chargingGroup.style.opacity).toBe('')
+  })
+
   it('does not throw when no onThemeSelect is passed and a theme is clicked', () => {
     act(() => {
       root.render(<ThemeChart fragment={fragment()} />)

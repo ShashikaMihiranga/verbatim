@@ -67,6 +67,21 @@ describe('ThemeDetail', () => {
     expect(html).not.toContain('th-desc')
   })
 
+  // Theme editing (docs/TODO.md, fixed 2026-10-22): the rename affordance only shows up when `onRename`
+  // is passed - Report.tsx's own read-only call site never passes it, only Themes.tsx's Manage themes
+  // mode does. Clicking it to actually enter edit mode needs jsdom (a real click), not exercised here -
+  // see this file's own comment on why `renderToStaticMarkup` only covers the initial render.
+  it('shows no rename button when onRename is not given (the read-only report page)', () => {
+    const html = renderToStaticMarkup(<ThemeDetail id={1} theme={theme()} />)
+    expect(html).not.toContain('name-edit-btn')
+  })
+
+  it('shows a rename button when onRename is given (Manage themes mode)', () => {
+    const html = renderToStaticMarkup(<ThemeDetail id={1} theme={theme()} onRename={() => {}} />)
+    expect(html).toContain('name-edit-btn')
+    expect(html).toContain('Rename Charging')
+  })
+
   it('renders each sub-theme\'s label and rounded percentage, and the "Sub-themes" heading', () => {
     const html = renderToStaticMarkup(
       <ThemeDetail

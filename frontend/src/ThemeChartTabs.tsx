@@ -20,10 +20,14 @@ export default function ThemeChartTabs({
   overview,
   variants,
   onThemeSelect,
+  selectedTheme,
 }: {
   overview: ReportBlock
   variants: Record<string, ReportThemeChartVariant>
   onThemeSelect?: (name: string) => void
+  // Theme editing (docs/TODO.md, fixed 2026-10-22): threaded into both the treemap tab and whichever
+  // variant tab is active, so a selection persists across tab switches too, not just within one tab.
+  selectedTheme?: string | null
 }) {
   const [active, setActive] = useState<string>('treemap')
   const available = VARIANT_ORDER.filter((v) => variants?.[v.id])
@@ -31,7 +35,7 @@ export default function ThemeChartTabs({
   if (available.length === 0) {
     // No variants reached the response (e.g. an older cached report) - render just the treemap, same as
     // before this feature existed, rather than showing a tab bar with nothing to switch to.
-    return <ThemeChart fragment={overview} title={overview.chart_title} onThemeSelect={onThemeSelect} />
+    return <ThemeChart fragment={overview} title={overview.chart_title} onThemeSelect={onThemeSelect} selectedTheme={selectedTheme} />
   }
 
   return (
@@ -61,9 +65,9 @@ export default function ThemeChartTabs({
       </div>
 
       {active === 'treemap' ? (
-        <ThemeChart fragment={overview} title={overview.chart_title} onThemeSelect={onThemeSelect} />
+        <ThemeChart fragment={overview} title={overview.chart_title} onThemeSelect={onThemeSelect} selectedTheme={selectedTheme} />
       ) : (
-        <ThemeChart fragment={variants[active]} title={variants[active].chart_title} />
+        <ThemeChart fragment={variants[active]} title={variants[active].chart_title} selectedTheme={selectedTheme} />
       )}
     </div>
   )

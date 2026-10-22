@@ -108,6 +108,43 @@ export async function lookInsideOther(id: number, column: string): Promise<Build
   return r.json()
 }
 
+// Theme editing (docs/TODO.md, fixed 2026-10-22): rename is synchronous (no background job - nothing
+// here re-embeds or re-clusters anything), returns the updated ThemeCard directly. Also invalidates any
+// already-built report for this column server-side (see app/api_themes.py's own comment) - a caller
+// should re-fetch/rebuild the report after this, not assume it is still valid.
+export async function renameTheme(id: number, themeId: number, label: string, description?: string | null): Promise<ThemeCard> {
+  const r = await authFetch(`/api/datasets/${id}/themes/${themeId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, description: description ?? null }),
+  })
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
+// Theme editing: merges 2+ themes into the largest one (the survivor), returning its updated ThemeCard.
+// `label` overrides the survivor's own label when given; omitted/undefined keeps it. Also invalidates
+// any already-built report for this column, same as renameTheme above.
+export async function mergeThemes(id: number, column: string, themeIds: number[], label?: string): Promise<ThemeCard> {
+  const r = await authFetch(`/api/datasets/${id}/themes/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ column, theme_ids: themeIds, label: label ?? null }),
+  })
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
+// Theme editing: re-embeds and re-clusters one theme's own answers in a background job (same 202
+// `{job_id, status: "running"}` shape as buildThemes/lookInsideOther above) - the real resulting pieces
+// land in that job's own `result` (SplitThemeResult), polled via pollJob, never a rejection here except
+// the cheap/instant checks (ownership, unknown theme, too few answers to split meaningfully).
+export async function splitTheme(id: number, themeId: number): Promise<BuildStarted> {
+  const r = await authFetch(`/api/datasets/${id}/themes/${themeId}/split`, { method: 'POST' })
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
 export async function getThemes(id: number, column: string): Promise<ThemesResponse> {
   const r = await authFetch(`/api/datasets/${id}/themes?${new URLSearchParams({ column })}`)
   if (!r.ok) throw await asError(r)
