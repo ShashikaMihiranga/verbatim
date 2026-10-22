@@ -412,18 +412,19 @@ def theme_answer_rows(themes: list["Theme"]) -> list[int]:
 
 # -------------------------------------------------------------------- build_score_data
 
-def build_score_data(
-    column: str, scale: tuple[int, int], raw_by_row: dict[int, float],
+def _cross_tab_bands(
+    column: str, bands: list[Band], raw_by_row: dict[int, float],
     nodes: list["ThemeNode"], floor: int,
 ) -> "ScoreData | None":
-    """Cross-tabs a score column against themes: for each surviving band (per `band_score(scale)`), what
-    % of that band's answers came from each theme (`ScoreBand.mix`, in `nodes` order so it lines up
-    positionally with `ReportData.themes`), plus a count-weighted-average sentiment and the band's total
-    answer count. A band whose total answer count is below `floor` is dropped entirely (not shown as a
-    degenerate near-empty band); if fewer than 2 bands survive, returns `None` - nothing meaningful to
-    show, mirroring SPEC.md's chart skip-condition philosophy. See the module-level note above for the
-    sentiment approximation this uses."""
-    bands = band_score(scale)
+    """Shared cross-tab core behind `build_score_data` (bands from `band_score`) and `build_numeric_data`
+    (bands from `band_quartiles`) - the banding scheme differs, but "for each surviving band, what % of
+    that band's answers came from each theme" is identical math either way, so it lives once here rather
+    than twice. For each surviving band (per the given `bands`), computes `ScoreBand.mix` (in `nodes`
+    order so it lines up positionally with `ReportData.themes`), a count-weighted-average sentiment, and
+    the band's total answer count. A band whose total answer count is below `floor` is dropped entirely
+    (not shown as a degenerate near-empty band); if fewer than 2 bands survive, returns `None` - nothing
+    meaningful to show, mirroring SPEC.md's chart skip-condition philosophy. See the module-level note
+    above for the sentiment approximation this uses."""
     band_by_row = apply_bands(raw_by_row, bands)
     if not band_by_row:
         return None
@@ -458,6 +459,35 @@ def build_score_data(
         ))
 
     return ScoreData(name=column, bands=result_bands)
+
+
+def build_score_data(
+    column: str, scale: tuple[int, int], raw_by_row: dict[int, float],
+    nodes: list["ThemeNode"], floor: int,
+) -> "ScoreData | None":
+    """A `score`-kind column (fixed 0-10-style scale) cross-tabbed against themes - see `_cross_tab_bands`
+    for the actual math, shared with `build_numeric_data` below."""
+    return _cross_tab_bands(column, band_score(scale), raw_by_row, nodes, floor)
+
+
+def build_numeric_data(
+    column: str, raw_by_row: dict[int, float], nodes: list["ThemeNode"], floor: int,
+    unit: str | None = None,
+) -> "ScoreData | None":
+    """A `numeric`-kind column (no fixed scale - age, income, or any other free numeric measure) cross-
+    tabbed against themes, reusing `_cross_tab_bands`'s exact same math `build_score_data` uses, just
+    banded via `band_quartiles` (skewed-numeric quartile cuts, SPEC.md section 9.2) instead of a fixed
+    scale - `numeric` columns are never confirmed with a `check_score_range` scale, so there is no fixed
+    scale to band against. Rendered via the same `f_byscore` chart `score`-kind columns already use (see
+    `app/charts.py`'s `TITLES`/`FRAMES`) - no new chart type needed, since both are "a numeric measure cut
+    into bands, themes mixed inside each" (`ScoreData`'s own shape). Returns `None` if `band_quartiles`
+    can't band this column (fewer than 2 distinct values) rather than raising - same "skip this candidate,
+    try the next" contract every other `build_*_data` function here already has."""
+    try:
+        bands = band_quartiles(list(raw_by_row.values()), unit)
+    except ValueError:
+        return None
+    return _cross_tab_bands(column, bands, raw_by_row, nodes, floor)
 
 
 # -------------------------------------------------------------------- build_segment_data
@@ -618,14 +648,15 @@ def build_trend_data(
 # -------------------------------------------------------------------- pick_structured_columns
 
 def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]]:
-    """Every confirmed, not-switched-off `Column` name of each kind ("score", "segment", "date"), in
+    """Every confirmed, not-switched-off `Column` name of each kind ("score", "segment", "date", "numeric",
+    "yes_no"), in
     `Column.position` order - every candidate, not just the first, so `build_structured_context` can try
     each in turn and use the first one that actually produces a usable chart, instead of committing to
     upload-column-order regardless of whether that specific column's data survives suppression."""
     cols = list(db.scalars(
         select(Column).where(Column.dataset_id == dataset_id).order_by(Column.position)
     ).all())
-    result: dict[str, list[str]] = {"score": [], "segment": [], "date": []}
+    result: dict[str, list[str]] = {"score": [], "segment": [], "date": [], "numeric": [], "yes_no": []}
     for c in cols:
         if c.kind in result and not (c.stats or {}).get("off"):
             result[c.kind].append(c.name)
@@ -647,6 +678,16 @@ def build_structured_context(
     chart-worthy data after suppression is simply skipped in favour of the next one; if every candidate for
     a kind fails, that field is left out of the returned `StructuredContext` (stays at its `None`/`""`
     default) - never raises.
+
+    `numeric`/`yes_no` kinds (docs/TODO.md, fixed 2026-10-22) feed the SAME `score`/`segment` slots above,
+    tried only after every real `score`/`segment` candidate has failed - NOT a separate pair of slots.
+    `ReportData.score`/`.segment` (app/findings.py::build_report_data) are each a single field read
+    directly by `app/charts.py`'s `f_byscore`/`f_heatmap`, so two independently-populated "quantitative"
+    or "categorical" slots could never both be rendered by the one chart id each renderer owns - a real
+    architectural limit, not an oversight. In practice this is also the common real-world shape: a
+    dataset confirms ONE quantitative measure (whichever kind it happens to be) and/or ONE small
+    categorical split, not two of each - so falling back, rather than adding parallel slots nothing could
+    render, is the honest fit.
 
     `filter_rows`, when not `None`, restricts every candidate's row universe to rows also in that set
     (the Filters feature's entire mechanism - see `resolve_filter_rows` below: every downstream per-kind
@@ -681,6 +722,36 @@ def build_structured_context(
             context.score_scale = scale
             break
 
+    # `numeric` fallback - only reached if no real `score` candidate above won. No `unit` lookup here
+    # (this module is deliberately pure - no database access, per its own docstring): `build_numeric_data`'s
+    # `unit` only controls label formatting ($ vs plain numbers), defaulting to plain numbers is honest
+    # either way, never wrong, just less decorated.
+    if context.score is None:
+        for numeric_col in columns.get("numeric", []):
+            raw_numeric: dict[int, float] = {}
+            for r in rows:
+                try:
+                    v = clean_df.at[r, numeric_col]
+                except KeyError:
+                    continue
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isnan(fv):
+                    continue
+                raw_numeric[r] = fv
+            numeric_data = build_numeric_data(numeric_col, raw_numeric, nodes, floor)
+            if numeric_data is not None:
+                context.score = numeric_data
+                context.score_column_name = numeric_col
+                # No `score_raw_by_row`/`score_scale` here - `resolve_filter_rows`'s score-band filter
+                # applies `band_score(structured.score_scale)`, a fixed-scale banding scheme a numeric
+                # column was never confirmed against; leaving these at their `None` default means a score-
+                # band filter request against a numeric-backed `context.score` honestly yields "no rows
+                # match" (see `resolve_filter_rows`'s own docstring) rather than banding it wrongly.
+                break
+
     for segment_col in columns.get("segment", []):
         raw_seg: dict[int, str] = {}
         for r in rows:
@@ -707,6 +778,28 @@ def build_structured_context(
             context.segment_column_name = segment_col
             context.segment_raw_by_row = raw_seg_capped
             break
+
+    # `yes_no` fallback - only reached if no real `segment` candidate above won. A yes/no column is just
+    # a 2-value categorical, so `build_segment_data` applies unmodified; still capped the same cosmetic
+    # way (though a genuine yes/no column is already <=2 groups by construction, so the cap never
+    # actually trims it).
+    if context.segment is None:
+        for yes_no_col in columns.get("yes_no", []):
+            raw_yn: dict[int, str] = {}
+            for r in rows:
+                try:
+                    v = clean_df.at[r, yes_no_col]
+                except KeyError:
+                    continue
+                if v is None or (isinstance(v, float) and math.isnan(v)):
+                    continue
+                raw_yn[r] = v
+            yes_no_data = build_segment_data(yes_no_col, raw_yn, nodes, floor)
+            if yes_no_data is not None:
+                context.segment = yes_no_data
+                context.segment_column_name = yes_no_col
+                context.segment_raw_by_row = raw_yn
+                break
 
     for date_col in columns.get("date", []):
         parsed_by_row: dict[int, date] = {}

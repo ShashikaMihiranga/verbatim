@@ -64,7 +64,7 @@ from .findings_structured import (
     resolve_filter_rows,
 )
 from .jobs import create_job, start_job
-from .models import Dataset, Finding, Report, Theme, User
+from .models import Column, Dataset, Finding, Report, Theme, User
 from .text_pipeline import ClaudeClient
 from .text_pipeline.labeling import OTHER_LABEL
 
@@ -138,6 +138,18 @@ def _structured_context_for(
     return build_structured_context(
         clean_df, plan, themes, nodes, cols, _suppression_min_group_size(), filter_rows=filter_rows,
     )
+
+
+def _column_role(db: Session, dataset_id: int, column_name: str, primary_kind: str) -> str:
+    """The "Columns used" chip's honest role label (docs/DECISIONS.md's 2026-09-28 "honest 'Columns
+    used'" entry): `structured.score`/`.segment` can now be won by a `numeric`/`yes_no`-kind column
+    falling back into that same slot (docs/TODO.md, fixed 2026-10-22 - see
+    `build_structured_context`'s own docstring for why there's no separate slot), so the chip must say
+    what kind the WINNING column actually is, not always "score"/"segment" regardless. Falls back to
+    `primary_kind` itself if the `Column` row can't be found (should not happen in practice - defensive
+    only, never a user-visible error)."""
+    col = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column_name))
+    return col.kind if col is not None else primary_kind
 
 
 def _latest_report_for_column(db: Session, dataset_id: int, column: str) -> Report | None:
@@ -279,9 +291,9 @@ def _render_report(
     # matching docs/DECISIONS.md's 2026-09-28 "honest 'Columns used' chip row" entry's own stated philosophy.
     columns_used: list[dict[str, str]] = [{"name": column, "role": "open-ended text"}]
     if structured.score is not None:
-        columns_used.append({"name": structured.score_column_name, "role": "score"})
+        columns_used.append({"name": structured.score_column_name, "role": _column_role(db, ds.id, structured.score_column_name, "score")})
     if structured.segment is not None:
-        columns_used.append({"name": structured.segment_column_name, "role": "segment"})
+        columns_used.append({"name": structured.segment_column_name, "role": _column_role(db, ds.id, structured.segment_column_name, "segment")})
     if structured.trend is not None:
         columns_used.append({"name": structured.trend_column_name, "role": "date"})
 

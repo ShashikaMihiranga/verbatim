@@ -1495,3 +1495,53 @@ genuine small word-based category still IS `segment`. Full backend suite: 667 pa
 skipped - no regressions anywhere else, including the existing real-dataset-shaped profiling fixtures.
 
 Committed to `staging`, not pushed yet.
+
+## 2026-10-22 (Stage 2 of column-profiling fixes: numeric/yes_no kinds now feed real charts/findings)
+Both kinds were fully profileable/confirmable/cleanable already but silently dropped at the very first
+step of the structured-context pipeline: `pick_structured_columns` (`app/findings_structured.py`) only
+ever collected `score`/`segment`/`date`, so a confirmed `numeric` or `yes_no` column had no effect on the
+report at all, no error, no note - exactly the honesty gap `docs/TODO.md` named.
+
+**Design decision made during this stage, not assumed from the plan**: the original plan sketched
+`numeric`/`yes_no` as their OWN separate `StructuredContext` slots. Investigation found this doesn't
+work: `ReportData.score`/`.segment` (`app/findings.py::build_report_data`) are each a single field read
+directly by `app/charts.py`'s `f_byscore`/`f_heatmap` - there is exactly one "byScore" chart and one
+"heatmap" chart per report, so two independently-populated quantitative/categorical slots could never
+both be rendered by the one chart id each renderer owns. Fixed by making `numeric`/`yes_no` a FALLBACK
+into the SAME `score`/`segment` slots - tried only after every real `score`/`segment` candidate has
+already failed, in `build_structured_context`. This is also the honest real-world fit: a dataset
+confirms one quantitative measure and/or one small categorical split, not two of each.
+
+- **`numeric`**: new `build_numeric_data` (reusing the cross-tab core extracted from `build_score_data`
+  into a shared `_cross_tab_bands` helper - no duplicated math), banded via the existing but
+  never-called `band_quartiles` (skewed-numeric quartile cuts) instead of a fixed 0-10-style scale.
+  Rendered via the SAME `f_byscore` chart `score`-kind columns already use - no new chart type.
+- **`yes_no`**: reuses `build_segment_data` directly and unmodified - a yes/no column is just a 2-value
+  categorical, exactly the shape that function already handles generically.
+- **Candidate findings**: `score_correlation_candidates`/`segment_skew_candidates`
+  (`app/findings.py::candidate_findings`) already read `ScoreData`/`SegmentData` generically (never
+  assume the column was confirmed `score`/`segment` specifically) - since numeric/yes_no now land in the
+  exact same `context.score`/`.segment` fields, they get real findings with ZERO changes to those two
+  functions. No `Candidate.id` collision risk either, since (per the fallback design above) only one of
+  {score, numeric} and one of {segment, yes_no} can ever be populated at once.
+- **Filters safety**: a numeric-backed `context.score` deliberately leaves `score_raw_by_row`/
+  `score_scale` at their `None` default (no scale was ever confirmed for it) - `resolve_filter_rows`'s
+  existing `None`-check already makes a score-band filter against it honestly yield "no rows match,"
+  with zero changes needed there.
+- **"Columns used" chip honesty**: since the `score`/`segment` chip could now be won by a `numeric`/
+  `yes_no` column, `app/api_report.py`'s new `_column_role` looks up the real `Column.kind` for the
+  winning column name instead of hardcoding "score"/"segment" regardless - the chip now honestly says
+  what kind the winning column actually is.
+
+**Tests**: 7 new in `tests/test_findings_structured.py` (`build_numeric_data` unit tests - quartile
+banding, the "too few distinct values" `None` case, unit-formatted labels; `build_structured_context`
+fallback behavior - numeric winning when no real score exists, a real score column still winning over a
+numeric one, same pair for yes_no/segment), plus 2 existing `pick_structured_columns` tests updated for
+the new `numeric`/`yes_no` keys in its returned dict. Full backend suite: 674 passed (667 + 7), 1
+skipped - no regressions.
+
+**Not yet done**: no frontend change was needed (the existing `f_byscore`/`f_heatmap` chart components
+and the "Columns used" chip already render whatever role string the backend sends), but this has not
+been live-verified in a browser against a real numeric/yes_no-confirmed dataset yet.
+
+Committed to `staging`, not pushed yet.

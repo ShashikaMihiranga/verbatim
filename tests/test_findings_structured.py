@@ -26,6 +26,7 @@ from app.findings_structured import (
     band_dates,
     band_quartiles,
     band_score,
+    build_numeric_data,
     build_score_data,
     build_segment_data,
     build_structured_context,
@@ -320,6 +321,37 @@ def test_build_score_data_returns_none_when_no_row_has_a_valid_score():
     assert build_score_data("Score", (0, 10), {}, nodes, floor=2) is None
 
 
+# -------------------------------------------------------------------- build_numeric_data (docs/TODO.md,
+# fixed 2026-10-22) - same cross-tab core as build_score_data, banded via quartiles instead of a fixed scale
+
+def test_build_numeric_data_bands_via_quartiles_not_a_fixed_scale():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    # 10 distinct values, 0..90 - quartile cuts, not a Low/Middle/High 0-10 scale.
+    raw_by_row = {i: float(i * 10) for i in range(10)}
+    data = build_numeric_data("Age", raw_by_row, nodes, floor=2)
+    assert data is not None
+    assert data.name == "Age"
+    assert len(data.bands) == 4  # 4 distinct quartile cuts at this spread
+    assert sum(b.answers for b in data.bands) == 10
+
+
+def test_build_numeric_data_returns_none_when_fewer_than_two_distinct_values():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    raw_by_row = {i: 5.0 for i in range(10)}  # every value identical - band_quartiles itself raises
+    assert build_numeric_data("Age", raw_by_row, nodes, floor=2) is None
+
+
+def test_build_numeric_data_formats_labels_with_the_given_unit():
+    themes = abc_themes()
+    nodes = theme_nodes(themes, total_answered=10)
+    raw_by_row = {i: float(i * 1000) for i in range(10)}
+    data = build_numeric_data("Income", raw_by_row, nodes, floor=2, unit="currency")
+    assert data is not None
+    assert all(label.startswith("$") for label in {b.label for b in data.bands})
+
+
 # -------------------------------------------------------------------- build_segment_data
 
 def test_build_segment_data_hand_computable_values_overall_and_highlight():
@@ -498,7 +530,9 @@ def test_pick_structured_columns_respects_position_order(session):
     session.commit()
 
     picked = pick_structured_columns(ds.id, session)
-    assert picked == {"score": ["Score1", "Score2"], "segment": ["Segment1"], "date": ["Date1"]}
+    assert picked == {
+        "score": ["Score1", "Score2"], "segment": ["Segment1"], "date": ["Date1"], "numeric": [], "yes_no": [],
+    }
 
 
 def test_pick_structured_columns_skips_switched_off_columns(session):
@@ -519,7 +553,7 @@ def test_pick_structured_columns_none_when_no_matching_kind(session):
     session.commit()
 
     picked = pick_structured_columns(ds.id, session)
-    assert picked == {"score": [], "segment": [], "date": []}
+    assert picked == {"score": [], "segment": [], "date": [], "numeric": [], "yes_no": []}
 
 
 # -------------------------------------------------------------------- build_structured_context
@@ -598,6 +632,113 @@ def test_build_structured_context_falls_back_to_the_next_candidate_when_the_firs
     assert context.segment_column_name == "GoodSegment"
     groups_by_label = {g.label: g.n for g in context.segment.groups}
     assert groups_by_label == {"North": 170, "South": 130}
+
+
+# -------------------------------------------------------------------- numeric/yes_no kinds (docs/TODO.md,
+# fixed 2026-10-22): feed the SAME score/segment slots as a fallback, only when no real score/segment
+# candidate won.
+
+def test_build_structured_context_builds_score_from_a_numeric_column_via_quartiles():
+    """The real gap this fixes: a confirmed `numeric`-kind column (no check_score_range step, since
+    numeric columns are never scored against a fixed scale) used to be silently dropped entirely - now
+    it feeds context.score via band_quartiles instead."""
+    n = 300
+    rows = range(n)
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 100, -0.1, list(range(150, 250))),
+        make_theme("Other", 50, 0.0, list(range(250, 300))),
+    ]
+    nodes = theme_nodes(themes, total_answered=300)
+    age = [20 + (i % 60) for i in rows]  # spread 20-79, well clear of every quartile-band floor
+    clean_df = pd.DataFrame({"Age": age})
+    plan = CleaningPlan(steps=[], settings={}, columns={})
+
+    context = build_structured_context(
+        clean_df, plan, themes, nodes, {"score": [], "segment": [], "date": [], "numeric": ["Age"], "yes_no": []},
+        floor=30,
+    )
+
+    assert context.score is not None
+    assert context.score_column_name == "Age"
+    assert len(context.score.bands) in (2, 4)  # band_quartiles' own 4-band (or 2-band fallback) contract
+    # No scale was ever confirmed for a numeric column - resolve_filter_rows must not band this wrongly.
+    assert context.score_raw_by_row is None
+    assert context.score_scale is None
+
+
+def test_build_structured_context_prefers_a_real_score_column_over_numeric():
+    """Regression pin: numeric is a FALLBACK, not a parallel slot - when a real score column already won,
+    a numeric candidate must never override it."""
+    n = 300
+    rows = range(n)
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 100, -0.1, list(range(150, 250))),
+        make_theme("Other", 50, 0.0, list(range(250, 300))),
+    ]
+    nodes = theme_nodes(themes, total_answered=300)
+    score = [[3, 7, 9][i % 3] for i in rows]
+    age = [20 + (i % 60) for i in rows]
+    clean_df = pd.DataFrame({"Score": score, "Age": age})
+    plan = _plan_with_score_step("Score", [0, 10])
+
+    context = build_structured_context(
+        clean_df, plan, themes, nodes, {"score": ["Score"], "segment": [], "date": [], "numeric": ["Age"], "yes_no": []},
+        floor=30,
+    )
+
+    assert context.score_column_name == "Score"
+
+
+def test_build_structured_context_builds_segment_from_a_yes_no_column():
+    """The real gap this fixes: a confirmed `yes_no`-kind column used to be silently dropped entirely -
+    now it feeds context.segment via build_segment_data directly (a yes/no column is just a 2-value
+    categorical, no new code path needed)."""
+    n = 300
+    rows = range(n)
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 100, -0.1, list(range(150, 250))),
+        make_theme("Other", 50, 0.0, list(range(250, 300))),
+    ]
+    nodes = theme_nodes(themes, total_answered=300)
+    recommend = ["Yes" if i < 170 else "No" for i in rows]  # 170/130, clear of the heatmap floor
+    clean_df = pd.DataFrame({"WouldRecommend": recommend})
+    plan = CleaningPlan(steps=[], settings={}, columns={})
+
+    context = build_structured_context(
+        clean_df, plan, themes, nodes,
+        {"score": [], "segment": [], "date": [], "numeric": [], "yes_no": ["WouldRecommend"]}, floor=30,
+    )
+
+    assert context.segment is not None
+    assert context.segment_column_name == "WouldRecommend"
+    groups_by_label = {g.label: g.n for g in context.segment.groups}
+    assert groups_by_label == {"Yes": 170, "No": 130}
+
+
+def test_build_structured_context_prefers_a_real_segment_column_over_yes_no():
+    """Regression pin: yes_no is a FALLBACK, not a parallel slot."""
+    n = 300
+    rows = range(n)
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 100, -0.1, list(range(150, 250))),
+        make_theme("Other", 50, 0.0, list(range(250, 300))),
+    ]
+    nodes = theme_nodes(themes, total_answered=300)
+    segment = ["North" if i < 170 else "South" for i in rows]
+    recommend = ["Yes" if i < 170 else "No" for i in rows]
+    clean_df = pd.DataFrame({"Segment": segment, "WouldRecommend": recommend})
+    plan = CleaningPlan(steps=[], settings={}, columns={})
+
+    context = build_structured_context(
+        clean_df, plan, themes, nodes,
+        {"score": [], "segment": ["Segment"], "date": [], "numeric": [], "yes_no": ["WouldRecommend"]}, floor=30,
+    )
+
+    assert context.segment_column_name == "Segment"
 
 
 # -------------------------------------------------------------------- integration: full build_report_data
