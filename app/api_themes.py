@@ -797,8 +797,18 @@ def _apply_theme_split(
             out[row] = AnswerScore(row=row, text=text, polarity=polarity, tone=tone)
         return out
 
+    # Starts from EVERY row this split actually considered (`row_text`'s own keys - the real, non-blank
+    # answers the job embedded/reclustered), not `candidates.result.noise`. A real bug found via live
+    # browser verification, not assumed away: `label_and_consolidate` has its own early-return for "every
+    # cluster got labeled Other" that discards `result.noise`/`result.clusters` entirely (returns `[]` for
+    # both, by design - see that function's own docstring), which used to leave `remainder` empty in that
+    # case - with no new themes created either, the whole original theme (and every one of its real
+    # answers) was silently deleted outright, with the job still reporting "done", not "failed". Starting
+    # from the full row set and only REMOVING rows once they positively land in a new theme makes every
+    # row accounted for by construction, the same safety shape `_apply_other_classification` already uses
+    # (default to staying put, never silently dropped).
+    remainder: set[int] = set(row_text.keys())
     cluster_by_id = {c.id: c for c in candidates.result.clusters}
-    remainder: set[int] = {m.row for m in candidates.result.noise}
     new_themes_summary: list[dict] = []
     for label in candidates.labels:
         cluster = cluster_by_id.get(label.cluster_id)
@@ -806,8 +816,7 @@ def _apply_theme_split(
             continue
         rows = [m.row for m in cluster.members]
         if len(rows) < MIN_OTHER_NEW_THEME_SIZE:
-            remainder.update(rows)  # too small to count as its own theme - folds back into the remainder
-            continue
+            continue  # too small to count as its own theme - stays in remainder (already there by default)
         tone, sentiment = _aggregate_tone(rows, _scores_for(rows))
         db.add(Theme(
             dataset_id=dataset_id, column_id=column_id, column_name=column,
@@ -815,6 +824,7 @@ def _apply_theme_split(
             sentiment=sentiment, tone=tone, answer_refs=sorted(rows), sub_themes=[],
         ))
         new_themes_summary.append({"label": label.label, "count": len(rows)})
+        remainder.difference_update(rows)  # these rows are now accounted for by their new theme
 
     if remainder:
         remainder_rows = sorted(remainder)

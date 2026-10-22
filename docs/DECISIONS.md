@@ -1761,3 +1761,41 @@ not been built/deployed on Railway yet, so the production image size/build-time 
 chart wiring, the open-text column picker, theme editing (rename/merge/split + cross-chart highlight),
 sharing/roles, and export. Every stage is committed to `staging` individually, none pushed yet - push
 needs explicit confirmation, same standing rule as every other push this session.
+
+## 2026-10-23 (real bug found via live browser verification: theme split could silently delete a theme)
+Live-verified Stage 2/4/5/6 against a real running app for the first time (local dev server, real
+Voyage/Claude keys, real browser clicks) - exactly the "not yet live-verified" gap every one of the
+Stage 1-6 entries above flagged. Chart-type switcher, cross-chart highlight, rename, and export (PNG,
+downloaded and visually inspected) all confirmed working correctly. Splitting a theme did not.
+
+**The bug**: split a 40-answer "Battery life and overheating" theme (deliberately homogeneous test
+vocabulary - hard to find distinct sub-groups in). The job reported "done", but the ENTIRE theme and all
+40 of its real answers vanished - `total_answers` dropped from 70 to 30, confirmed via the API, not just
+a visual glitch. Root cause: `_apply_theme_split` (`app/api_themes.py`) seeded its `remainder` set from
+`candidates.result.noise` - but `other_classify.label_and_consolidate` has its own early-return for
+"every cluster got labeled Other" that returns a `ClusterResult` with BOTH `clusters=[]` AND `noise=[]`
+(discards the original noise entirely - see that function's own docstring, unchanged by this fix). With
+no clusters and no noise, the old code's `remainder` stayed empty, no new themes were created either, and
+the "delete if nothing remains" rule (copied from `_apply_other_classification`, where it's correct)
+deleted the original theme outright - 40 real answers gone, job still "done", no error anywhere.
+
+**The fix**: `remainder` now starts as the FULL set of rows the split actually considered
+(`set(row_text.keys())`), and only shrinks when a row positively lands in a new theme - the same "default
+to staying put, never silently dropped" shape `_apply_other_classification` already uses for its own
+remainder (which never had this bug, because it iterates every original row explicitly rather than
+trusting a cluster library's own notion of "noise"). Now a split that finds nothing distinct leaves the
+original theme fully intact, exactly like a split that finds only small/noisy pieces already did.
+
+**New regression test** (`test_apply_theme_split_never_loses_rows_when_nothing_real_is_found`) pins
+`label_and_consolidate`'s exact early-return shape (`clusters=[]`, `noise=[]`, `labels=[]`) directly
+against `_apply_theme_split`, asserting the original theme survives with every answer intact. The two
+existing split unit tests were re-checked against the fix by hand (both still pass unchanged - neither
+happened to exercise the empty-clusters-and-empty-noise case). Backend suite: 710 passed (709 + 1), 1
+skipped - no regressions. Re-verified live after the fix: same split on the same theme (freshly rebuilt)
+now reports `remainder_count: 40`, `new_themes: []`, and the API confirms all 70 answers still present
+across both themes - the honest "found nothing to split" outcome for this input, not data loss.
+
+This is exactly the kind of bug the plan's own "not yet live-verified" notes were warning could exist -
+found by actually doing it, not by more unit tests against assumptions. Committed to `staging`, not
+pushed yet. Worth repeating for sharing/export's own still-unverified pieces (collaborator flows, PPTX/
+PDF content, large-report export timing) before considering this round fully done.

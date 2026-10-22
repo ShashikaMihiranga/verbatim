@@ -1385,3 +1385,38 @@ def test_apply_theme_split_small_pieces_and_noise_fold_back_as_remainder(env):
         assert original is not None
         assert sorted(original.answer_refs) == list(range(12))  # everything folded straight back
         assert summary == {"new_themes": [], "remainder_count": 12}
+
+
+def test_apply_theme_split_never_loses_rows_when_nothing_real_is_found(env):
+    """Real bug, found via live browser verification, not assumed away: `label_and_consolidate` has its
+    own early-return for "every cluster got labeled Other" that returns a `ClusterResult` with BOTH
+    `clusters=[]` AND `noise=[]` (discarding the original noise entirely - see that function's own
+    docstring). The old implementation seeded `remainder` from `candidates.result.noise` alone, so this
+    exact case left `remainder` empty with no new themes either - the whole original theme (all of its
+    real answers) was silently deleted outright, with the job still reporting "done". Confirmed live: a
+    40-answer theme vanished completely after a split that found no distinct sub-groups. Must instead
+    leave the original theme's answers untouched."""
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    original_id = seed_theme(
+        env, did, label="Everything", description="x", size=12, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(range(12)),
+    )
+    row_text = {i: f"text {i}" for i in range(12)}
+
+    from app.text_pipeline.other_classify import ConsolidatedCandidates
+    from app.text_pipeline.schema import ClusterResult
+
+    # Exactly label_and_consolidate's own early-return shape: no clusters, no noise, no labels.
+    candidates = ConsolidatedCandidates(
+        result=ClusterResult(column=Q, clusters=[], noise=[], total_answers=12), labels=[],
+    )
+
+    with env.Session() as s:
+        from app.models import Theme
+        summary = _apply_theme_split(s, did, Q, original_id, candidates, row_text)
+        original = s.get(Theme, original_id)
+        assert original is not None  # NOT deleted - this is the real bug this test pins
+        assert sorted(original.answer_refs) == list(range(12))  # every answer preserved, none lost
+        assert original.size == 12
+        assert summary == {"new_themes": [], "remainder_count": 12}
