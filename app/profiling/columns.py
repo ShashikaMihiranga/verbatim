@@ -38,7 +38,10 @@ KIND_LABELS = {
 
 # ------------------------------------------------------------ name hints
 _SCORE_HINT = re.compile(r"score|rating|rate|likelihood|likely|satisf|nps|recommend|agree|scale|stars?|rank")
-_ID_TOKENS = {"id", "uuid", "guid", "ref", "reference", "index", "serial", "record", "respondent", "row", "key"}
+_ID_TOKENS = {
+    "id", "uuid", "guid", "ref", "reference", "index", "serial", "record", "respondent", "row", "key",
+    "sku", "barcode", "upc", "ean", "gtin", "isbn",
+}
 _PERSON_TOKENS = {"name", "firstname", "lastname", "surname", "email", "phone", "mobile", "address", "ip"}
 _QUESTION_HINT = re.compile(r"question|prompt")
 _DATE_HINT = re.compile(r"date|time|timestamp|month|created|submitted|day$")
@@ -319,6 +322,21 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
         reason = "Every value is different and there are no words in it, so it looks like an ID or reference code."
         return out()
 
+    # ID-like columns (barcodes/SKUs/manufacturer numbers) can have real repeats - the same SKU ordered
+    # by several respondents - without ever hitting the `distinct == n` floor the id_or_junk check above
+    # relies on, so a column shaped exactly like a small category (2..._segment_max_distinct(n) distinct
+    # values) can still be a code/identifier, not a meaningful group. Re-run the same digit-heavy/
+    # no-space content check used above, requiring EVERY distinct value to look code-like (not just a
+    # name hint) - a genuine category ("Red"/"Blue"/"Green") never satisfies this, so this is a real
+    # disambiguator, not a broader net over ordinary segments.
+    looks_like_codes = bool(strs) and all(
+        any(ch.isdigit() for ch in v[:20]) and " " not in v for v in strs
+    )
+    if 2 <= distinct <= _segment_max_distinct(n) and looks_like_codes:
+        kind, conf = "id_or_junk", 0.85 if id_hint else 0.7
+        reason = f"{distinct} different codes repeated across rows, which looks like an ID or reference code, not a meaningful group."
+        return out()
+
     if 2 <= distinct <= _segment_max_distinct(n) and distinct <= 0.5 * n:
         kind = "segment"
         conf = 0.9 if med_words <= 3 else 0.7
@@ -329,17 +347,23 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
         reason = "The same value in every row, so it tells us nothing."
         return out()
 
-    if med_words >= 4:
+    # Sentence-length alone isn't enough to call this real open text - SPEC.md section 3 says open text
+    # needs "mostly unique values" too. Below the 0.3 floor (the same number this branch's own confidence
+    # math already treated as the low cutoff, and frontend/src/Themes.tsx's own UNIQUENESS_FLOOR), a
+    # column of long-but-heavily-repeated sentences falls through to short_text below instead of a
+    # demoted-confidence open_text - it isn't free text, it's a long boilerplate value repeated often.
+    if med_words >= 4 and uniq_ratio >= 0.3:
         kind = "open_text"
-        conf = 0.95 if uniq_ratio >= 0.6 else 0.8 if uniq_ratio >= 0.3 else 0.65
+        conf = 0.95 if uniq_ratio >= 0.6 else 0.8
         reason = f"Most answers are sentences (about {med_words:g} words) and most are different, so we find themes in them."
-        if uniq_ratio < 0.3:
-            reason = f"Longer answers (about {med_words:g} words), but many repeat, so it may be a group column."
         return out()
 
     kind = "short_text"
     conf = 0.8 if uniq_ratio < 0.9 else 0.65
-    reason = f"Short answers (usually {max(1, int(med_words))} to 3 words) with {distinct} different values, so we count and rank them."
+    if med_words >= 4:
+        reason = f"Longer answers (about {med_words:g} words), but many repeat, so it may be a group column."
+    else:
+        reason = f"Short answers (usually {max(1, int(med_words))} to 3 words) with {distinct} different values, so we count and rank them."
     return out()
 
 

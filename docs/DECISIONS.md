@@ -1462,3 +1462,36 @@ in a real browser yet), and the still-open question from Stage 1 of whether a re
 configured anywhere to live-test this end to end.
 
 Committed to `staging`, not pushed yet.
+
+## 2026-10-22 (Stage 1 of column-profiling fixes: open_text uniqueness gate + ID-like segment false positives)
+Two real gaps from `docs/TODO.md`'s "Column profiling & report adaptivity" section, fixed in
+`app/profiling/columns.py`:
+
+**`open_text` didn't gate on uniqueness.** The `if med_words >= 4:` branch set `kind = "open_text"`
+regardless of `uniq_ratio` - the ratio only ever demoted `conf`/`reason`, never the kind itself, against
+SPEC.md section 3's own "mostly unique values" requirement for open text. Fixed: the branch now requires
+`uniq_ratio >= 0.3` too (the same floor the old confidence math already treated as the low cutoff, and
+the same number `frontend/src/Themes.tsx`'s own `UNIQUENESS_FLOOR` already uses, so both layers now agree
+on one number instead of the frontend quietly re-deriving a floor the backend never actually enforced). A
+column that fails the floor now falls through to `short_text` with an honest "may be a group column"
+reason, not a demoted-confidence `open_text` that still gets run through the real embed/cluster pipeline.
+
+**ID-like columns (barcodes/SKUs/manufacturer numbers) with repeats were classified `segment`.** The
+existing `id_or_junk` ID-detection (digit-heavy + no-space content check) only fired when `distinct ==
+n` (every value unique) - a SKU/barcode column that happens to repeat (same SKU ordered by multiple
+respondents) skipped straight to the `segment` branch, which had no ID-likeness check at all, just a
+cardinality/uniqueness-ratio test. Fixed: re-run the same digit-heavy/no-space content check (now
+requiring EVERY distinct value to look code-like, not just a name hint) before the `segment` branch, for
+columns still inside `_segment_max_distinct`'s existing cardinality ceiling - a genuine category
+("Red"/"Blue"/"Green") never satisfies this content check, so it's a real disambiguator, not a broader
+net over ordinary segments. Also extended `_ID_TOKENS` with `sku`/`barcode`/`upc`/`ean`/`gtin`/`isbn` (the
+exact column names named in the TODO entry) so the name-hint signal catches them too, boosting confidence
+when it does.
+
+**Tests**: 4 new in `tests/test_profiling.py` - a long-but-heavily-repeated boilerplate column (must NOT
+be `open_text` any more), a regression pin that genuinely unique long answers still ARE `open_text`, a
+digit-heavy repeated-code column (must be `id_or_junk`, not `segment`), and a regression pin that a
+genuine small word-based category still IS `segment`. Full backend suite: 667 passed (663 + 4), 1
+skipped - no regressions anywhere else, including the existing real-dataset-shaped profiling fixtures.
+
+Committed to `staging`, not pushed yet.

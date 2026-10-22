@@ -67,6 +67,48 @@ def test_profile_column_small_dataset_segment_ceiling_unchanged():
     assert result["kind"] != "segment"
 
 
+# ---------------------------------------------------------------- open_text uniqueness gate + ID-like
+# segment false positives (docs/TODO.md "Column profiling & report adaptivity", fixed 2026-10-22)
+
+
+def test_open_text_requires_a_uniqueness_floor_not_just_sentence_length():
+    """Real gap: med_words>=4 alone used to classify open_text regardless of uniq_ratio, only demoting
+    confidence/reason text. A column of long, heavily-repeated boilerplate sentences (20 distinct values,
+    each repeated ~50x - uniq_ratio well below the 0.3 floor) must NOT be open_text any more."""
+    boilerplate = [f"Thank you for your purchase, order number {i} has shipped as expected today." for i in range(20)]
+    values = [boilerplate[i % 20] for i in range(1000)]
+    result = profile_column("notes", values, total_rows=1000)
+    assert result["kind"] != "open_text"
+
+
+def test_open_text_still_classifies_genuinely_unique_long_answers():
+    """Regression pin: real free text (every answer distinct, long sentences) must still be open_text -
+    the uniqueness floor must not demote the common, correct case."""
+    values = [f"Reliability complaint number {i}: the battery drains fast and it overheats constantly." for i in range(200)]
+    result = profile_column("feedback", values, total_rows=200)
+    assert result["kind"] == "open_text"
+
+
+def test_id_like_column_with_repeats_is_not_classified_segment():
+    """Real gap: a barcode/SKU/manufacturer-number column with repeats (not every value unique, so the
+    distinct==n id_or_junk check never fires) was classified segment just because its cardinality looked
+    small-group-shaped. 10 distinct codes repeated across 900 rows (well within the segment cardinality
+    ceiling for this row count) must be ignored, not treated as a meaningful category to filter/heatmap
+    by."""
+    codes = [f"SKU{900000 + i}" for i in range(10)]  # digit-heavy but not pure numeric (letters block numeric parsing)
+    values = [codes[i % 10] for i in range(900)]
+    result = profile_column("manufacturerNumber", values, total_rows=900)
+    assert result["kind"] == "id_or_junk"
+
+
+def test_genuine_small_category_with_text_values_still_classifies_segment():
+    """Regression pin: the new ID-like check must not catch real categories - word-shaped values (not
+    digit-heavy, no-space codes) in the same cardinality range must still be segment."""
+    values = [["Red", "Blue", "Green", "Yellow"][i % 4] for i in range(200)]
+    result = profile_column("colors", values, total_rows=200)
+    assert result["kind"] == "segment"
+
+
 # ---------------------------------------------------------------- headerless detection (2026-10-21)
 
 
