@@ -711,3 +711,82 @@ def test_concurrency_cap_holds_while_jobs_are_genuinely_running(env):
     final2 = wait_for_job(env.client, did2, job2_id, timeout=5)
     assert final1["status"] == "done", final1
     assert final2["status"] == "done", final2
+
+
+# ---------------------------------------------------------------- export (docs/TODO.md, fixed
+# 2026-10-22). These actually launch a real headless Chromium (app/export.py) and fetch Google Fonts over
+# a real network connection - unlike every other test in this file, NOT run against a fake/no-network
+# guard, since there is no way to screenshot a real page without a real browser. Slower than this file's
+# norm (seconds, not milliseconds) - this is the real cost of a faithful render, not a test inefficiency.
+
+def test_export_requires_a_valid_format(env):
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    build_report_job(env, did)
+    r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "svg"})
+    assert r.status_code == 422
+
+
+def test_export_404_when_no_report_built_yet(env):
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "png"})
+    assert r.status_code == 404
+
+
+def test_export_png(env):
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    build_report_job(env, did)
+
+    r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "png"})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"  # real PNG magic bytes, not an error body
+    assert len(r.content) > 1000
+
+
+def test_export_pptx(env):
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    build_report_job(env, did)
+
+    r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "pptx"})
+    assert r.status_code == 200, r.text
+    assert r.content[:2] == b"PK"  # a real zip-based .pptx, not an error body
+    from pptx import Presentation
+    import io
+    prs = Presentation(io.BytesIO(r.content))
+    assert len(prs.slides) >= 1  # one slide per block (SPEC.md's own "one block per slide")
+
+
+def test_export_pdf(env):
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    build_report_job(env, did)
+
+    r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "pdf"})
+    assert r.status_code == 200, r.text
+    assert r.content[:5] == b"%PDF-"
+
+
+def test_export_404_for_another_users_dataset(env):
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    build_report_job(env, did)
+
+    uid2, = make_users(env, "clerk-export-isolation")
+    as_user(uid2)
+    r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "png"})
+    assert r.status_code == 404

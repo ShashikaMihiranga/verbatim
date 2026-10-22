@@ -12,9 +12,17 @@ RUN npm run build
 # Stage 2: Python runtime with the built front end.
 FROM python:3.12-slim AS run
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
+# Export (docs/TODO.md, fixed 2026-10-22): Playwright's own browser cache, pointed under /app rather
+# than its default /root/.cache - the app runs as the non-root `verbatim` user below, which would
+# otherwise never see a cache built while still root. The later `chown -R verbatim:verbatim /app` covers
+# this path too, same as everything else under /app.
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+# --with-deps also apt-installs the OS libraries Chromium needs (must run as root, before `USER verbatim`
+# below) - see app/export.py's own module docstring for why this app needs a real browser engine at all.
+RUN playwright install --with-deps chromium
 # Safety net: make `uvicorn ... --port $PORT` work even when Railway runs it without a shell.
 COPY docker/uvicorn-shim.sh /usr/local/bin/uvicorn
 RUN chmod +x /usr/local/bin/uvicorn

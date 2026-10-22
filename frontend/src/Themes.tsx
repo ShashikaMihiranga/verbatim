@@ -4,8 +4,8 @@ import { getProfile } from './api'
 import type { ColumnProfile, DatasetView, Kind } from './api'
 import { buildThemes, getThemeAnswers, getThemes, getThemesChart, lookInsideOther, mergeThemes, renameTheme, splitTheme } from './themesApi'
 import type { ThemeAnswer, ThemeCard, ThemeChartResponse } from './themesApi'
-import { buildReport, getReport } from './reportApi'
-import type { ReportFilters, ReportResponse } from './reportApi'
+import { buildReport, exportReport, getReport } from './reportApi'
+import type { ExportFormat, ReportFilters, ReportResponse } from './reportApi'
 import { getLatestJob, pollJob } from './jobsApi'
 import type { Job } from './jobsApi'
 import JobProgress from './JobProgress'
@@ -173,6 +173,7 @@ export default function Themes() {
   const [filters, setFilters] = useState<ReportFilters>({})
   const [manageThemes, setManageThemes] = useState(false)
   const [showShare, setShowShare] = useState(false)
+  const [exporting, setExporting] = useState<ExportFormat | null>(null)
   const [error, setError] = useState('')
   const [themesChart, setThemesChart] = useState<ThemeChartResponse | null>(null)
   const [selectedThemeId, setSelectedThemeId] = useState<number | null>(null)
@@ -494,6 +495,26 @@ export default function Themes() {
     }
   }
 
+  async function handleExport(format: ExportFormat) {
+    if (!column) return
+    setError('')
+    setExporting(format)
+    try {
+      const blob = await exportReport(id, column, format)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `report-${id}-${column}.${format}`.replace(/\s+/g, '_')
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+    setExporting(null)
+  }
+
   const themesRunning = themesJob !== null && themesJob.status === 'running'
   const themesFailed = themesJob !== null && themesJob.status === 'failed'
   const reportRunning = reportJob !== null && reportJob.status === 'running'
@@ -563,6 +584,19 @@ export default function Themes() {
             <button type="button" className="btn quiet" onClick={() => setShowShare(!showShare)}>
               {showShare ? 'Hide sharing' : 'Share'}
             </button>
+            {/* Export (docs/TODO.md, fixed 2026-10-22): no SVG option here - see app/export.py's own
+                module docstring for why that format is deliberately not offered. */}
+            {(['png', 'pptx', 'pdf'] as const).map((fmt) => (
+              <button
+                key={fmt}
+                type="button"
+                className="btn quiet"
+                disabled={exporting !== null}
+                onClick={() => void handleExport(fmt)}
+              >
+                {exporting === fmt ? 'Exporting...' : `Export ${fmt.toUpperCase()}`}
+              </button>
+            ))}
           </div>
           {showShare && column && <SharePanel datasetId={id} column={column} />}
         </>

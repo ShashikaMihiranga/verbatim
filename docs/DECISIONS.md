@@ -1697,3 +1697,67 @@ precedent `Themes.tsx` itself already documents); `tsc -b && vite build` clean.
 
 Committed to `staging`, not pushed yet. Moving on to export (PNG/SVG/PPTX/PDF) next - the last stage,
 needing a new Playwright-based rendering dependency.
+
+## 2026-10-22 (Stage 6: export - PNG, PPTX, PDF via Playwright; SVG deliberately not offered)
+New `app/export.py` + `GET /api/datasets/{id}/report/export?column=...&format=png|pptx|pdf`. Added
+`playwright`/`python-pptx`/`reportlab` to `requirements.txt`, installed Chromium locally
+(`playwright install chromium`, confirmed working with a real screenshot before building anything on top
+of it), and added the same `playwright install --with-deps chromium` step to the `Dockerfile` (before
+`USER verbatim`, since `--with-deps` needs root to apt-install Chromium's OS libraries) with
+`PLAYWRIGHT_BROWSERS_PATH` pointed under `/app` so the non-root runtime user can actually read the
+browser cache the build stage downloaded.
+
+**SVG export is deliberately NOT offered - found during this stage, not assumed from the plan.** The
+original plan sketched "SVG kept as a per-block export... just serve the chart_html fragment's SVG
+content." Building it revealed this doesn't work honestly: extracting just the `<svg>...</svg>`
+substring from a chart's `chart_html` would silently drop every absolutely-positioned HTML label div
+next to it - exactly the thing `app/charts.py`'s own docstrings say those charts need (SVG `<text>`/
+`foreignObject` can't do what those labels need, confirmed by investigation before this stage started).
+Shipping that would mean an export that looks like the real chart minus its own labels - the same kind
+of misleading output this project's own design discipline avoids elsewhere (the Arc tab, the sub-theme
+coverage gate). PNG/PPTX/PDF are all screenshot-based instead (one headless-Chromium page per block,
+wrapped in the exact same CSS custom-property theme shell `app/charts.py::render()` already uses for its
+internal `/frame/{id}` gallery - reused unchanged, not reinvented), so they are always faithful to
+whatever the real chart actually renders, hybrid or not.
+
+**A real rendering bug found and fixed via an actual screenshot, not assumed correct**: the first render
+put each block's title in a `<div>` SIBLING to the `.v` container instead of inside it - `.v`'s own
+`font-family:'Jost'` only cascades to its own descendants, so titles silently fell back to the browser's
+serif default. Caught by actually looking at a rendered PNG (saved and viewed), not by trusting the code;
+fixed by moving the title inside `.v`.
+
+Timing measured directly (not assumed): a small 2-block test report took ~1.7s (PNG), ~4.2s (PPTX), ~2.6s
+(PDF) - well within a normal HTTP request, so the route runs synchronously rather than as a background
+job, matching the plan's own "decide based on real timing" instruction. A much larger report (more
+finding blocks) would scale roughly linearly with block count via `_render_block_pngs`'s one-browser-page-
+per-block loop - not yet measured against a real large report; worth revisiting if export ever times out
+in practice.
+
+Reuses `_render_report`'s own block list unchanged (same `chart_html`/`chart_width`/`chart_height` the
+live report page already renders) - no second rendering path, `app/export.py` only adds the screenshot
+step on top. Read-only route (`_own_dataset`'s default `min_role="viewer"`) - an editor or viewer
+collaborator can export the same report the owner can.
+
+Frontend: `reportApi.ts::exportReport` (fetches a `Blob`), three "Export PNG/PPTX/PDF" buttons in
+`Themes.tsx`'s report-page foot area (same place as "Share"), downloading via a temporary `<a>` +
+`URL.createObjectURL` - no new page/route needed.
+
+**Tests**: 6 new in `tests/test_api_report.py` - unlike every other test in that file, these actually
+launch a real headless Chromium and fetch Google Fonts over a real network connection (there is no way to
+screenshot a real page without a real browser), so they are NOT run under that file's own `_NoSockets`
+no-network guard. Covers: 422 on an invalid format (confirms `svg` is genuinely rejected, not silently
+accepted), 404 before a report exists, a real PNG (magic-byte check), a real PPTX (opened with
+`python-pptx`, confirms slide count), a real PDF (magic-byte check), and ownership isolation (a second
+user gets 404). Backend suite: 709 passed (703 + 6), 1 skipped - full suite now takes ~39s (up from ~26s,
+the Playwright overhead) - no regressions. Frontend: 82 passed (unchanged, same "no test coverage for a
+thin fetch-wrapper" precedent as the sharing stage); `tsc -b && vite build` clean.
+
+**Not yet done**: not live-verified in a real browser against a real running app (only the FastAPI
+TestClient + a manually-saved/manually-viewed PNG, which is how the font bug above was actually caught);
+large-report export timing is unmeasured; the Dockerfile change (Playwright + Chromium + its OS deps) has
+not been built/deployed on Railway yet, so the production image size/build-time impact is unconfirmed.
+
+**All 6 stages of this round's work are now complete**: 2 column-profiling bug fixes, numeric/yes_no
+chart wiring, the open-text column picker, theme editing (rename/merge/split + cross-chart highlight),
+sharing/roles, and export. Every stage is committed to `staging` individually, none pushed yet - push
+needs explicit confirmation, same standing rule as every other push this session.

@@ -104,6 +104,18 @@ export interface ReportResponse {
   theme_chart_variants: Record<string, ReportThemeChartVariant>
 }
 
+// Export (docs/TODO.md, fixed 2026-10-22). PNG/PPTX/PDF only - see app/export.py's own module docstring
+// for why SVG is deliberately not offered (this pipeline's charts are a genuine SVG+HTML hybrid, so
+// extracting just the <svg> part would silently drop every HTML label next to it).
+export type ExportFormat = 'png' | 'pptx' | 'pdf'
+
+export async function exportReport(id: number, column: string, format: ExportFormat): Promise<Blob> {
+  const params = new URLSearchParams({ column, format })
+  const r = await authFetch(`/api/datasets/${id}/report/export?${params}`)
+  if (!r.ok) throw await asError(r)
+  return r.blob()
+}
+
 async function asError(r: Response): Promise<Error> {
   let msg = `Something went wrong (${r.status}).`
   try {

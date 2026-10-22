@@ -39,6 +39,7 @@ from datetime import date
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,6 +48,7 @@ from . import db as _db
 from .api_themes import _load_clean_df, get_claude_client
 from .api_upload import _own_dataset, current_user
 from .charts import TITLES, render_parts
+from .export import ExportBlock, build_report_pdf, build_report_pptx, render_report_png
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .db import get_db
 from .findings import (
@@ -444,4 +446,50 @@ def get_report(
     return _render_report(
         db, ds, column, report,
         segment=segment, score_band=score_band, date_from=parsed_from, date_to=parsed_to,
+    )
+
+
+_EXPORT_CONTENT_TYPES = {
+    "png": "image/png",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "pdf": "application/pdf",
+}
+
+
+@router.get("/datasets/{dataset_id}/report/export")
+def export_report(
+    dataset_id: int, column: str, format: str,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Export (docs/TODO.md, fixed 2026-10-22; SPEC.md section 5): PNG/PPTX/PDF only - see
+    `app/export.py`'s own module docstring for why SVG is deliberately not offered. Read-only (the
+    default `min_role="viewer"` - an editor or viewer collaborator can export the same report the owner
+    can, matching every other read route). Reuses `_render_report`'s own block list unchanged (same
+    `chart_html`/`chart_width`/`chart_height` the live report page already renders) rather than a second
+    rendering path - `app/export.py` only adds the headless-browser screenshot step on top."""
+    if format not in _EXPORT_CONTENT_TYPES:
+        raise HTTPException(422, f"format must be one of: {', '.join(_EXPORT_CONTENT_TYPES)}.")
+    ds = _own_dataset(db, user, dataset_id)
+
+    report = _latest_report_for_column(db, ds.id, column)
+    if report is None:
+        raise HTTPException(404, "No report has been built yet for this column. Build the report first.")
+
+    body = _render_report(db, ds, column, report)
+    blocks = [
+        ExportBlock(title=b["chart_title"], html=b["chart_html"], width=b["chart_width"], height=b["chart_height"])
+        for b in body["blocks"]
+    ]
+
+    if format == "png":
+        data = render_report_png(blocks)
+    elif format == "pptx":
+        data = build_report_pptx(blocks)
+    else:
+        data = build_report_pdf(blocks)
+
+    filename = f"report-{dataset_id}-{column}.{format}".replace(" ", "_")
+    return Response(
+        content=data, media_type=_EXPORT_CONTENT_TYPES[format],
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
