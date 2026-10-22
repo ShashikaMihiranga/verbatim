@@ -1797,5 +1797,15 @@ across both themes - the honest "found nothing to split" outcome for this input,
 
 This is exactly the kind of bug the plan's own "not yet live-verified" notes were warning could exist -
 found by actually doing it, not by more unit tests against assumptions. Committed to `staging`, not
-pushed yet. Worth repeating for sharing/export's own still-unverified pieces (collaborator flows, PPTX/
-PDF content, large-report export timing) before considering this round fully done.
+pushed yet.
+
+**Also live-verified after the fix, all genuinely confirmed working**: the public read-only share link
+(`GET /api/share/{token}/report`) - created one from the real Share panel, opened it in a second,
+completely separate browser tab with no session/auth state, and the full report rendered correctly
+(chart-type switcher tabs included), outside the app's normal signed-in nav chrome, exactly as designed.
+One false alarm along the way worth recording: an "invalid link" result that turned out to be MY OWN
+transcription error reading the token off a screenshot (Jost renders capital "I" and lowercase "l" almost
+identically at that size) - re-checked by reading the token straight from the database instead of by eye,
+confirmed the real token worked. Still genuinely unverified: collaborator invite-link accept flow as a
+second real browser session, PPTX/PDF file content (only confirmed via magic bytes/`python-pptx` in
+automated tests, not opened and looked at), and large-report export timing.
