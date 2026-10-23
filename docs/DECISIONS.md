@@ -2175,3 +2175,36 @@ already covering the underlying function.
 **Tests**: `tests/test_report_blocks.py` - removed both ids from the "stays False" list, added a dedicated
 test asserting both are now True-capable and share `chart_id="byScore"`. Full backend suite: 765 passed
 (same 5 pre-existing failures), one new test.
+
+## 2026-10-24 (Chart-block stream, "reuse group" batch 3: 3 new renderers, same existing data shapes)
+
+Three more "reuse group" blocks, this time needing real new chart code (unlike batches 1-2): `group_split_bars`
+(`f_group_split_bars`), `compare_dots` (`f_compare_dots`), `slope_change` (`f_slope_change`) - all in
+`app/charts.py`, all built from `SegmentData`/`TrendData` shapes that already exist, no new upstream
+pipeline. Registered in `FRAMES`/`TITLES` as `groupSplitBars`/`compareDots`/`slopeChange`; `app/report_blocks.py`'s
+b39/b40/b46 updated with their real `chart_id`s. Not wired into any real finding yet (Stage 2's job,
+deferred per the plan's reordering) - reachable today via the internal `/frame/{id}` gallery, same as
+every other not-yet-selectable chart.
+
+**Two real bugs caught by live-verifying before calling this done, not by the test suite**:
+1. `f_group_split_bars`'s legend used `var(--accent)` swatches, but each row's own two bars are drawn in
+   THAT theme's own colour token (full tone vs. a 45% tint) - the legend colour never matched what was
+   actually on screen for any row except by coincidence. Fixed to neutral ink/tint swatches ("solid vs.
+   lighter"), which reads correctly against any theme's hue.
+2. `f_slope_change`'s y-axis assumed a fixed 0-100% domain. A real dataset's values (8/10/16/26/33/34%)
+   all sit in one low band of that range, so every line and label got crammed into the bottom third of the
+   chart, overlapping unreadably - confirmed live via screenshot, not something the unit tests (which only
+   check substrings are present, not visual layout) could have caught. Fixed by autoscaling the axis to the
+   real min/max values present (with padding) - the printed numbers next to each point are completely
+   unchanged either way, only where the line is drawn changes, same "never alter what a chart says, only
+   how it's laid out" discipline as the fluid-width work in docs/DECISIONS.md's earlier entries. One
+   smaller residual case remains and is accepted, not fixed: two themes with near-identical flat values
+   (10%/10% and 8%/8%, 2 points apart) still visually overlap - a full label-collision solver is scoped out
+   as a separate, smaller follow-up if it matters in practice, not blocking this batch.
+
+**Tests**: `tests/test_charts_data.py` - 3 new golden files, `test_frame_count` bumped to 24 (a deliberate
+hand-maintained tripwire, not self-referential), `test_api_charts_lists_20` renamed to
+`test_api_charts_lists_every_frame` and made self-checking against `len(FRAMES)` (redundant with its own
+existing set-equality assertion either way, so self-reference is harmless there), 3 new needle-text cases
+in the existing "renders its own names" test. `tests/test_report_blocks.py` - new true/false predicate
+test for all 3 blocks. Full backend suite: 772 passed (same 5 pre-existing failures).

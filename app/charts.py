@@ -1494,6 +1494,127 @@ def f_map(data: ReportData):
     return frame("What does the whole pool of answers look like?", "Each dot is about 50 answers, placed near answers with similar wording. " + data.selected_theme + " is selected.", "".join(o), 820)
 
 
+# ---------- group_split_bars, compare_dots, slope_change (chart-block stream, 2026-10-24 - new ----------
+# renderers for 3 of app/report_blocks.py's "reuse group" blocks: real data (SegmentData/TrendData) that
+# existing renderers never drew, so unlike diverge/sunburst/byScore above these needed real new chart code
+# - still no new upstream data pipeline, same as the rest of that group.
+
+def _theme_color_by_name(data: ReportData, name: str) -> str:
+    """`SegmentRow.theme`/`TrendSeries.theme` are plain name strings (app/chart_data.py), not already
+    carrying a colour token the way `ThemeNode` does - this looks the matching node up once per row, same
+    "other" fallback `_theme_color`/`treemap_rows` already use elsewhere for a name this report's top-7
+    nodes don't cover."""
+    node = next((t for t in data.themes if t.name == name), None)
+    return node.color if node is not None else "other"
+
+
+def f_group_split_bars(data: ReportData):
+    """Two segment groups, side by side per theme - CLAUDE.md's "no pie/donut" + "colour never the only
+    carrier" rules kept: each theme's own two bars share that theme's own colour token (identity), split
+    only by opacity (not a second meaning-bearing colour), with both real numbers always printed."""
+    seg_ = data.segment
+    ga, gb = seg_.groups[0], seg_.groups[1]
+    ROWS = [(r.theme, _theme_color_by_name(data, r.theme), r.values[0], r.values[1]) for r in seg_.rows]
+    rh = 64
+    rows_html = ""
+    for name, col, va, vb in ROWS:
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:16px;height:{rh}px;border-top:1px solid var(--line)">'
+            f'<div style="flex:0 0 clamp(140px,20%,240px);font-size:15px;font-weight:500;line-height:1.2">{esc(name)}</div>'
+            f'<div style="flex:1;display:flex;flex-direction:column;gap:6px">'
+            f'<div style="display:flex;align-items:center;gap:8px">'
+            f'<div style="flex:1;height:16px;border-radius:3px;background:var(--line);overflow:hidden">'
+            f'<div style="width:{va}%;height:100%;background:var(--{col})"></div></div>'
+            f'<div style="width:48px;text-align:right;font-size:14px;font-weight:600">{va}%</div></div>'
+            f'<div style="display:flex;align-items:center;gap:8px">'
+            f'<div style="flex:1;height:16px;border-radius:3px;background:var(--line);overflow:hidden">'
+            f'<div style="width:{vb}%;height:100%;background:color-mix(in srgb,var(--{col}) 45%,var(--surface))"></div></div>'
+            f'<div style="width:48px;text-align:right;font-size:14px;font-weight:600;color:var(--muted)">{vb}%</div></div>'
+            f'</div></div>'
+        )
+    # Neutral ink tones here, NOT var(--accent): each row's own two bars are ITS OWN theme colour (full
+    # tone vs. a 45% tint of it), so a fixed accent swatch would mismatch every row's actual bar colour.
+    # "solid vs. lighter" in neutral ink reads correctly against any theme's hue, row to row.
+    legend = (f'<div style="margin-top:4px;display:flex;gap:20px;font-size:14px;color:var(--muted)">'
+              f'<span style="display:inline-flex;align-items:center;gap:8px"><span style="width:14px;height:14px;border-radius:3px;background:var(--ink)"></span>{esc(ga.label)}</span>'
+              f'<span style="display:inline-flex;align-items:center;gap:8px"><span style="width:14px;height:14px;border-radius:3px;background:color-mix(in srgb,var(--ink) 35%,var(--surface))"></span>{esc(gb.label)}</span></div>')
+    sub = f"{ga.label} (n={fmt(ga.n)}) against {gb.label} (n={fmt(gb.n)}). Share of each group's own answers."
+    body = (f'<div style="padding:56px 48px">{hdr("Two groups side by side", sub)}'
+            f'<div style="height:24px"></div>{legend}<div style="margin-top:12px">{rows_html}</div></div>')
+    return body, 1180, 120 + rh * len(ROWS)
+
+
+def f_compare_dots(data: ReportData):
+    """One leading theme's share across many segment groups (8-20, too many for a readable heatmap grid)
+    as a dot plot against a dashed "overall" reference line - same `--ramp`/overall-comparison language
+    `f_heatmap` already uses for "this group vs the dataset as a whole", just one row per group instead of
+    one cell."""
+    seg_ = data.segment
+    lead = seg_.rows[0]
+    col = _theme_color_by_name(data, lead.theme)
+    groups = sorted(zip(seg_.groups, lead.values), key=lambda gv: gv[1], reverse=True)
+    rh = 40
+    AXIS_W = 760
+    rows_html = ""
+    for g, v in groups:
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:16px;height:{rh}px">'
+            f'<div style="flex:0 0 clamp(120px,18%,200px);font-size:14px;line-height:1.2">{esc(g.label)}</div>'
+            f'<div style="position:relative;width:{AXIS_W}px;height:100%">'
+            f'<div style="position:absolute;left:{lead.overall / 100 * AXIS_W:.1f}px;top:0;bottom:0;width:0;border-left:1px dashed var(--muted)"></div>'
+            f'<div style="position:absolute;left:0;right:0;top:50%;height:1px;background:var(--line)"></div>'
+            f'<div style="position:absolute;left:{v / 100 * AXIS_W - 6:.1f}px;top:50%;transform:translateY(-50%);width:12px;height:12px;border-radius:50%;background:var(--{col})"></div>'
+            f'</div><div style="width:48px;text-align:right;font-size:14px;font-weight:600">{v}%</div></div>'
+        )
+    body = (f'<div style="padding:56px 48px">{hdr(f"{lead.theme}, by group", f"Dashed line is the overall share ({lead.overall}%). {len(groups)} groups, largest value first.")}'
+            f'<div style="height:24px"></div>{rows_html}</div>')
+    return body, 1180, 120 + rh * len(groups)
+
+
+def f_slope_change(data: ReportData):
+    """First period against last - a slope graph (SPEC's own "see more" tier, not a full trend line):
+    one line per theme from its first-period share to its last-period share, coloured by that theme's own
+    token. Uses only `tr.labels[0]`/`[-1]` and each series' matching endpoints - genuinely two points, not
+    a thinned-down version of `f_trend`'s own multi-period line."""
+    tr = data.trend
+    first_label, last_label = tr.labels[0], tr.labels[-1]
+    W, H = 1084, 120 + 56 * len(tr.series)
+    x0, x1 = 160, W - 160
+    top, bottom = 60, H - 40
+    span = max(1, bottom - top)
+
+    # Autoscaled to the real values present, NOT a fixed 0-100% domain - found live: several real themes'
+    # shares (e.g. 8/10/16/26/33%) all sit in one low band of a 0-100 scale, so a fixed domain crammed
+    # every line and label into the bottom third of the chart, overlapping unreadably. Padding keeps a
+    # single value (or several identical ones) from landing exactly on an edge; the real numbers printed
+    # next to each point are untouched either way - this only changes where the LINE is drawn, never what
+    # it says, same "never invent or hide a number" discipline every other chart here already follows.
+    all_values = [v for s in tr.series for v in (s.values[0], s.values[-1])]
+    lo, hi = min(all_values), max(all_values)
+    pad = max(2.0, (hi - lo) * 0.15)
+    lo, hi = max(0.0, lo - pad), hi + pad
+    v_span = max(1.0, hi - lo)
+
+    def y_of(v: float) -> float:
+        return bottom - (v - lo) / v_span * span
+
+    o = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="Slope chart: theme share, first period against last">']
+    o.append(T(x0, 30, first_label, 14, 600, "var(--muted)"))
+    o.append(T(x1, 30, last_label, 14, 600, "var(--muted)", "end"))
+    labels = []
+    for s in tr.series:
+        v0, v1 = s.values[0], s.values[-1]
+        y0v, y1v = y_of(v0), y_of(v1)
+        o.append(f'<line x1="{x0}" y1="{y0v:.1f}" x2="{x1}" y2="{y1v:.1f}" style="stroke:var(--{s.color});stroke-width:3"/>')
+        o.append(f'<circle cx="{x0}" cy="{y0v:.1f}" r="5" style="fill:var(--{s.color})"/>')
+        o.append(f'<circle cx="{x1}" cy="{y1v:.1f}" r="5" style="fill:var(--{s.color})"/>')
+        labels.append(chart_label(x0 - 12, y0v, W, H, f"{s.theme}  {v0}%", 14, 500, f"var(--{s.color})", "end"))
+        labels.append(chart_label(x1 + 12, y1v, W, H, f"{v1}%", 14, 500, f"var(--{s.color})", "start"))
+    o.append("</svg>")
+    diagram = f'<div style="position:relative;width:100%">{"".join(o)}{"".join(labels)}</div>'
+    return frame("First against last", f"{first_label} against {last_label}. Every theme's share, start to end.", diagram, H)
+
+
 # ---------- registry and standalone rendering ----------
 FRAMES = {
     "overview": f_overview, "sunburst": f_sunburst, "treemap": f_treemap, "icicle": f_icicle,
@@ -1501,6 +1622,7 @@ FRAMES = {
     "sankey": f_sankey, "arc": f_arc, "map": f_map, "byScore": f_byscore, "heatmap": f_heatmap,
     "trend": f_trend, "quality": f_quality, "context": f_context, "tokens": f_tokens,
     "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m, "othergrowth": f_other_growth,
+    "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
 }
 
 # Human-readable title per frame id, for the chart list API.
@@ -1511,6 +1633,8 @@ TITLES = {
     "byScore": "Themes by score group", "heatmap": "Themes by segment", "trend": "Trend over time", "quality": "Answer quality",
     "context": "Question context", "tokens": "Design tokens", "sunburst-mobile": "Themes, sunburst (mobile)",
     "rank-mobile": "Rank themes (mobile)", "othergrowth": "New themes found",
+    "groupSplitBars": "Two groups side by side", "compareDots": "Many groups, little space",
+    "slopeChange": "First against last",
 }
 
 def render_parts(frame_id: str, data: ReportData | None = None):

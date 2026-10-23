@@ -30,11 +30,11 @@ def test_golden_covers_all_frames():
     assert {p.stem for p in GOLDEN.glob("*.html")} == set(FRAMES)
 
 
-def test_api_charts_lists_20():
+def test_api_charts_lists_every_frame():
     r = client.get("/api/charts")
     assert r.status_code == 200
     items = r.json()
-    assert len(items) == 21
+    assert len(items) == len(FRAMES)
     assert {i["id"] for i in items} == set(FRAMES)
     assert all(i["title"] for i in items)
 
@@ -84,6 +84,8 @@ def test_custom_data_renders_its_own_names():
         "sunburst": ["Zebra crossing", "Zebra paint"], "rank": ["Zebra crossing", "Yak shaving", "-0.05"],
         "treemap": ["Zebra crossing"], "diverge": ["Yak shaving"], "byScore": ["Mood"], "heatmap": ["region", "North"],
         "trend": ["W2"], "arc": ["Yak shaving"], "map": ["Zebras like stripes"],
+        "groupSplitBars": ["Zebra crossing", "North", "South"], "compareDots": ["Zebra crossing", "North"],
+        "slopeChange": ["Zebra crossing", "Yak shaving", "W1", "W3"],
     }.items():
         html = render(frame_id, data)
         for n in needles:

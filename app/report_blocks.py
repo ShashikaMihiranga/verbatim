@@ -362,13 +362,13 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.score.bands),
     ),
     Block(
-        "b39", "group_split_bars", "4", "Two groups side by side", None,
+        "b39", "group_split_bars", "4", "Two groups side by side", "groupSplitBars",
         "Women name Charging more. Men name Cost more.",
         "A two-value column such as sex or yes/no.",
         lambda data: len(data.segment.groups) == 2,
     ),
     Block(
-        "b40", "compare_dots", "4", "Many groups, little space", None,
+        "b40", "compare_dots", "4", "Many groups, little space", "compareDots",
         "North is 41% against 26% overall. London is 18%.",
         "A group column with 8 to 20 values.",
         lambda data: 8 <= len(data.segment.groups) <= 20,
@@ -410,7 +410,7 @@ BLOCKS: list[Block] = [
         lambda data: False,
     ),
     Block(
-        "b46", "slope_change", "5", "First against last", None,
+        "b46", "slope_change", "5", "First against last", "slopeChange",
         "Cost: 26% in January, 34% in December.",
         "Two periods, or the first and last of many.",
         lambda data: bool(data.trend.labels) and len(data.trend.labels) >= 2,

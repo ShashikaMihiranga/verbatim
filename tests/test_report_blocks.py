@@ -164,6 +164,22 @@ def test_band_bars_and_number_spread_reuse_the_already_wired_numeric_score_fallb
     assert BY_SLUG["number_spread"].chart_id == "byScore"
 
 
+def test_group_split_bars_compare_dots_slope_change_got_real_new_renderers():
+    # Chart-block stream, "reuse group" batch 3 (2026-10-24): new f_group_split_bars/f_compare_dots/
+    # f_slope_change in app/charts.py, reusing existing SegmentData/TrendData - no new upstream pipeline.
+    assert BY_SLUG["group_split_bars"].chart_id == "groupSplitBars"
+    assert BY_SLUG["group_split_bars"].needs(rich_report()) is True  # rich_report has exactly 2 groups
+    assert BY_SLUG["group_split_bars"].needs(thin_report()) is False
+
+    assert BY_SLUG["compare_dots"].chart_id == "compareDots"
+    assert BY_SLUG["compare_dots"].needs(rich_report()) is False  # rich_report has 2 groups, not 8-20
+    assert BY_SLUG["compare_dots"].needs(thin_report()) is False
+
+    assert BY_SLUG["slope_change"].chart_id == "slopeChange"
+    assert BY_SLUG["slope_change"].needs(rich_report()) is True  # rich_report has 3 trend periods
+    assert BY_SLUG["slope_change"].needs(thin_report()) is False
+
+
 def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report():
     # Every one of these describes a column kind or cross-tab this app genuinely does not build today
     # (per each block's own comment in app/report_blocks.py) - confirms the registry doesn't silently

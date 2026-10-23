@@ -19,7 +19,9 @@ def test_api_health():
 
 
 def test_frame_count():
-    assert len(FRAMES) == 21
+    # A deliberate tripwire, not self-referential: bump this literal by hand whenever a chart is added or
+    # removed, so adding one is a conscious count change, not something that silently passes either way.
+    assert len(FRAMES) == 24
 
 
 @pytest.mark.parametrize("frame_id", list(FRAMES))
