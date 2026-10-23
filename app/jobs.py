@@ -22,6 +22,7 @@ work finishes" is identical in both - that part is written once, here.
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone
 from typing import Callable
 
 from sqlalchemy import select
@@ -29,6 +30,20 @@ from sqlalchemy.orm import Session
 
 from . import db as _db
 from .models import Job
+
+
+def _utc_iso(value: datetime) -> str:
+    """Found live, 2026-10-23: `Job.created_at`/`updated_at` are declared `DateTime(timezone=True)`, but
+    SQLite (this app's local dev database) has no native timezone-aware datetime type - it round-trips
+    the value as a NAIVE datetime, which FastAPI's `jsonable_encoder` then serializes WITHOUT a 'Z'/offset
+    suffix (e.g. `"2026-10-23T06:07:29"`). A client parsing that with plain `new Date(...)` reads it as
+    LOCAL time, not UTC - confirmed live on the jobs dashboard: a job that started seconds ago showed
+    "11h ago". The column really does store UTC wall-clock time (every write goes through
+    `func.now()`/`datetime.now(UTC)`-equivalent server defaults) - this only fixes what gets SERIALIZED,
+    stamping UTC explicitly so every client parses it the same way regardless of database dialect."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
 
 # A step callback a pipeline calls at each phase boundary: `step("Naming each group")`.
 StepFn = Callable[[str], None]
@@ -173,4 +188,10 @@ def job_dict(job: Job) -> dict:
         "step": job.step,
         "error": job.error,
         "result": job.result,
+        # Jobs dashboard (docs/TODO.md, 2026-10-23): added for "how long has this been running" context -
+        # every existing caller (per-column job polling) already ignored unknown fields, so this is a pure
+        # addition, not a shape change. `_utc_iso` (not FastAPI's own encoder) so the string always carries
+        # an explicit UTC marker - see that function's own docstring for the bug this avoids.
+        "created_at": _utc_iso(job.created_at),
+        "updated_at": _utc_iso(job.updated_at),
     }

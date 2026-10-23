@@ -1,0 +1,33 @@
+/* Jobs dashboard (docs/TODO.md, 2026-10-23) - Jobs.tsx. Reuses report.css's own `.rp-tabs`/`.rp-tab` for
+   the status filter unchanged; only the table and status pills are new here. */
+.jb { max-width: 1040px; margin: 0 auto; padding-block: 28px 64px; }
+.jb-title { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+.jb-summary { color: var(--muted); font-size: 15px; margin-bottom: 22px; }
+
+.jb-table { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 14px; }
+.jb-table th {
+  text-align: left; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+  padding: 0 10px 8px 0; border-bottom: 1px solid var(--line);
+}
+.jb-table td { padding: 12px 10px 12px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.jb-table tr:last-child td { border-bottom: none; }
+.jb-dataset a { color: var(--accent); font-weight: 600; }
+.jb-col { color: var(--muted); max-width: 220px; overflow-wrap: anywhere; }
+.jb-step { max-width: 320px; overflow-wrap: anywhere; }
+.jb-time { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.jb-status {
+  display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  text-transform: capitalize;
+}
+.jb-status-running { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.jb-status-done { background: color-mix(in srgb, var(--pos) 16%, transparent); color: var(--pos); }
+.jb-status-failed { background: color-mix(in srgb, var(--neg) 16%, transparent); color: var(--neg); }
+
+@media (max-width: 640px) {
+  .jb-table thead { display: none; }
+  .jb-table, .jb-table tbody, .jb-table tr, .jb-table td { display: block; width: 100%; }
+  .jb-table tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .jb-table td { border-bottom: none; padding: 2px 0; }
+  .jb-table td::before { content: attr(data-label); display: block; font-size: 11px; color: var(--muted); }
+}

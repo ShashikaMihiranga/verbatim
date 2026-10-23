@@ -4,6 +4,7 @@ import { Link, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import AcceptInvite from './AcceptInvite'
 import CheckColumns from './CheckColumns'
 import Cleaning from './Cleaning'
+import Jobs from './Jobs'
 import Projects from './Projects'
 import SharedReport from './SharedReport'
 import Themes from './Themes'
@@ -61,6 +62,7 @@ function Shell() {
         <Link to="/projects">Projects</Link>
         <Link to="/upload">Upload</Link>
         <Link to="/report">Report</Link>
+        <Link to="/jobs">Jobs</Link>
         <span className="spacer" />
         {devUserAllowed ? (
           <span className="muted who">Dev user (Clerk bypassed)</span>
@@ -110,6 +112,7 @@ export default function App() {
           <Route path="/check-columns" element={guard(<CheckColumns />)} />
           <Route path="/cleaning" element={guard(<Cleaning />)} />
           <Route path="/report" element={guard(<Themes />)} />
+          <Route path="/jobs" element={guard(<Jobs />)} />
           <Route path="/accept-invite" element={guard(<AcceptInvite />)} />
           <Route path="*" element={<Placeholder title="Not found" />} />
         </Route>

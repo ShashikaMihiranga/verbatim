@@ -59,11 +59,24 @@ export interface Job {
   // `null` for every job kind that has nothing to summarize (themes, report) - only "look_inside_other"
   // and "split_theme" ever populate this, once they reach "done".
   result: LookInsideOtherResult | SplitThemeResult | null
+  // ISO 8601 strings (added 2026-10-23 for the jobs dashboard's own "how long has this been running"
+  // display) - every per-column screen that only ever reads `status`/`step`/`result` ignores these.
+  // Optional: Themes.tsx builds a synthetic "just started" Job locally right after POSTing a build,
+  // before the server round-trip - that object genuinely has no real timestamp yet.
+  created_at?: string
+  updated_at?: string
 }
 
 export interface BuildStarted {
   job_id: number
   status: 'running'
+}
+
+// Jobs dashboard (docs/TODO.md, 2026-10-23): the same fields as `Job` plus which dataset it belongs to
+// (the per-column/per-dataset screens already know that from their own URL; a dataset-wide list has to
+// carry it explicitly to be useful at a glance).
+export interface JobListEntry extends Job {
+  dataset_name: string
 }
 
 async function asError(r: Response): Promise<Error> {
@@ -79,6 +92,17 @@ async function asError(r: Response): Promise<Error> {
 
 export async function getJob(datasetId: number, jobId: number): Promise<Job> {
   const r = await authFetch(`/api/datasets/${datasetId}/jobs/${jobId}`)
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
+// Jobs dashboard (docs/TODO.md, 2026-10-23): every job across every dataset this user owns, newest
+// first - the one place to watch everything running at once instead of polling one dataset+column+kind
+// at a time. `status` is an optional exact filter ("running" | "done" | "failed").
+export async function listJobs(status?: JobStatus, limit = 50): Promise<JobListEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (status) params.set('status', status)
+  const r = await authFetch(`/api/jobs?${params}`)
   if (!r.ok) throw await asError(r)
   return r.json()
 }

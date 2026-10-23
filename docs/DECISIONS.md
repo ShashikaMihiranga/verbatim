@@ -1980,3 +1980,50 @@ and assert `failed_count` round-trips through the summary unchanged, 3 other exi
 tests updated for the new dict key, 1 new frontend test (`look-inside-other.test.tsx`) for the warning
 banner. Full backend suite: 743 passed (same 5 pre-existing unrelated `test_auth.py`/`test_security.py`
 failures), full frontend suite: 93 passed, `tsc -b --force` clean.
+
+## 2026-10-23 (New: a dataset-wide Jobs dashboard - `GET /api/jobs` + `/jobs`)
+
+Until now every job (build themes, build report, look inside Other, split theme) could only be watched
+one dataset+column+kind at a time (`GET .../jobs/{id}`/`.../jobs/latest`, consumed by the per-screen
+`JobProgress`/`pollJob` pattern) - there was no way to see everything running across every dataset at
+once, confirmed live as a real gap while debugging the dataset-12 "Look inside Other" job above (every
+check meant a fresh `curl` or a raw `sqlite3` query).
+
+**Backend**: new `GET /api/jobs` (`app/api_jobs.py`) - every `Job` row for datasets the caller OWNS (same
+scope `list_projects`/`app/api_projects.py` already uses for the Projects page: a shared/collaborator
+dataset's jobs are not included, matching that page's own "my own, not shared-to-me" convention), newest
+first, with an optional `status` exact-match filter and a `limit` (default 50, capped at 200). Each row
+carries `dataset_name` (the one thing a cross-dataset list needs that a single-dataset job lookup never
+did) via a `Dataset`/`Project` join. `job_dict` (`app/jobs.py`, shared by every job-reading route) now
+also returns `created_at`/`updated_at`.
+
+**Fix found while building this**: those two new timestamp fields came back from SQLite as a NAIVE
+datetime (no tzinfo - SQLite has no native timezone-aware type, even though the column is declared
+`DateTime(timezone=True)`), which FastAPI's own `jsonable_encoder` then serialized WITHOUT a 'Z'/offset
+suffix. A client parsing that with plain `new Date(...)` reads it as LOCAL time, not UTC - confirmed
+live: a job that had started seconds earlier showed "11h ago" on the new dashboard. Added `_utc_iso`
+(`app/jobs.py`) - stamps UTC explicitly on a naive value, passes a tz-aware one through unchanged (so
+this is also safe on Postgres/production, where the driver already returns tz-aware datetimes) - so every
+timestamp this app ever serializes carries an explicit, unambiguous timezone marker.
+
+**Frontend**: new `Jobs.tsx`/`jobs.css`, routed at `/jobs` with a new top-nav link. Split into a pure
+`JobsView` (props-driven, matching `Projects.tsx`'s own `ProjectsList`/`Projects` split and its documented
+reason - the stateful wrapper has no test of its own) and the stateful `Jobs` default export, which polls
+`GET /api/jobs` every 3s (independent of any single job's lifecycle, unlike `pollJob`, which stops once
+ONE job finishes) plus a separate 1s ticker just for the relative-time labels so "just now" ages smoothly
+between actual refetches. A status filter tab bar reuses `report.css`'s own `.rp-tabs`/`.rp-tab` unchanged.
+Each row links to that dataset's report.
+
+**Tests**: 6 new backend tests (`tests/test_api_jobs.py`: newest-first + dataset name, ownership scoping
+across two real users, the status filter, the 422 on a bad filter value, the `limit` param, and the new
+UTC-marker regression test), 6 new frontend tests (`jobs.test.tsx`: loading state, scoped empty state,
+real job rendering with a working report link, a failed job showing its real error instead of its step,
+relative-time formatting including the missing-timestamp fallback, a surfaced fetch error). Full backend
+suite: 749 passed (same 5 pre-existing unrelated failures), full frontend suite: 99 passed, `tsc -b
+--force` and `vite build` both clean.
+
+**Live-verified** (local dev server): the page lists every real job across every real dataset with
+correct relative times: triggered a fresh "Look inside Other" job via curl, watched it appear on the
+dashboard within one poll cycle as "Running"/"Checking known themes", confirmed the Running filter tab
+isolated it, and watched it move to "Done" with a sane "just now"-scale timestamp once it finished -
+exactly the "11h ago" bug this fix targeted, now showing correctly.
