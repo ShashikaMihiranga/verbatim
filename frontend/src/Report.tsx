@@ -156,6 +156,7 @@ export default function ReportView({
             variants={report.theme_chart_variants}
             onThemeSelect={setSelectedThemeName}
             selectedTheme={selectedThemeName}
+            highlightOtherRunning={lookInsideOtherJob?.status === 'running'}
           />
           {selectedTheme && <ThemeDetail id={datasetId} theme={selectedTheme} />}
         </Divider>
@@ -164,7 +165,7 @@ export default function ReportView({
       <OtherExploration breakdown={report.other_breakdown} allThemes={report.all_themes} />
 
       {onLookInsideOther && (report.other_breakdown !== null || lookInsideOtherJob) && (
-        <LookInsideOther job={lookInsideOtherJob ?? null} onStart={onLookInsideOther} />
+        <LookInsideOther job={lookInsideOtherJob ?? null} onStart={onLookInsideOther} allThemes={report.all_themes} />
       )}
 
       {findings.length > 0

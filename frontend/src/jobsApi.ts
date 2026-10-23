@@ -1,15 +1,39 @@
 import { authFetch } from './authFetch'
+import type { ToneSplit } from './themesApi'
 
 export type JobKind = 'themes' | 'report' | 'look_inside_other' | 'split_theme'
 export type JobStatus = 'running' | 'done' | 'failed'
 
-// "Look inside Other" (docs/TODO.md, 2026-10-21 Stage 3): the real Known/New/Still-in-Other counts the
-// animated flow's own results panel needs - written by app/api_themes.py's own job route in the same
-// commit as the Theme-row changes it summarizes, never reconstructed client-side from a second fetch.
+// Stage 3a (docs/TODO.md, fixed 2026-10-23): one newly-found theme's real numbers, same shape
+// app/api_themes.py::_apply_other_classification's own new_themes_summary entries now carry.
+export interface LookInsideOtherNewTheme {
+  label: string
+  count: number
+  sentiment: number
+  tone: ToneSplit
+}
+
+// Stage 3a: one result-chart tab's ready-to-embed fragment - the SAME shape every other chart fragment
+// in this app already uses (see reportApi.ts's own ReportThemeChartVariant). Keyed by chart id
+// ("othergrowth" | "rank" | "icicle" | "sentsun") - no "arc" key; see LookInsideOtherCharts.tsx's own
+// comment for why that tab is handled client-side instead of from a chart fragment.
+export interface LookInsideOtherChart {
+  chart_title: string
+  chart_html: string
+  chart_width: number
+  chart_height: number
+}
+
+// "Look inside Other" (docs/TODO.md, 2026-10-21 Stage 3, extended 2026-10-23 Stage 3a): the real
+// Known/New/Still-in-Other counts the results panel needs, plus (Stage 3a) real per-new-theme
+// sentiment/tone/charts - written by app/api_themes.py's own job route in the same commit as the
+// Theme-row changes it summarizes, never reconstructed client-side from a second fetch. `charts` is
+// `undefined`/absent when no new theme survived this run (nothing to chart).
 export interface LookInsideOtherResult {
   known_added: number
-  new_themes: Array<{ label: string; count: number }>
+  new_themes: LookInsideOtherNewTheme[]
   still_other_count: number
+  charts?: Record<string, LookInsideOtherChart>
 }
 
 // Theme editing (docs/TODO.md, fixed 2026-10-22): "split theme"'s own job result - the real pieces a

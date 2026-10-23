@@ -1,15 +1,19 @@
 import type { Job, LookInsideOtherResult } from './jobsApi'
+import type { ReportThemeSummary } from './reportApi'
+import LookInsideOtherCharts from './LookInsideOtherCharts'
+import LookInsideOtherRibbons from './LookInsideOtherRibbons'
 
-// Stage 3 of the "Look inside Other" feature (docs/TODO.md, 2026-10-21 - mockup: Other-Flow*.dc.html in
-// the separate verbatim-visual-system project). The mockup's own ribbon diagram draws one precise path per
-// known/new theme, sized and positioned from a FIXED demo dataset baked into its canvas-preview-only script
-// - not something this component can honestly reproduce while a real job is running: the backend only
-// reports coarse step names while it works (app/api_themes.py's `look_inside_other` route), not a live
-// per-theme split - the real split (`job.result`) is only known once the job reaches "done". So the
-// "running" state here is a genuine, animated "real work is happening" indicator (dashed flow + pulsing
-// step dots, same class of signal as JobProgress.tsx's own spinner), not a live-updating copy of the
-// mockup's per-theme ribbons; the exact, real Known/New/Still-in-Other breakdown is what the "done" state
-// shows, built from `job.result` - the one place in this component real numbers appear.
+// Stage 3 of the "Look inside Other" feature (docs/TODO.md, 2026-10-21, ribbons rebuilt 2026-10-23 -
+// mockup: Other-Flow*.dc.html in the separate verbatim-visual-system project). The mockup's own ribbon
+// diagram draws one precise path per known/new theme, sized and positioned from a FIXED demo dataset
+// baked into its canvas-preview-only script - not something this component can honestly reproduce while
+// a real job is running: the backend only reports coarse step names while it works (app/api_themes.py's
+// `look_inside_other` route), not a live per-theme split - the real split (`job.result`) is only known
+// once the job reaches "done". So `LookInsideOtherRibbons` draws real ribbons (one per known theme, sized
+// by that theme's REAL CURRENT share from `allThemes`) with a flowing-dash animation that is a pure
+// activity indicator, not a live-updating copy of the mockup's own per-theme reveal; the exact, real
+// Known/New/Still-in-Other breakdown is what the "done" state shows, built from `job.result` - the one
+// place in this component real numbers appear.
 
 const STEPS = ['Checking known themes', 'Grouping new themes into sub-themes', 'Finalizing', 'Done']
 
@@ -62,9 +66,14 @@ function ResultColumn({
 export default function LookInsideOther({
   job,
   onStart,
+  allThemes,
 }: {
   job: Job | null
   onStart: () => void
+  // Real current theme shares (`report.all_themes`), used only to size the ribbon diagram's destination
+  // widths while a job runs. Optional: a caller with no themes handy still renders a perfectly good
+  // running state, just with the ribbons omitted (same optionality pattern used elsewhere in this app).
+  allThemes?: ReportThemeSummary[]
 }) {
   const isRunning = job !== null && job.status === 'running'
   // This component only ever receives a "look_inside_other" job (Report.tsx's own call site) - the
@@ -104,11 +113,11 @@ export default function LookInsideOther({
             <span className="lio-live-dot" aria-hidden="true" />
             <span>{job.step}</span>
           </div>
-          <div className="lio-flow" aria-hidden="true">
-            <div className="lio-flow-track">
-              <div className="lio-flow-dash" />
+          {allThemes && allThemes.length > 0 && (
+            <div className="lio-ribbons">
+              <LookInsideOtherRibbons allThemes={allThemes} />
             </div>
-          </div>
+          )}
           <div className="lio-steps">
             {STEPS.map((label, i) => {
               const idx = stepIndex(job)
@@ -153,6 +162,8 @@ export default function LookInsideOther({
           />
         </div>
       )}
+
+      {isDone && result && result.charts && <LookInsideOtherCharts charts={result.charts} />}
     </div>
   )
 }

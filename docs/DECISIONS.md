@@ -1859,3 +1859,46 @@ reach all 4 real chart fragments. New chart id `othergrowth` added to the golden
 
 Committed to `staging`, not pushed yet. Frontend pieces (ribbon animation, treemap Other-block highlight,
 the second tab switcher consuming `job.result.charts`) still to come.
+
+## 2026-10-23 (Stage 3b/3c: real ribbon animation, treemap Other-block highlight, and the second
+result-chart tab switcher for "Look inside Other")
+
+Finishes the rebuild Stage 3a started, after the user pointed out the originally shipped Stage 3
+(`1fd2ba6`) was a simplified placeholder that didn't match the mockup (`Other-Flow*.dc.html`).
+
+**Treemap Other-block highlight**: `ThemeChart.tsx` gains a `highlightOtherRunning?: boolean` prop - a
+second, separate `useEffect` (deliberately not merged into the existing selection-dim effect, so toggling
+the highlight alone doesn't tear down/reattach the click/hover listeners) that finds
+`[data-theme="Other"]` in the rendered fragment and toggles a pulsing-ring CSS class (`lio-other-ring`)
+plus an overlaid "Looking inside..." label - pure client-side DOM styling on the existing fragment, no
+backend/chart-renderer change. Threaded through `ThemeChartTabs.tsx` into both the treemap tab and every
+variant tab (harmless no-op on a fragment without an Other block) and from `Report.tsx` as
+`lookInsideOtherJob?.status === 'running'`.
+
+**Real ribbon animation**: new `LookInsideOtherRibbons.tsx`, replacing `LookInsideOther.tsx`'s old single
+generic dashed strip. Real SVG ribbons fan out from one "Other" source point to one destination per known
+theme (from `report.all_themes`, already real data, capped at 7 - the treemap's own palette limit) plus
+one "New themes" destination. Ribbon WIDTH is each known theme's real current share (honest); the
+flowing-dash motion (`stroke-dasharray`+`stroke-dashoffset`, the SVG-path equivalent of the old
+`lio-flowdash` background-position trick) is a pure activity indicator, never a claim about live
+per-destination counts - same honesty line the old strip already drew, just real data instead of a
+generic strip. `report.all_themes` threaded into `LookInsideOther.tsx` as a new optional prop from
+`Report.tsx`.
+
+**Second chart-tab switcher**: new `LookInsideOtherCharts.tsx`, shown once a job is done and
+`job.result.charts` exists - reuses `ThemeChartTabs.tsx`'s own tab-switching pattern (and its `.rp-tabs`/
+`.rp-tab` CSS, unchanged) over `job.result.charts` instead of `report.theme_chart_variants`. Tabs: Sankey
+(`othergrowth`)/Rank/Icicle/Sunburst(`sentsun`), each a real `ThemeChart` fragment, plus Arc - which
+always renders (satisfies "all 5 tabs" at the UI level) but shows the same honest explanatory message
+Stage 3a's backend docstring already described, never a chart, since no `charts.arc` key exists.
+
+**Tests**: 3 new jsdom tests for `highlightOtherRunning`'s DOM behavior (`ThemeChart.test.tsx`), 3 new
+tests for `LookInsideOtherRibbons` (static markup: known-theme labels/shares present, capped at 7, never
+throws on an empty theme list), 4 new jsdom tests for `LookInsideOtherCharts` (nothing renders with no
+chart tabs, only present chart ids get a tab, clicking a tab switches the displayed fragment, Arc tab
+shows the note not a chart), 1 existing `look-inside-other.test.tsx` "done" test extended to also assert
+the second tab switcher renders once `result.charts` is present. Full frontend suite: 92 passed (was 85).
+`tsc -b --force` and `vite build` both clean.
+
+Committed to `staging`, not pushed yet. Live browser verification against a real dataset with a
+genuinely large Other bucket is the next step.

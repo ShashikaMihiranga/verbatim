@@ -31,6 +31,13 @@ interface ThemeChartProps {
   // in one chart highlights it in all charts" feature from docs/TODO.md's "also unbuilt" note, now wired
   // by having every `ThemeChart` instance on a page receive the SAME selected name from its caller.
   selectedTheme?: string | null
+  // Stage 3b (docs/TODO.md, fixed 2026-10-23): true while a "look inside Other" job is running - adds a
+  // pulsing ring to the treemap's own `[data-theme="Other"]` block and a small "Look inside..." label
+  // overlaid on it, matching the mockup's own `class="{{tm.ring}}"` + "Look inside ↓" affordance baked
+  // into the Other block itself (not just the separate CTA section below the chart). Pure client-side
+  // DOM styling on the already-rendered fragment - no chart-renderer/backend change needed. A no-op on
+  // any fragment with no `[data-theme="Other"]` group at all (every chart except the treemap).
+  highlightOtherRunning?: boolean
 }
 
 // Shared chart-fragment renderer used by both Report.tsx's overview block and Themes.tsx's browse view.
@@ -40,7 +47,7 @@ interface ThemeChartProps {
 // itself is not tracked here - the caller decides what "selected" means (e.g. which ThemeDetail to show)
 // and keeps that as its own state; this component only ever dims on hover, never persists a "selected"
 // look across renders.
-export default function ThemeChart({ fragment, title, onThemeSelect, selectedTheme }: ThemeChartProps) {
+export default function ThemeChart({ fragment, title, onThemeSelect, selectedTheme, highlightOtherRunning }: ThemeChartProps) {
   const ref = useRef<HTMLDivElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -120,6 +127,34 @@ export default function ThemeChart({ fragment, title, onThemeSelect, selectedThe
     // attached to now-detached elements. `onThemeSelect`/`selectedTheme` are also dependencies so a
     // caller passing a fresh closure or a new selection is honoured on the next interaction/render.
   }, [fragment.chart_html, onThemeSelect, selectedTheme])
+
+  // Stage 3b: the Other-block ring/label, as its own effect (not folded into the selection effect above)
+  // so toggling `highlightOtherRunning` alone - the common case, a job starting/finishing while nothing
+  // else about this chart changes - doesn't tear down and re-attach the click/hover listeners too.
+  useEffect(() => {
+    const root = ref.current
+    if (!root) return
+    const otherEl = root.querySelector<HTMLElement>('[data-theme="Other"]')
+    if (!otherEl) return
+
+    if (highlightOtherRunning) {
+      otherEl.classList.add('lio-other-ring')
+      if (!otherEl.querySelector('.lio-other-label')) {
+        const label = document.createElement('div')
+        label.className = 'lio-other-label'
+        label.textContent = 'Looking inside...'
+        otherEl.appendChild(label)
+      }
+    } else {
+      otherEl.classList.remove('lio-other-ring')
+      otherEl.querySelector('.lio-other-label')?.remove()
+    }
+
+    return () => {
+      otherEl.classList.remove('lio-other-ring')
+      otherEl.querySelector('.lio-other-label')?.remove()
+    }
+  }, [fragment.chart_html, highlightOtherRunning])
 
   return (
     <div className="rp-chart-scroll" ref={scrollRef}>

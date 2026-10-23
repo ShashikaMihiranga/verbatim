@@ -20,6 +20,13 @@ const TWO_THEME_FRAGMENT = `<svg width="200" height="100">
   <g data-theme="Charging"><rect id="charging-rect" x="100" y="0" width="100" height="100"/></g>
 </svg>`
 
+// Stage 3b (docs/TODO.md, fixed 2026-10-23): a fragment with a real `[data-theme="Other"]` block, the
+// same shape `app/charts.py::treemap_html` actually draws, for `highlightOtherRunning` tests.
+const WITH_OTHER_FRAGMENT = `<div style="position:relative">
+  <div data-theme="Cost" style="position:absolute"><div>Cost</div></div>
+  <div data-theme="Other" style="position:absolute"><div>Other</div></div>
+</div>`
+
 // jsdom has no layout engine, so it never fires a real ResizeObserver - this fake captures the callback
 // ThemeChart registers so a test can invoke it directly, the same way a real browser would after an
 // actual container resize.
@@ -163,6 +170,56 @@ describe('ThemeChart', () => {
     const chargingGroup = container.querySelector('[data-theme="Charging"]') as HTMLElement
     expect(costGroup.style.opacity).toBe('')
     expect(chargingGroup.style.opacity).toBe('')
+  })
+
+  // Stage 3b (docs/TODO.md, fixed 2026-10-23): the treemap's own Other-block ring/label.
+
+  it('adds the ring class and a label to the Other block when highlightOtherRunning is true', () => {
+    act(() => {
+      root.render(
+        <ThemeChart
+          fragment={{ chart_html: WITH_OTHER_FRAGMENT, chart_width: 200, chart_height: 100 }}
+          highlightOtherRunning
+        />,
+      )
+    })
+    const otherEl = container.querySelector('[data-theme="Other"]') as HTMLElement
+    expect(otherEl.classList.contains('lio-other-ring')).toBe(true)
+    expect(otherEl.querySelector('.lio-other-label')).not.toBeNull()
+    // Nothing added to an unrelated theme block.
+    const costEl = container.querySelector('[data-theme="Cost"]') as HTMLElement
+    expect(costEl.classList.contains('lio-other-ring')).toBe(false)
+  })
+
+  it('removes the ring and label once highlightOtherRunning goes back to false', () => {
+    act(() => {
+      root.render(
+        <ThemeChart
+          fragment={{ chart_html: WITH_OTHER_FRAGMENT, chart_width: 200, chart_height: 100 }}
+          highlightOtherRunning
+        />,
+      )
+    })
+    act(() => {
+      root.render(
+        <ThemeChart
+          fragment={{ chart_html: WITH_OTHER_FRAGMENT, chart_width: 200, chart_height: 100 }}
+          highlightOtherRunning={false}
+        />,
+      )
+    })
+    const otherEl = container.querySelector('[data-theme="Other"]') as HTMLElement
+    expect(otherEl.classList.contains('lio-other-ring')).toBe(false)
+    expect(otherEl.querySelector('.lio-other-label')).toBeNull()
+  })
+
+  it('does nothing when highlightOtherRunning is set but the fragment has no Other block', () => {
+    expect(() => {
+      act(() => {
+        root.render(<ThemeChart fragment={fragment()} highlightOtherRunning />)
+      })
+    }).not.toThrow()
+    expect(container.querySelector('.lio-other-ring')).toBeNull()
   })
 
   it('does not throw when no onThemeSelect is passed and a theme is clicked', () => {

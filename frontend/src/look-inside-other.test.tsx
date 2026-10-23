@@ -34,8 +34,14 @@ describe('LookInsideOther', () => {
       status: 'done', step: 'Done',
       result: {
         known_added: 42,
-        new_themes: [{ label: 'Shipping delays', count: 12 }, { label: 'Packaging damage', count: 8 }],
+        new_themes: [
+          { label: 'Shipping delays', count: 12, sentiment: -0.4, tone: { neg: 70, neu: 20, pos: 10 } },
+          { label: 'Packaging damage', count: 8, sentiment: -0.6, tone: { neg: 80, neu: 15, pos: 5 } },
+        ],
         still_other_count: 30,
+        charts: {
+          othergrowth: { chart_title: 'New themes found', chart_html: '<svg/>', chart_width: 100, chart_height: 50 },
+        },
       },
     })
     const html = renderToStaticMarkup(<LookInsideOther job={job} onStart={vi.fn()} />)
@@ -45,6 +51,8 @@ describe('LookInsideOther', () => {
     expect(html).toContain('12')
     expect(html).toContain('Packaging damage')
     expect(html).toContain('30')
+    // Stage 3c: the second tab switcher renders once result.charts exists.
+    expect(html).toContain('lio-charts')
   })
 
   it('failed: shows the real job error, not a generic message', () => {
