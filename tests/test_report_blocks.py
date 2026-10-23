@@ -194,6 +194,14 @@ def test_top_phrases_is_real_once_phrase_data_is_populated():
     assert b.needs(with_phrases) is True
 
 
+def test_context_header_is_real_once_any_question_exists():
+    # Chart-block stream, "new pipeline" batch 2 (2026-10-24): app/findings.py's _build_context now
+    # classifies the question for real - always available once a question/themes exist at all.
+    assert BY_SLUG["context_header"].chart_id == "context"
+    assert BY_SLUG["context_header"].needs(thin_report()) is True
+    assert BY_SLUG["context_header"].needs(rich_report()) is True
+
+
 def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report():
     # Every one of these describes a column kind or cross-tab this app genuinely does not build today
     # (per each block's own comment in app/report_blocks.py) - confirms the registry doesn't silently
@@ -201,7 +209,7 @@ def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report(
     richest = rich_report()
     for slug in (
         "ranked_answers", "vs_average", "tone_by_number", "quotes", "see_more", "trend_groups",
-        "trend_styled", "trend_grid", "trend_aggregated", "trend_errorbars", "context_header",
+        "trend_styled", "trend_grid", "trend_aggregated", "trend_errorbars",
         "theme_similarity", "answer_map", "ranked_list", "binned_grid", "region_map",
         "trend_sparse",
     ):

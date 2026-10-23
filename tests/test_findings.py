@@ -528,6 +528,56 @@ def test_build_report_data_answer_lengths_produce_a_real_histogram():
     assert dict(data.quality.bins)["6-8"] == 30
 
 
+# ==================================================================== context (chart-block stream, 2026-10-24)
+
+def test_context_kind_is_classified_from_the_real_question_text():
+    dataset = SimpleNamespace(row_count=100)
+    data = build_report_data(dataset, dominant_and_longtail_themes(), {}, QUESTION)
+    assert data.context.kind == "reasons"  # QUESTION starts "Why haven't you..."
+    assert data.context.kind_hover == "reasons"  # no second guess invented
+
+
+def test_context_kind_falls_back_to_anything_else_when_nothing_matches():
+    dataset = SimpleNamespace(row_count=100)
+    data = build_report_data(dataset, dominant_and_longtail_themes(), {}, "Any other comments?")
+    assert data.context.kind == "anything else"
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("What improvements would you suggest?", "improvements"),
+    ("Describe your experience with support.", "experiences"),
+    ("What do you think about the new design?", "opinions"),
+    ("What is your job title?", "facts"),
+])
+def test_context_kind_covers_every_real_option(question, expected):
+    dataset = SimpleNamespace(row_count=100)
+    data = build_report_data(dataset, dominant_and_longtail_themes(), {}, question)
+    assert data.context.kind == expected
+
+
+def test_context_framing_reflects_real_overall_sentiment_not_a_fixed_default():
+    dataset = SimpleNamespace(row_count=100)
+    data = build_report_data(dataset, dominant_and_longtail_themes(), {}, QUESTION)
+    # dominant_and_longtail_themes() carries real negative sentiment themes - see its own fixture.
+    assert data.context.framing == "negatively"
+    assert data.context.framing == ("positively" if data.overall_sentiment >= 0.05 else
+                                     "negatively" if data.overall_sentiment <= -0.05 else "neutrally")
+
+
+def test_context_length_reflects_real_median_answer_length():
+    dataset = SimpleNamespace(row_count=100)
+    short = build_report_data(dataset, dominant_and_longtail_themes(), {}, QUESTION, answer_lengths=[2, 3, 2, 3])
+    long_ = build_report_data(dataset, dominant_and_longtail_themes(), {}, QUESTION, answer_lengths=[40, 50, 60])
+    assert short.context.length == "a word or two"
+    assert long_.context.length == "a paragraph or more"
+
+
+def test_context_columns_note_reflects_real_structured_columns_present():
+    dataset = SimpleNamespace(row_count=100)
+    no_structured = build_report_data(dataset, dominant_and_longtail_themes(), {}, QUESTION)
+    assert "No score, segment or date" in no_structured.context.columns_note
+
+
 # ==================================================================== write_headline
 
 def reply_stub(prompt: str) -> str:

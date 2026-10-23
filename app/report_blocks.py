@@ -277,13 +277,15 @@ BLOCKS: list[Block] = [
         lambda data: False,
     ),
     Block(
-        "b27", "context_header", "1", "Context header", None,
+        "b27", "context_header", "1", "Context header", "context",
         "This looks like a reasons question, answered negatively, in a sentence or two.",
         "Any file. Shown after upload, so the user can correct what Verbatim understood.",
-        # ContextData is always honest placeholder defaults - no real question-kind classifier exists yet
-        # (CLAUDE.md task 5, "question context" explicitly not built). chart_id would be "context", but
-        # that frame is gallery-only (never fed real data) until this predicate can ever be True.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24): app/findings.py's _build_context now classifies the
+        # question (a cheap keyword heuristic, not a Claude call - this block's own "needs" text says it's
+        # shown so the user can CORRECT the guess, not that the guess must be rigorous) and restates real
+        # already-computed numbers (overall_sentiment, answer_lengths) in words. Always available once any
+        # real question/answers exist - same as frame/summary/quality above.
+        lambda data: bool(data.question),
     ),
     Block(
         "b28", "theme_hierarchy", "2", "Themes and sub-themes, sunburst", "sunburst",

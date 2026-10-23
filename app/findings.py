@@ -520,18 +520,13 @@ def build_report_data(
     # non-empty, so this cleanly removes the whole duplicate section rather than leaving an empty one.
     overview.insights = []
     quality = _build_quality(cleaning_report, total_rows, total_answered, answer_lengths)
-    context = ContextData(
-        kind="anything else",
-        kind_options=["reasons", "improvements", "experiences", "facts", "opinions", "anything else"],
-        kind_hover="reasons", framing="neutrally", length="a sentence or two",
-        columns_note="Score, segment and date cross-cuts are not wired into this report yet.",
-    )
 
     score = structured.score if structured and structured.score else ScoreData(name="", bands=[])
     segment = structured.segment if structured and structured.segment else SegmentData(name="", groups=[], rows=[])
     trend = structured.trend if structured and structured.trend else TrendData(
         labels=[], series=[], sentiment=[], hover_index=0, note="",
     )
+    context = _build_context(question, overall, answer_lengths, score, segment, trend, structured)
 
     return ReportData(
         question=question, total=total_rows, answered=total_answered, overall_sentiment=round(overall, 3),
@@ -612,6 +607,63 @@ def _build_quality(cleaning_report: Any, total_rows: int, total_answered: int,
         typical_bin = "n/a"
         typical_note = "Answer length was not computed for this report."
     return QualityData(bins=bins, typical_bin=typical_bin, typical_note=typical_note, notes=notes)
+
+
+# ---------------------------------------------------------------- context_header (chart-block stream,
+# 2026-10-24: ContextData used to be permanently honest-placeholder defaults - "anything else"/"neutrally"/
+# "a sentence or two" regardless of the real question or data, per the module's own earlier docstring. The
+# "kind" guess below is a deliberately CHEAP heuristic, not a Claude call: this block's own stated purpose
+# (HANDOFF.md's "needs" text) is "shown after upload, so the user can correct what Verbatim understood" - a
+# quick first guess the user is expected to fix, not a rigorous classification worth a network call or a
+# new failure mode for. "framing"/"length" need no guessing at all - they are real numbers this function
+# already computed (overall_sentiment, answer_lengths), just restated in words.
+
+# Checked in this order (first match wins) - "why"/"reason" is the strongest, least ambiguous signal, so
+# it goes first; "anything else" is the honest fallback when nothing matches, never a forced guess.
+_KIND_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    ("reasons", ("why", "reason")),
+    ("improvements", ("improve", "better", "suggest", "change")),
+    ("experiences", ("experience", "describe", "tell us about", "happened")),
+    ("opinions", ("think", "opinion", "feel about", "believe", "agree")),
+    ("facts", ("what is", "what are", "how many", "how much", "list")),
+]
+
+
+def _classify_question_kind(question: str) -> str:
+    q = question.lower()
+    for kind, needles in _KIND_PATTERNS:
+        if any(n in q for n in needles):
+            return kind
+    return "anything else"
+
+
+def _build_context(
+    question: str, overall: float, answer_lengths: list[int] | None,
+    score: "ScoreData", segment: "SegmentData", trend: "TrendData",
+    structured: "StructuredContext | None",
+) -> ContextData:
+    kind = _classify_question_kind(question)
+    framing = "positively" if overall >= 0.05 else "negatively" if overall <= -0.05 else "neutrally"
+    if answer_lengths:
+        median = statistics.median(answer_lengths)
+        length = "a word or two" if median < 4 else "a sentence or two" if median < 25 else "a paragraph or more"
+    else:
+        length = "a sentence or two"  # honest fallback: no real answer-length data to go by
+    # TrendData has no column-name field of its own (unlike ScoreData/SegmentData's `.name`) - the real
+    # name lives on `structured.trend_column_name` instead.
+    trend_name = structured.trend_column_name if structured else ""
+    present = [n for n, has in (
+        (score.name, bool(score.bands)), (segment.name, bool(segment.groups)), (trend_name, bool(trend.labels)),
+    ) if has and n]
+    columns_note = (
+        f"{', '.join(present)} also cross-cut this report." if present
+        else "No score, segment or date column was found to cross-cut this report."
+    )
+    return ContextData(
+        kind=kind,
+        kind_options=["reasons", "improvements", "experiences", "facts", "opinions", "anything else"],
+        kind_hover=kind, framing=framing, length=length, columns_note=columns_note,
+    )
 
 
 # ==================================================================== 2. candidate_findings

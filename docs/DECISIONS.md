@@ -2261,3 +2261,46 @@ chart isn't surfaced in any real report yet, selection logic is still deferred t
 fixture) - produced genuinely sensible, on-topic recurring phrases ("office space", "no privacy", "too
 small", "parking lot") with plausible negative-leaning sentiment matching that dataset's own -0.05 overall
 average, then rendered the real chip chart from that real data and confirmed it visually.
+
+## 2026-10-24 (Chart-block stream, "new pipeline" batch 2: real context_header classification)
+
+Second "new pipeline" block. `ContextData` used to be permanently hardcoded placeholder defaults
+(`kind="anything else"`, `framing="neutrally"`, `length="a sentence or two"`, a stale
+`columns_note` literally claiming "Score, segment and date cross-cuts are not wired into this report yet"
+- false since the B3 stream landed those finding kinds). New `_build_context`/`_classify_question_kind`
+in `app/findings.py`.
+
+**Deliberate design choice, not a shortcut**: "kind" (what the question asks for - reasons/improvements/
+experiences/facts/opinions) is classified by a small keyword heuristic, NOT a Claude call. This block's own
+stated purpose (`generator/gen_blocklib.py`'s "needs" text) is "shown after upload, so the user can correct
+what Verbatim understood" - a quick first guess the user is expected to fix, not a rigorous classification
+worth a network round-trip, an API cost, or a new failure mode. "framing" and "length" need no guessing at
+all: `framing` reuses the exact same sentiment-bucket thresholds `app/api_report.py`'s own `tone_word`
+already computes (`>=0.05`/`<=-0.05`/else), and `length` is a real median of `answer_lengths` (already
+computed, already passed in) restated in words - both are real numbers, not invented ones.
+`kind_hover` is set equal to `kind` (no second guess invented - that field is only cosmetic dropdown-hover
+styling in `f_context`'s own static chart). `columns_note` now names whichever of score/segment/trend
+actually survived (`structured.score_column_name`-equivalent via each `*Data.name`, plus
+`structured.trend_column_name` for the one shape - `TrendData` alone - that carries no name field of its
+own) instead of the old false blanket claim.
+
+`f_context` was already registered in `FRAMES` (unlike `f_phrases`/batch 1) - only `app/report_blocks.py`'s
+`context_header` needed updating: `chart_id="context"`, `needs = bool(data.question)` (always true once any
+real question/themes exist, same class as `frame`/`summary`/`quality`).
+
+**Tests**: `tests/test_findings.py` - 9 new tests (real classification from the suite's own `QUESTION`
+constant, the "anything else" fallback, one test per remaining kind option via `pytest.mark.parametrize`,
+framing matching the real computed `overall_sentiment` bucket not a hardcoded value, length reflecting a
+real median for both a short- and long-answer case, columns_note's "nothing found" honest case).
+`tests/test_report_blocks.py` - new true/true test (`context_header` is available on both the thin and
+rich fixtures, since any real question always has SOME classification). Full backend suite: 792 passed
+(same 5 pre-existing failures).
+
+**Live-verified** against dataset 12's real question and real structured columns (not a test fixture): the
+real facilities-survey question ("What are respondents' satisfaction ratings...") classified as "facts"
+(matches its own "What are..." phrasing), framing came back "negatively" (matches this dataset's own
+observed -0.05 overall sentiment, confirmed earlier this session), length "a paragraph or more" (matches
+the "41+ words" typical length already seen in this dataset's report screenshots), and `columns_note`
+correctly named "Overall_Satisfaction, Region" - the dataset's own real score and segment columns -
+instead of the old stale "not wired yet" claim. Rendered the real chart from this real data and confirmed
+it visually.
