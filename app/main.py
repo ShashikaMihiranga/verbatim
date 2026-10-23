@@ -2,39 +2,46 @@ import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-
-from .api import router as api_router
-from .api_auth import router as auth_router
-from .api_charts import router as charts_router
-from .api_cleaning import router as cleaning_router
-from .api_jobs import router as jobs_router
-from .api_projects import router as projects_router
-from .api_report import router as report_router
-from .api_sharing import router as sharing_router
-from .api_themes import router as themes_router
-from .api_upload import router as upload_router
-from .charts import FRAMES, render
-from .config import get_settings
-from .ratelimit import RateLimitMiddleware
-from .security import SecurityHeadersMiddleware
 
 # `Settings` (config.py) uses pydantic-settings' own `env_file=".env"` to populate ITS fields (env,
 # database_url, clerk_*) - but that loading is private to that one model, it never touches the process's
 # actual os.environ. Every other config value in this app (VOYAGE_API_KEY, ANTHROPIC_API_KEY,
-# TYPESAFE_API_KEY, ALLOW_DEV_USER, ...) is read via plain os.environ.get(...) in whichever module needs
-# it (embeddings.py, findings.py, jev_sentiment.py, auth.py), so none of those ever saw .env's values
-# unless the launching shell had already exported them itself - confirmed to be why local embedding/
-# labeling calls silently never reached Voyage/Claude when the server was started without first running
-# `source .env` by hand. python-dotenv was already a listed dependency for exactly this; it just was never
-# called. load_dotenv() populates the real process environment (unlike pydantic-settings' private
-# loading), so every os.environ.get(...) call anywhere benefits, with no other module needing a change.
+# TYPESAFE_API_KEY, ALLOW_DEV_USER, THEMES_DEADLINE_SECONDS, JEV_CLASSIFY_CONCURRENCY, ...) is read via
+# plain os.environ.get(...) in whichever module needs it (embeddings.py, findings.py, jev_sentiment.py,
+# auth.py, api_themes.py, other_classify.py), so none of those ever saw .env's values unless the launching
+# shell had already exported them itself. python-dotenv was already a listed dependency for exactly this.
+# load_dotenv() populates the real process environment (unlike pydantic-settings' private loading), so
+# every os.environ.get(...) call anywhere benefits, with no other module needing a change - PROVIDED this
+# runs before any of those modules are imported. `api_themes.py` and `other_classify.py` read several of
+# these as MODULE-LEVEL constants (evaluated once, at import time, not per-call) - confirmed live,
+# 2026-10-23: with this call placed after the `from .api_* import ...` lines below, THEMES_DEADLINE_SECONDS
+# and JEV_CLASSIFY_CONCURRENCY silently kept their hardcoded defaults from `.env` alone (a shell that had
+# already exported them worked purely by accident, which is why VOYAGE/ANTHROPIC/TYPESAFE keys - read
+# lazily inside functions, not at import time - were never affected the same way). This call must stay
+# the first thing this module does, before any local import.
 # Safe in production: it never overrides a variable that's already set (Railway's own dashboard-configured
 # env vars win), and does nothing at all when no .env file exists (true on every deploy - .env is
 # git-ignored, never shipped).
 load_dotenv()
+
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+from .api import router as api_router  # noqa: E402
+from .api_auth import router as auth_router  # noqa: E402
+from .api_charts import router as charts_router  # noqa: E402
+from .api_cleaning import router as cleaning_router  # noqa: E402
+from .api_jobs import router as jobs_router  # noqa: E402
+from .api_projects import router as projects_router  # noqa: E402
+from .api_report import router as report_router  # noqa: E402
+from .api_sharing import router as sharing_router  # noqa: E402
+from .api_themes import router as themes_router  # noqa: E402
+from .api_upload import router as upload_router  # noqa: E402
+from .charts import FRAMES, render  # noqa: E402
+from .config import get_settings  # noqa: E402
+from .ratelimit import RateLimitMiddleware  # noqa: E402
+from .security import SecurityHeadersMiddleware  # noqa: E402
 
 # Without this, every `log.info(...)` call anywhere in this codebase (e.g. labeling.py's cluster-count/
 # max_tokens line, clustering.py's noise-diagnostic line) is silently dropped - confirmed live, 2026-10-21:

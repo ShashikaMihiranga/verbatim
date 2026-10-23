@@ -1913,3 +1913,35 @@ Case fit, Model comparison and upgrade value, etc.), Still in Other 5 - all real
 Other-block ring/label cleared correctly once done. The new Sankey/Rank/Icicle/Sunburst/Arc tab switcher
 all rendered with real data from the actual run; Arc correctly showed the honest explanatory message
 instead of a chart. No console errors, no silent failures.
+
+## 2026-10-23 (Fix: `load_dotenv()` ran after module-level env reads, so `.env`-only tuning knobs were
+silently ignored)
+
+Found live while debugging "Look inside Other" on a 40,000-row dataset with a 19,799-answer Other bucket
+(49.5%): the job kept failing at exactly "497 seconds" even after setting `THEMES_DEADLINE_SECONDS=1800`
+and `JEV_CLASSIFY_CONCURRENCY=32` in `.env` and restarting the backend - the new values never took
+effect, `.env` alone was never enough.
+
+**Root cause**: `app/main.py` called `load_dotenv()` on line 37, AFTER its own `from .api_themes import
+router as themes_router` (line 17) and other local imports. Most of this app's config (`VOYAGE_API_KEY`,
+`ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`, `ALLOW_DEV_USER`) is read lazily, inside functions, so import
+order never mattered for those. But `app/api_themes.py`'s `THEMES_DEADLINE_SECONDS`/`_SLOTS` and
+`app/text_pipeline/other_classify.py`'s `DEFAULT_CLASSIFY_CONCURRENCY` are MODULE-LEVEL constants,
+evaluated once at import time via `os.environ.get(...)` - by the time `load_dotenv()` ran, those modules
+had already been imported (transitively, via the router import) and already computed their defaults
+(300s, concurrency 8) from whatever the launching shell happened to have exported, never from `.env`.
+This was real and already live before today - `.env`-only tuning of these two knobs has silently never
+worked locally, confirmed by testing (a real shell `export` of the same two vars, bypassing `load_dotenv`
+entirely, worked immediately - see job 25 below).
+
+**Fix**: moved `load_dotenv()` to the very first statement `app/main.py` executes, before every local
+import, with `# noqa: E402` on each import that now follows it. No other module needed a change - every
+`os.environ.get(...)` call anywhere in the app now sees `.env`'s values regardless of when it runs.
+Production is unaffected either way (Railway sets real env vars directly; `.env` doesn't exist there).
+
+**Verification**: `tests/test_app.py` (27 passed) and the full backend suite (741 passed, 1 skipped - same
+5 pre-existing unrelated `test_auth.py`/`test_security.py` failures as every other run this session, see
+their own earlier entries) both green after the move. Still to confirm live: restarting the backend with
+only `.env` set (no shell export) and re-checking that `THEMES_DEADLINE_SECONDS`/`JEV_CLASSIFY_CONCURRENCY`
+take effect purely from `.env` - the dataset-12 job that unblocked this investigation was itself still
+running on a shell-exported backend when this fix was written.
