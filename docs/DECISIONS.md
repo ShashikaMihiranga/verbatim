@@ -1900,5 +1900,16 @@ shows the note not a chart), 1 existing `look-inside-other.test.tsx` "done" test
 the second tab switcher renders once `result.charts` is present. Full frontend suite: 92 passed (was 85).
 `tsc -b --force` and `vite build` both clean.
 
-Committed to `staging`, not pushed yet. Live browser verification against a real dataset with a
-genuinely large Other bucket is the next step.
+Committed to `staging`, not pushed yet.
+
+**Live-verified** (local dev server, dataset 1, "What do you think of this product?", real 23.9% Other
+bucket, real TYPESAFE_API_KEY): clicked "Look inside" - the treemap's Other block showed the pulsing
+ring + "Looking inside..." label immediately, and the real ribbon diagram rendered below with one ribbon
+per known theme (width matching each theme's real share) fanning out from "Other" plus a "New themes"
+destination. The step tracker advanced through the real backend steps ("Checking known themes" ->
+"Grouping new themes into sub-themes" -> done) as the job actually progressed. On completion: Known
+themes 45, New themes found 112 across 8 real labeled sub-groups (Case appearance and build quality,
+Case fit, Model comparison and upgrade value, etc.), Still in Other 5 - all real numbers. The treemap's
+Other-block ring/label cleared correctly once done. The new Sankey/Rank/Icicle/Sunburst/Arc tab switcher
+all rendered with real data from the actual run; Arc correctly showed the honest explanatory message
+instead of a chart. No console errors, no silent failures.
