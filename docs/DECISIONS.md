@@ -2077,3 +2077,51 @@ unaffected (backend-only change): 99 passed, `tsc --noEmit` clean.
 crowding" - the report's default global selected theme - fixed with the "Other" fallback above before
 calling this done) now honestly outlines "Other", matching where that small theme's data actually sits in
 this chart.
+
+## 2026-10-24 (New stream: port the chart-block registry + scoring system from the design - Stage 1)
+
+User asked for a review of the existing reporting/chart-selection code against the design system they
+built in `verbatim-visual-system/` (a 46-block registry + a goal-weighted scoring engine, both already
+fully specified as real Python tables in `generator/gen_blocklib.py`/`gen_dynreport.py`, plus
+`Chart-Logic-Articles.dc.html` incorporating 3 external chart-selection articles the user pasted) - and
+to scope porting it into the real app. Full plan at `.claude/plans/this-is-ai-based-deep-globe.md` (8
+stages). Key finding: today's `pick_chart()` (`app/findings.py:751-756`) is a one-line
+`dict[kind -> chart_id]` lookup with no scoring and no data-shape awareness; the design already has both
+a working gate/score/cap pipeline (matching `candidate_findings`'s own thresholds almost exactly) AND a
+more general goal-weighted value-scoring layer the real app has no equivalent of.
+
+**This is Stage 1 only**: `app/report_blocks.py`, a new module - the 46-block registry ported from
+`gen_blocklib.py`'s `BL` table (id/slug/chapter/name/example sentence, copied verbatim), each with a
+`chart_id` (this port's own addition - which `app/charts.py:FRAMES` renderer draws it, or `None` when no
+renderer exists yet) and a real `needs(report_data) -> bool` predicate translating the design's prose
+"needs" column into runnable code against `ReportData`. **No behavior change**: `app/findings.py`'s
+`pick_chart`/`candidate_findings`/`build_findings` are untouched - this module is pure data + predicates,
+not wired into anything yet (Stage 2's job).
+
+Of the 46 blocks: 8 have predicates backed by real, already-built data (theme_map, summary, sentiment_sun,
+group_heatmap, score_groups, trend/trend_band/trend_share_tone, theme_hierarchy/_compact, tone_split,
+tone_mekko, theme_flow, score_mix, long_tail/inside_other via the merged "Other" node's share,
+group_split_bars, compare_dots, slope_change, theme_mix_over_time, trend_small_multiples, frame/also_checked/
+quality always-True) - these can genuinely be selected today once Stage 2 wires them up. The remaining ~20
+are honest `lambda data: False` with a comment naming the exact missing pipeline (a second-column frequency
+table for ranked_answers/vs_average/ranked_list, real similarity-map coordinates for theme_similarity,
+phrase extraction for top_phrases, geographic data for region_map, per-period answer counts for
+trend_sparse, numeric-column binning for band_bars/number_spread/binned_grid/tone_by_number, a
+question-kind classifier for context_header, per-group trend cross-tabs for trend_groups/_styled/_grid).
+One block, `co_mentions` (the arc/co-occurrence chart), is `False` permanently, not provisionally: this
+pipeline's clustering is a hard partition (one theme per answer by construction), so there is no real
+co-occurrence signal to compute from regardless of future work - same conclusion as DECISIONS 2026-10-21,
+now encoded in the registry itself instead of only in a comment.
+
+Also identified, not yet acted on: `tone_split`'s renderer (`f_diverge`) already exists in `app/charts.py`
+and is already unwired to any real finding - Stage 4's near-free win, since its data requirement
+(any real theme) is trivially met wherever `sentsun`'s is.
+
+**Tests**: `tests/test_report_blocks.py` (new) - registry consistency (46 unique ids/slugs, every
+`chart_id` either `None` or a real `FRAMES` key), every `needs()` predicate runs cleanly against both a
+"thin" report (1 theme, no structured columns) and a "rich" one (3 real themes with a sub-theme and a wide
+tone spread, a score column, a 3-group segment column, a 3-period trend) without crashing, specific
+true/false assertions for every predicate with real logic, and a dedicated test that `co_mentions` stays
+`False` even against the richest fixture (confirming it's excluded for its stated reason, not just
+under-resourced by the test data). Full backend suite: 764 passed (same 5 pre-existing unrelated
+auth/security failures) - 14 new, zero changed.
