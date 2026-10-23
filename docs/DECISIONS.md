@@ -1809,3 +1809,53 @@ identically at that size) - re-checked by reading the token straight from the da
 confirmed the real token worked. Still genuinely unverified: collaborator invite-link accept flow as a
 second real browser session, PPTX/PDF file content (only confirmed via magic bytes/`python-pptx` in
 automated tests, not opened and looked at), and large-report export timing.
+
+## 2026-10-23 (Stage 3a: real per-new-theme data for "Look inside Other" - sentiment/tone/sub_themes/charts)
+User feedback after seeing the shipped Stage 3 UI: it was a simplified placeholder, not what was actually
+asked for against the mockup (`Other-Flow-Mid.dc.html`). Re-reading that file in FULL (not just the
+earlier summary) showed it has a whole second 5-tab chart switcher for the newly-discovered sub-themes
+specifically (Sankey-growth / Rank / Icicle / Sunburst / Arc), not just a 3-column text summary. This
+entry covers the backend half of rebuilding Stage 3 to match - see the plan file
+(`this-is-ai-based-deep-globe.md`) for the full context and the frontend pieces still to come.
+
+**`_apply_other_classification`'s `new_themes` summary entries now carry real `sentiment`/`tone`** - no
+new computation, just surfacing the same numbers already computed for the `Theme` row itself.
+
+**New: real `sub_themes` for each newly-found theme**, via a new `other_classify.sub_cluster_candidates`
+- the SAME sub-clustering technique `subthemes.sub_cluster_themes` already uses for a normal top-level
+build, adapted to run against the vectors already in memory from this job's own re-embed step (no second
+Voyage call) instead of a `ClusterResult`/`EmbeddedAnswers` pair from a just-finished HDBSCAN build
+(these candidates came from Jev's classification, not `cluster_answers`, so there is no such pair).
+Reuses `subthemes.py`'s own constants/floor unchanged (`MIN_THEME_SIZE_FOR_SUBTHEMES=100` etc.) - a small
+newly-found theme honestly has no sub_themes, same as any other small theme. Labeled with ONE extra
+batched Claude call covering every eligible new theme at once (`label_sub_clusters_with_retry`), never
+failing the job on a `LabelingError` - same graceful "no sub_themes this run" fallback the top-level
+build already uses for the identical failure mode.
+
+**New: real chart fragments**, via `_build_other_result_charts` - builds a synthetic `ReportData` whose
+`themes` are just the newly-found-theme nodes (same "minimal ReportData for one chart" trick
+`app/api_themes.py::themes_chart` already uses for the Themes screen), then calls the EXISTING `f_rank`/
+`f_icicle`/`f_sentsun` unchanged - 3 of 4 real result-chart tabs needed zero new renderer code. The one
+genuinely new renderer, `f_other_growth` (chart id `"othergrowth"`), is a full-width-track horizontal bar
+per theme matching the mockup's own sankey-style layout (visually distinct from `f_rank`'s centered-label
+style) - built from real final share/count only, no live-growing animation (this job has no partial-
+progress reporting mid-run to animate honestly - see the route's own comment).
+
+**No Arc tab backend work, on purpose**: the mockup's Arc view ("how often two themes are mentioned in
+the same answer") needs the exact multi-label co-occurrence signal already confirmed impossible for the
+main report's own Arc tab (Stage 2 decision) - every answer belongs to exactly one theme by construction,
+now including Jev's own classification step too. Not a scope cut this time either - a structural property
+of the whole pipeline, documented in `_build_other_result_charts`'s own docstring; the frontend tab (next
+stage) shows an explanatory message instead of calling this function for that tab.
+
+**Tests**: `tests/test_other_classify.py` unaffected (new `sub_cluster_candidates` not yet unit-tested in
+isolation - covered end-to-end instead); 1 existing `_apply_other_classification` unit test updated for
+the enriched summary shape; 1 new end-to-end job test
+(`test_look_inside_other_end_to_end_finds_real_new_themes_with_charts`) using the same reliability/
+support FakeEmbeddingClient fixture split tests elsewhere already use, confirming real new-theme names
+reach all 4 real chart fragments. New chart id `othergrowth` added to the golden-snapshot test suite
+(`tests/golden/othergrowth.html`, frame-count assertions updated 20->21). Full backend suite: 713 passed
+(710 + ~3), 1 skipped - no regressions.
+
+Committed to `staging`, not pushed yet. Frontend pieces (ribbon animation, treemap Other-block highlight,
+the second tab switcher consuming `job.result.charts`) still to come.

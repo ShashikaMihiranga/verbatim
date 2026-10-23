@@ -33,7 +33,8 @@ from .clustering import MIN_MIN_CLUSTER_SIZE, cluster_answers
 from .jev_sentiment import ChoiceAnswer, JevClient
 from .labeling import OTHER_CLUSTER_ID, ClaudeClient, label_clusters_with_retry
 from .merging import apply_merges
-from .schema import ClusterMember, ClusterResult, ThemeLabel
+from .schema import Cluster, ClusterMember, ClusterResult, ThemeLabel
+from .subthemes import MAX_SUBTHEMES_PER_THEME, MIN_SUBTHEME_COVERAGE, MIN_THEME_SIZE_FOR_SUBTHEMES, sub_cluster_min_size
 
 NONE_OF_THESE = "None of these"
 NONE_OF_THESE_DESCRIPTION = (
@@ -173,4 +174,36 @@ def classify_other_answers(
                 continue
             out.by_row[row] = answer.choice
             out.confidence_by_row[row] = answer.confidence
+    return out
+
+
+def sub_cluster_candidates(
+    rows_by_parent: dict[int, list[int]], vec_by_row: dict[int, list[float]], text_by_row: dict[int, str],
+) -> dict[int, list[Cluster]]:
+    """Stage 3a (docs/TODO.md, 2026-10-23): the same sub-clustering technique
+    `subthemes.sub_cluster_themes` already uses for a normal top-level build - "Look inside Other"'s own
+    newly-discovered themes get a second, nested pass too, so their own Icicle chart has real sub-theme
+    data instead of flat blocks. Adapted to run against a plain `{parent_id: [row, ...]}` map and a
+    `{row: vector}` lookup rather than a `ClusterResult`/`EmbeddedAnswers` pair from a just-finished
+    HDBSCAN build - these candidates came from Jev's own classification, not from `cluster_answers`, so
+    there is no such pair to reuse directly. Reuses `subthemes.py`'s own constants/floor
+    (`MIN_THEME_SIZE_FOR_SUBTHEMES`, `MAX_SUBTHEMES_PER_THEME`, `MIN_SUBTHEME_COVERAGE`,
+    `sub_cluster_min_size`) unchanged, so a newly-found theme is held to the exact same "worth a second
+    pass" bar as any top-level theme, not a second, looser standard invented for this feature.
+
+    `parent_id` is caller-assigned (the caller's own enumeration over its surviving new themes, not a
+    real `Theme.id` - those don't exist yet at this point, same reasoning `label_sub_clusters`'s own
+    docstring gives for the top-level case). Returns only the parents that actually got a kept sub-split
+    (>=2 surviving sub-clusters covering >=50% of the parent) - same contract as `sub_cluster_themes`."""
+    out: dict[int, list[Cluster]] = {}
+    for parent_id, rows in rows_by_parent.items():
+        if len(rows) < MIN_THEME_SIZE_FOR_SUBTHEMES:
+            continue
+        vectors = [vec_by_row[r] for r in rows]
+        texts = [text_by_row[r] for r in rows]
+        sub_result = cluster_answers(vectors, texts, rows, min_cluster_size=sub_cluster_min_size(len(rows)))
+        kept = sub_result.clusters[:MAX_SUBTHEMES_PER_THEME]
+        coverage = sum(len(c.members) for c in kept) / len(rows) if rows else 0.0
+        if len(kept) >= 2 and coverage >= MIN_SUBTHEME_COVERAGE:
+            out[parent_id] = kept
     return out

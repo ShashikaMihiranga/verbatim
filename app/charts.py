@@ -399,6 +399,30 @@ def f_rank_m(data: ReportData):
             f'<div style="margin-top:6px">{rank_rows(data, True, data.selected_theme)}</div></div>')
     return body, 390, 960
 
+# ---------- other-growth (docs/TODO.md, 2026-10-23 - "Look inside Other"'s own result-chart tabs) ----------
+def f_other_growth(data: ReportData):
+    """A full-width-track horizontal bar per theme, label above the bar rather than centered inside it -
+    deliberately NOT `f_rank`'s own layout (same underlying `ReportData.themes` shape, reused as-is, but
+    this app id is ONLY ever used for "Look inside Other"'s own newly-discovered-themes result tabs, never
+    the main report, so it earns a visually distinct convention matching the mockup's own "sankey-style"
+    reveal list rather than literally reusing f_rank's chart for a second purpose). Built from real, final
+    per-theme share/count only - no live-growing animation (this job never reports partial progress mid-
+    run, so there is nothing honest to animate - see app/api_themes.py's own docstring on why)."""
+    rws = rows(data)
+    rh, gap, y0 = 48, 20, 8
+    total_h = y0 + len(rws) * (rh + gap)
+    o = [f'<svg width="100%" viewBox="0 0 1180 {total_h}" style="display:block" role="img" aria-label="New themes found, ranked by share">']
+    for i, (name, share, sent, cnt, col) in enumerate(rws):
+        y = y0 + i * (rh + gap)
+        o.append(T(0, y - 14, name, 15, 600))
+        o.append(f'<rect x="0" y="{y}" width="1180" height="{rh}" rx="6" style="fill:var(--line);opacity:.4"/>')
+        w = max(6.0, 1180 * min(1.0, share / 100))
+        o.append(f'<rect x="0" y="{y}" width="{w:.1f}" height="{rh}" rx="6" style="fill:var(--{col})"/>')
+        o.append(T(14, y + rh / 2, f"{share:g}%  {fmt(cnt)} answers", 14, 600, "var(--on-accent)" if w > 140 else "var(--ink)"))
+    o.append("</svg>")
+    body = f'<div style="padding:56px 48px">{hdr("New themes found inside Other", "Share of all Other answers each new theme now accounts for.")}<div style="margin-top:22px">{"".join(o)}</div></div>'
+    return body, 1180, total_h + 56
+
 # ---------- diverge ----------
 def f_diverge(data: ReportData):
     DIV = [(t.name, *t.tones) for t in data.themes]
@@ -1463,7 +1487,7 @@ FRAMES = {
     "sentsun": f_sentsun, "rank": f_rank, "diverge": f_diverge, "mekko": f_mekko, "bubbles": f_bubbles,
     "sankey": f_sankey, "arc": f_arc, "map": f_map, "byScore": f_byscore, "heatmap": f_heatmap,
     "trend": f_trend, "quality": f_quality, "context": f_context, "tokens": f_tokens,
-    "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m,
+    "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m, "othergrowth": f_other_growth,
 }
 
 # Human-readable title per frame id, for the chart list API.
@@ -1473,7 +1497,7 @@ TITLES = {
     "bubbles": "Theme similarity", "sankey": "Score to theme to tone", "arc": "Theme co-occurrence", "map": "Answer map",
     "byScore": "Themes by score group", "heatmap": "Themes by segment", "trend": "Trend over time", "quality": "Answer quality",
     "context": "Question context", "tokens": "Design tokens", "sunburst-mobile": "Themes, sunburst (mobile)",
-    "rank-mobile": "Rank themes (mobile)",
+    "rank-mobile": "Rank themes (mobile)", "othergrowth": "New themes found",
 }
 
 def render_parts(frame_id: str, data: ReportData | None = None):

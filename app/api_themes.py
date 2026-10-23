@@ -49,7 +49,7 @@ from .chart_data import (
     ContextData, FreqData, MapData, OverviewData, PhraseData, QualityData, QuoteData, ReportData,
     ScoreData, SegmentData, TrendData,
 )
-from .charts import render_parts
+from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, theme_nodes
@@ -87,6 +87,7 @@ from .text_pipeline.other_classify import (
     classify_other_answers,
     label_and_consolidate,
     recluster_other,
+    sub_cluster_candidates,
 )
 from .text_pipeline.subthemes import sub_cluster_themes
 
@@ -311,6 +312,9 @@ def _apply_other_classification(
     db: Session, dataset_id: int, column: str, other_theme_id: int,
     by_row: dict[int, str], new_label_descriptions: dict[str, str],
     row_text: dict[int, str],
+    *,
+    vec_by_row: dict[int, list[float]] | None = None,
+    question: str | None = None, claude_client: ClaudeClient | None = None,
 ) -> dict | None:
     """Writes "Look inside Other"'s results: UPDATES, not `_write_theme_rows`'s full delete-and-replace
     (that would also wipe every untouched known theme). `by_row` is `other_classify.OtherClassification
@@ -329,10 +333,22 @@ def _apply_other_classification(
     `theme_nodes`'s own `next((t for t in themes if t.label == "Other"), None)`), not kept as a
     zero-size row nothing downstream expects.
 
-    Returns a small summary dict (Stage 3, docs/TODO.md 2026-10-21: the animated flow's own
-    Known/New/Still-in-Other results panel needs these real counts, not a second query reconstructing
-    them after the fact) - `{"known_added": int, "new_themes": [{"label", "count"}], "still_other_count":
-    int}` - or `None` if `other` was already gone (nothing to summarize)."""
+    `vec_by_row`/`question`/`claude_client` (Stage 3a, docs/TODO.md 2026-10-23) are all optional -
+    `None` (the default, every call site/test before this stage) skips sub-clustering entirely, leaving
+    every new theme's `sub_themes` at `[]` exactly as before. When given, each surviving new theme with
+    enough answers gets the SAME sub-clustering pass a normal top-level theme would
+    (`other_classify.sub_cluster_candidates`, reusing the vectors already in memory from this job's own
+    re-embed step - no second Voyage call), labeled with one extra batched Claude call covering every
+    eligible new theme at once (`label_sub_clusters_with_retry`, same "one call for everything, not one
+    per theme" discipline `label_clusters_with_retry` already uses) - never a build-failing error: a
+    `LabelingError` here just means no new theme gets sub-themes this run, same graceful fallback
+    `app/api_themes.py`'s own top-level build already uses for the identical failure.
+
+    Returns a small summary dict (Stage 3, docs/TODO.md 2026-10-21/23: the animated flow's own
+    Known/New/Still-in-Other results panel and its own result-chart tabs need these real numbers, not a
+    second query reconstructing them after the fact) - `{"known_added": int, "new_themes": [{"label",
+    "count", "sentiment", "tone"}], "still_other_count": int}` - or `None` if `other` was already gone
+    (nothing to summarize)."""
     other = db.get(Theme, other_theme_id)
     if other is None:
         return None  # dataset/column was deleted or rebuilt from under this job; nothing left to update
@@ -381,18 +397,72 @@ def _apply_other_classification(
 
     column_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
     column_id = column_row.id if column_row else None
-    new_themes_summary: list[dict] = []
+    new_theme_objects: list[Theme] = []
+    surviving_new: dict[str, list[int]] = {}
+    new_theme_tone_sentiment: dict[str, tuple[dict, float]] = {}
     for label, new_rows in matched_new.items():
         if len(new_rows) < MIN_OTHER_NEW_THEME_SIZE:
             still_other.extend(new_rows)  # too small to count as its own theme - folds back into Other
             continue
         tone, sentiment = _aggregate_tone(new_rows, _scores_for(new_rows))
-        db.add(Theme(
+        theme = Theme(
             dataset_id=dataset_id, column_id=column_id, column_name=column,
             label=label, description=new_label_descriptions[label], size=len(new_rows),
             sentiment=sentiment, tone=tone, answer_refs=sorted(new_rows), sub_themes=[],
-        ))
-        new_themes_summary.append({"label": label, "count": len(new_rows)})
+        )
+        db.add(theme)
+        new_theme_objects.append(theme)
+        surviving_new[label] = new_rows
+        new_theme_tone_sentiment[label] = (tone, sentiment)
+
+    # Sub-clustering (Stage 3a, docs/TODO.md 2026-10-23) - see this function's own docstring for the
+    # optional-params contract. Skips cleanly (no new theme gets sub_themes) on anything short of a
+    # full "vectors + Claude client supplied, and at least one new theme survived" - never fails the
+    # whole job over an Icicle-chart nicety.
+    if vec_by_row is not None and claude_client is not None and surviving_new:
+        rows_by_parent = {i: rows for i, rows in enumerate(surviving_new.values())}
+        sub_clusters = sub_cluster_candidates(rows_by_parent, vec_by_row, row_text)
+        if sub_clusters:
+            parent_labels = {
+                i: ThemeLabel(
+                    cluster_id=i, label=lbl, description=new_label_descriptions[lbl],
+                    size=len(rows), merge_with=[], note=None,
+                )
+                for i, (lbl, rows) in enumerate(surviving_new.items())
+            }
+            try:
+                sub_labels_by_parent = label_sub_clusters_with_retry(
+                    sub_clusters, parent_labels, question or "", claude_client,
+                )
+                sub_clusters, sub_labels_by_parent = apply_sub_merges(sub_clusters, sub_labels_by_parent)
+            except LabelingError as e:
+                log.warning(
+                    "sub-theme labeling failed for dataset %s column %r (Look inside Other): %s",
+                    dataset_id, column, e,
+                )
+                sub_labels_by_parent = {}
+            for i, theme in enumerate(new_theme_objects):
+                clusters = sub_clusters.get(i)
+                sub_labels = sub_labels_by_parent.get(i)
+                if not clusters or not sub_labels:
+                    continue
+                sub_themes_json: list[dict] = []
+                for sc, sl in zip(clusters, sub_labels):
+                    sub_rows = [m.row for m in sc.members]
+                    sub_tone, sub_sentiment = _aggregate_tone(sub_rows, _scores_for(sub_rows))
+                    sub_themes_json.append({
+                        "label": sl.label, "description": sl.description, "size": sl.size,
+                        "sentiment": sub_sentiment, "tone": sub_tone, "answer_refs": sub_rows,
+                    })
+                theme.sub_themes = sub_themes_json
+
+    new_themes_summary: list[dict] = [
+        {
+            "label": label, "count": len(rows),
+            "sentiment": new_theme_tone_sentiment[label][1], "tone": new_theme_tone_sentiment[label][0],
+        }
+        for label, rows in surviving_new.items()
+    ]
 
     if still_other:
         tone, sentiment = _aggregate_tone(still_other, _scores_for(still_other))
@@ -405,6 +475,51 @@ def _apply_other_classification(
 
     db.commit()
     return {"known_added": known_added, "new_themes": new_themes_summary, "still_other_count": len(still_other)}
+
+
+_OTHER_RESULT_CHART_IDS = ("othergrowth", "rank", "icicle", "sentsun")
+
+
+def _build_other_result_charts(theme_rows: list[Theme]) -> dict[str, dict]:
+    """Stage 3a (docs/TODO.md, 2026-10-23): the "Look inside Other" job's own result-chart tabs - a
+    SEPARATE mini chart set from the main report's, scoped to just the newly-discovered themes from one
+    run, not the dataset's top-level known themes. Same "build a minimal ReportData for one chart" trick
+    `themes_chart` above already uses for the Themes screen's own one-chart view - reuses `f_rank`/
+    `f_icicle`/`f_sentsun` completely unchanged (3 of 4 real tabs need no new renderer at all), plus the
+    one genuinely new renderer this stage adds, `f_other_growth` (chart id `"othergrowth"`). No Arc tab
+    here: the mockup's Arc view needs the exact multi-label co-occurrence signal already confirmed
+    impossible for the main report's own Arc tab (Stage 2) - every answer belongs to exactly one theme by
+    construction (now including Jev's own classification step), so there is no real arc data a new chart
+    could show; the frontend's own tab bar shows an explanatory message for that tab instead of calling
+    this function's output. Returns `{}` if `theme_rows` is empty (nothing to chart)."""
+    if not theme_rows:
+        return {}
+    total = sum(t.size for t in theme_rows)
+    nodes = theme_nodes(theme_rows, total)
+    placeholder_theme = nodes[0].name if nodes else ""
+    data = ReportData(
+        question="", total=total, answered=total, overall_sentiment=0.0, themes=nodes,
+        selected_theme=placeholder_theme, hover_theme=placeholder_theme,
+        overview=OverviewData(stats=[], insights=[]),
+        score=ScoreData(name="", bands=[]),
+        segment=SegmentData(name="", groups=[], rows=[]),
+        trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
+        cooccurrence=[],
+        answer_map=MapData(seed=0, tip_text="", tip_note=""),
+        frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),
+        phrases=PhraseData(phrases=[], highlight=""),
+        quotes=QuoteData(quotes=[], highlight_index=0),
+        quality=QualityData(bins=[], typical_bin="", typical_note="", notes=[]),
+        context=ContextData(kind="", kind_options=[], kind_hover="", framing="", length="", columns_note=""),
+    )
+    charts: dict[str, dict] = {}
+    for chart_id in _OTHER_RESULT_CHART_IDS:
+        chart_html, chart_width, chart_height = render_parts(chart_id, data)
+        charts[chart_id] = {
+            "chart_title": TITLES.get(chart_id, chart_id),
+            "chart_html": chart_html, "chart_width": chart_width, "chart_height": chart_height,
+        }
+    return charts
 
 
 def _theme_build_error(e: BaseException) -> str | None:
@@ -614,11 +729,25 @@ def look_inside_other(
 
         step("Finalizing")
         classification = classify_other_answers(rows, texts, criteria, jev_client)
+        vec_by_row = dict(zip(rows, vectors))
         with _db.SessionLocal() as job_db:
             summary = _apply_other_classification(
                 job_db, dataset_id_, column, other_theme_id,
                 classification.by_row, new_label_descriptions, row_text,
+                vec_by_row=vec_by_row, question=question, claude_client=claude_client,
             )
+            # Result-chart fragments (Stage 3a, docs/TODO.md 2026-10-23): built in the SAME session,
+            # right after the new Theme rows exist with real ids - re-queries by label rather than
+            # threading ORM objects out of `_apply_other_classification` (that function already commits
+            # internally, and a fresh `select` is simpler/safer than trusting objects across a commit).
+            if summary is not None and summary["new_themes"]:
+                new_labels = [nt["label"] for nt in summary["new_themes"]]
+                new_theme_rows = list(job_db.scalars(
+                    select(Theme).where(
+                        Theme.dataset_id == dataset_id_, Theme.column_name == column, Theme.label.in_(new_labels),
+                    )
+                ).all())
+                summary["charts"] = _build_other_result_charts(new_theme_rows)
             # Written in the SAME session/commit as the Theme-row changes above, not via jobs.py's own
             # `_set_step`/`_mark_done` (those only ever touch a still-"running" job, guarding against a
             # watchdog that already failed it out from under this thread - writing `result` here, before

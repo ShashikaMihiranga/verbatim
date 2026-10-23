@@ -1016,6 +1016,50 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
         assert sorted(row.answer_refs) == [0, 1, 2, 3, 4, 13, 14, 15]
 
 
+def test_look_inside_other_end_to_end_finds_real_new_themes_with_charts(env):
+    """Happy path for the real "new themes found" case (Stage 3a, docs/TODO.md 2026-10-23): no known
+    themes at all, every Other answer genuinely reclusters into one of two real groups (the same
+    reliability/support fixture split used by test_split_theme_end_to_end_finds_the_two_real_groups) -
+    confirms job.result carries real sentiment/tone per new theme and real chart_html fragments for the
+    rank/icicle/sentsun/othergrowth tabs, with real new-theme names reaching them."""
+    def pick(text, question_key, instructions, criteria):
+        has_battery_words = any(w in text for w in _WORDS_RELIABILITY)
+        for label in criteria:
+            if label == NONE_OF_THESE:
+                continue
+            if has_battery_words and "reliab" in label.lower() or "batt" in label.lower():
+                return ChoiceAnswer(choice=label, confidence=0.9, probabilities={})
+        # Fallback: pick whichever non-"none of these" label is NOT already used for battery content.
+        return ChoiceAnswer(choice=next(l for l in criteria if l != NONE_OF_THESE), confidence=0.9, probabilities={})
+
+    install_look_inside_other_fakes(jev_choice_result=pick)
+    df = theme_df()  # 26 rows: 0-12 reliability, 13-25 support
+    did = upload_csv(env, df)
+    clean_and_apply(env, did)
+    seed_theme(
+        env, did, label="Other", description="x", size=26, sentiment=0.0,
+        tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(range(26)),
+    )
+
+    job = look_inside_other_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert job["error"] is None
+    result = job["result"]
+    assert len(result["new_themes"]) >= 1
+
+    for entry in result["new_themes"]:
+        assert isinstance(entry["sentiment"], float)
+        assert set(entry["tone"]) == {"neg", "neu", "pos"}
+
+    charts = result.get("charts") or {}
+    assert set(charts) == {"othergrowth", "rank", "icicle", "sentsun"}
+    new_names = {nt["label"] for nt in result["new_themes"]}
+    for chart in charts.values():
+        assert chart["chart_html"]
+        assert any(name in chart["chart_html"] for name in new_names)
+        assert "<!doctype html>" not in chart["chart_html"].lower()
+
+
 # ---------------------------------------------------------------- _apply_other_classification (direct,
 # unit-level: the DB write-back logic itself, independent of the route/job wrapper above)
 
@@ -1066,11 +1110,16 @@ def test_apply_other_classification_creates_a_new_theme_above_the_minimum(env):
         assert sorted(new_theme.answer_refs) == sorted(other_refs)
         assert new_theme.size == MIN_OTHER_NEW_THEME_SIZE
         assert s.get(Theme, other_id) is None  # everything matched the new theme
-        assert summary == {
-            "known_added": 0,
-            "new_themes": [{"label": "Shipping delays", "count": MIN_OTHER_NEW_THEME_SIZE}],
-            "still_other_count": 0,
-        }
+        assert summary["known_added"] == 0
+        assert summary["still_other_count"] == 0
+        assert len(summary["new_themes"]) == 1
+        new_entry = summary["new_themes"][0]
+        assert new_entry["label"] == "Shipping delays"
+        assert new_entry["count"] == MIN_OTHER_NEW_THEME_SIZE
+        # Stage 3a (docs/TODO.md, 2026-10-23): the summary now also carries real sentiment/tone per new
+        # theme - the same numbers the Theme row itself was just given, not a second computation.
+        assert new_entry["sentiment"] == new_theme.sentiment
+        assert new_entry["tone"] == new_theme.tone
 
 
 def test_apply_other_classification_below_minimum_new_theme_folds_back_into_other(env):

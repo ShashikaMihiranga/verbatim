@@ -19,7 +19,7 @@ def test_api_health():
 
 
 def test_frame_count():
-    assert len(FRAMES) == 20
+    assert len(FRAMES) == 21
 
 
 @pytest.mark.parametrize("frame_id", list(FRAMES))

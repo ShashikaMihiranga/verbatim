@@ -34,7 +34,7 @@ def test_api_charts_lists_20():
     r = client.get("/api/charts")
     assert r.status_code == 200
     items = r.json()
-    assert len(items) == 20
+    assert len(items) == 21
     assert {i["id"] for i in items} == set(FRAMES)
     assert all(i["title"] for i in items)
 
