@@ -2152,3 +2152,26 @@ present. Full backend suite: 764 passed (same 5 pre-existing failures - test cou
 clicking "Tone split" shows a real diverging bar chart with this dataset's own 8 themes and real
 negative/positive percentages, clicking "Sunburst" shows the real theme ring with real counts/shares -
 confirmed via screenshot, not just HTTP response inspection.
+
+## 2026-10-24 (Chart-block stream, "reuse group" batch 2: band_bars + number_spread were already wired)
+
+Found while building this batch, not a Stage 1 porting oversight caught later: `band_bars` and
+`number_spread` were marked permanently unbuilt in Stage 1 ("needs a renderer, build_numeric_data's output
+never reaches ReportData") - that was wrong. `build_numeric_data` (app/findings_structured.py:472-487) is
+not an orphaned function; it already feeds `StructuredContext.score`/`ReportData.score` as the real
+fallback used whenever a dataset has a numeric column (age, income, spend) but no real 0-10/1-5 score-scale
+column (app/findings_structured.py:726-748), and its own docstring already says it's "rendered via the
+same f_byscore chart score-kind columns already use - no new chart type needed." Both blocks' data AND
+renderer already existed before this stream started - the gap was only that the Stage 1 registry didn't
+know it yet.
+
+Corrected both blocks' `needs()` to `bool(data.score.bands)` (`app/report_blocks.py`), same as
+`score_groups` (b12) - `ReportData` has no field distinguishing "real score column" from "numeric
+fallback," so these three blocks are honestly indistinguishable at this data shape today, not a new gap.
+No renderer code, no `app/charts.py` change - this batch was a registry correction, not new chart work,
+confirmed by the existing `test_build_numeric_data_*` tests in `tests/test_findings_structured.py`
+already covering the underlying function.
+
+**Tests**: `tests/test_report_blocks.py` - removed both ids from the "stays False" list, added a dedicated
+test asserting both are now True-capable and share `chart_id="byScore"`. Full backend suite: 765 passed
+(same 5 pre-existing failures), one new test.

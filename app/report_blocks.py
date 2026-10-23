@@ -148,12 +148,19 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.segment.groups) and all(g.n >= 100 for g in data.segment.groups),
     ),
     Block(
-        "b11", "band_bars", "4", "Bars by number band", None,
+        "b11", "band_bars", "4", "Bars by number band", "byScore",
         "Lower-income households name Cost more. Higher-income households name Charging more.",
         "A number column (income, age) banded into groups.",
-        # `build_numeric_data` exists (per this stream's own exploration) but its output never reaches
-        # ReportData - no renderer and no field carries it yet. Stage 4+ territory.
-        lambda data: False,
+        # Found while building this (not a Stage 1 oversight corrected later): `build_numeric_data`
+        # (app/findings_structured.py:472-487) is NOT an orphaned, unwired function - it already feeds
+        # `StructuredContext.score`/`ReportData.score` as the fallback used when a dataset has a numeric
+        # column (age, income) but no real score-scale column (app/findings_structured.py:726-748), and
+        # is explicitly documented there as "rendered via the same f_byscore chart score-kind columns
+        # already use - no new chart type needed." So this block's data AND renderer already exist; the
+        # only gap was this registry not knowing it yet. `ReportData` has no field distinguishing "score"
+        # from "numeric fallback" though (both just populate `data.score`), so this predicate is honestly
+        # identical to score_groups' (b12) at this data shape - a real, documented limit, not a new bug.
+        lambda data: bool(data.score.bands),
     ),
     Block(
         "b12", "score_groups", "4", "Score groups", "byScore",
@@ -348,11 +355,11 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.score.bands) and len(_real_themes(data)) >= 3,
     ),
     Block(
-        "b38", "number_spread", "4", "How a number is spread", None,
+        "b38", "number_spread", "4", "How a number is spread", "byScore",
         "Half of respondents are aged 35 to 54, and few are under 25.",
         "A number column such as age, income or spend.",
-        # Same missing-from-ReportData numeric data as b11/band_bars.
-        lambda data: False,
+        # Same already-wired numeric/byScore data as b11/band_bars - see that block's own comment.
+        lambda data: bool(data.score.bands),
     ),
     Block(
         "b39", "group_split_bars", "4", "Two groups side by side", None,

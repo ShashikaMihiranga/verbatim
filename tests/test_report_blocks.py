@@ -153,6 +153,17 @@ def test_tone_split_reuses_the_already_built_but_unwired_diverge_renderer():
     assert b.needs(rich_report()) is True
 
 
+def test_band_bars_and_number_spread_reuse_the_already_wired_numeric_score_fallback():
+    # Found while porting, not a design gap: build_numeric_data already feeds ReportData.score as a
+    # fallback when a dataset has a numeric column (age, income) but no real score-scale column
+    # (app/findings_structured.py:726-748) - both blocks' data AND renderer (f_byscore) already existed.
+    assert BY_SLUG["band_bars"].needs(thin_report()) is False  # no score column of either kind
+    assert BY_SLUG["band_bars"].needs(rich_report()) is True
+    assert BY_SLUG["number_spread"].needs(rich_report()) is True
+    assert BY_SLUG["band_bars"].chart_id == "byScore"
+    assert BY_SLUG["number_spread"].chart_id == "byScore"
+
+
 def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report():
     # Every one of these describes a column kind or cross-tab this app genuinely does not build today
     # (per each block's own comment in app/report_blocks.py) - confirms the registry doesn't silently
@@ -161,7 +172,7 @@ def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report(
     for slug in (
         "ranked_answers", "vs_average", "tone_by_number", "quotes", "see_more", "trend_groups",
         "trend_styled", "trend_grid", "trend_aggregated", "trend_errorbars", "context_header",
-        "theme_similarity", "answer_map", "ranked_list", "number_spread", "binned_grid", "region_map",
-        "trend_sparse", "top_phrases", "band_bars",
+        "theme_similarity", "answer_map", "ranked_list", "binned_grid", "region_map",
+        "trend_sparse", "top_phrases",
     ):
         assert BY_SLUG[slug].needs(richest) is False, slug
