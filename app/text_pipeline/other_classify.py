@@ -25,6 +25,7 @@ Other" job route lives) for how its outputs become updated `Theme` rows.
 """
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -35,6 +36,8 @@ from .labeling import OTHER_CLUSTER_ID, ClaudeClient, label_clusters_with_retry
 from .merging import apply_merges
 from .schema import Cluster, ClusterMember, ClusterResult, ThemeLabel
 from .subthemes import MAX_SUBTHEMES_PER_THEME, MIN_SUBTHEME_COVERAGE, MIN_THEME_SIZE_FOR_SUBTHEMES, sub_cluster_min_size
+
+log = logging.getLogger("verbatim.other_classify")
 
 NONE_OF_THESE = "None of these"
 NONE_OF_THESE_DESCRIPTION = (
@@ -153,27 +156,46 @@ def classify_other_answers(
     parallelism" reasoning as `embeddings.py`'s own concurrent batching - Jev calls are blocking HTTP,
     not CPU work). A single row's failure (a real `JevError`, e.g. a transient network issue Jev's own
     one-retry already could not recover from) is recorded in `failed_rows` and does not stop the rest of
-    the batch - thousands of independent per-row calls should not all be thrown away for one bad one."""
+    the batch - thousands of independent per-row calls should not all be thrown away for one bad one.
+
+    Found live, 2026-10-23: a SYSTEMIC failure (every single call rejected - a bad/expired API key, say)
+    used to look identical to "every answer genuinely didn't match anything": nothing was ever logged
+    here, and the caller's own summary (`app/api_themes.py::_apply_other_classification`) had nowhere to
+    report `failed_rows` either - a 19,799-row job that failed 19,799/19,799 times on an auth error
+    finished looking like a clean, legitimate zero-match result. Now logs once per call (not once per
+    row - this can run at thousands of rows), at `warning` for any failures and `error` when EVERY row
+    failed (the systemic case), with one sample exception message to point at the real cause."""
     out = OtherClassification()
     if not row_indexes:
         return out
 
-    def _one(row: int, text: str) -> tuple[int, ChoiceAnswer | None]:
+    def _one(row: int, text: str) -> tuple[int, ChoiceAnswer | None, str | None]:
         try:
             answer = client.classify_choice(
                 text, question_key="other_classification", instructions=instructions, criteria=criteria,
             )
-            return row, answer
-        except Exception:
-            return row, None
+            return row, answer, None
+        except Exception as e:
+            return row, None, f"{type(e).__name__}: {e}"
 
+    sample_error: str | None = None
     with ThreadPoolExecutor(max_workers=min(concurrency, len(row_indexes))) as pool:
-        for row, answer in pool.map(_one, row_indexes, texts):
+        for row, answer, error in pool.map(_one, row_indexes, texts):
             if answer is None:
                 out.failed_rows.append(row)
+                sample_error = sample_error or error
                 continue
             out.by_row[row] = answer.choice
             out.confidence_by_row[row] = answer.confidence
+    if out.failed_rows:
+        level = log.error if len(out.failed_rows) == len(row_indexes) else log.warning
+        level(
+            "classify_other_answers: %d/%d rows failed%s. Sample error: %s",
+            len(out.failed_rows), len(row_indexes),
+            " (EVERY row failed - likely a systemic/auth problem, not per-row noise)"
+            if len(out.failed_rows) == len(row_indexes) else "",
+            sample_error,
+        )
     return out
 
 

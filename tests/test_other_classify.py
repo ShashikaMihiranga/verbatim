@@ -209,6 +209,42 @@ def test_classify_other_answers_a_single_row_failure_does_not_lose_the_rest():
     assert out.by_row == {1: "Cost", 3: "Cost"}
 
 
+def test_classify_other_answers_logs_a_warning_for_a_partial_failure(caplog):
+    # Fixed 2026-10-23: a failure used to be completely silent - nothing logged anywhere, and the
+    # caller's own summary had nowhere to report it either, so a real problem looked identical to a
+    # legitimate "nothing matched" result. This pins the partial-failure case (some rows failed, most
+    # didn't) at WARNING, not ERROR - see the systemic-failure test below for the ERROR case.
+    def pick(text, question_key, instructions, criteria):
+        if text == "boom":
+            raise JevError("simulated failure")
+        return ChoiceAnswer(choice="Cost", confidence=0.5, probabilities={})
+
+    client = FakeJevClient(("pos", 0.9), choice_result=pick)
+    with caplog.at_level("WARNING", logger="verbatim.other_classify"):
+        out = classify_other_answers([1, 2, 3], ["ok", "boom", "also ok"], _CRITERIA, client)
+
+    assert out.failed_rows == [2]
+    assert any(r.levelname == "WARNING" and "1/3" in r.message for r in caplog.records)
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+
+def test_classify_other_answers_logs_an_error_when_every_row_fails(caplog):
+    # The systemic case this fix exists for: every single row rejected (e.g. a bad API key) - this must
+    # be loud (ERROR, not WARNING), since it means the whole run's "nothing matched" result is actually
+    # a total failure, not a real finding. Found live: this exact shape (known_added=0, new_themes=[])
+    # on a 19,799-row Other bucket was a rejected TYPESAFE_API_KEY, not a legitimate empty result.
+    def always_fails(text, question_key, instructions, criteria):
+        raise JevError("simulated auth failure")
+
+    client = FakeJevClient(("pos", 0.9), choice_result=always_fails)
+    with caplog.at_level("WARNING", logger="verbatim.other_classify"):
+        out = classify_other_answers([1, 2, 3], ["a", "b", "c"], _CRITERIA, client)
+
+    assert out.failed_rows == [1, 2, 3]
+    assert out.by_row == {}
+    assert any(r.levelname == "ERROR" and "3/3" in r.message for r in caplog.records)
+
+
 def test_classify_other_answers_can_return_none_of_these():
     client = FakeJevClient(
         ("pos", 0.9),

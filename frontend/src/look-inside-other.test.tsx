@@ -39,6 +39,7 @@ describe('LookInsideOther', () => {
           { label: 'Packaging damage', count: 8, sentiment: -0.6, tone: { neg: 80, neu: 15, pos: 5 } },
         ],
         still_other_count: 30,
+        failed_classification_count: 0,
         charts: {
           othergrowth: { chart_title: 'New themes found', chart_html: '<svg/>', chart_width: 100, chart_height: 50 },
         },
@@ -53,6 +54,18 @@ describe('LookInsideOther', () => {
     expect(html).toContain('30')
     // Stage 3c: the second tab switcher renders once result.charts exists.
     expect(html).toContain('lio-charts')
+  })
+
+  it('done: shows a warning when Jev calls failed instead of looking like a clean zero-match result', () => {
+    const job = makeJob({
+      status: 'done', step: 'Done',
+      result: {
+        known_added: 0, new_themes: [], still_other_count: 19799, failed_classification_count: 19799,
+      },
+    })
+    const html = renderToStaticMarkup(<LookInsideOther job={job} onStart={vi.fn()} />)
+    expect(html).toContain('19799')
+    expect(html).toContain('could not be classified')
   })
 
   it('failed: shows the real job error, not a generic message', () => {

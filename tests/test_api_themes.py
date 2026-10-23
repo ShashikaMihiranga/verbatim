@@ -1002,7 +1002,9 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
     # Stage 3 (docs/TODO.md, 2026-10-21): the job's own `result` carries the real Known/New/Still-in-Other
     # counts the animated flow's results panel needs - written in the same commit as the Theme-row changes,
     # not reconstructed from a second query.
-    assert job["result"] == {"known_added": 3, "new_themes": [], "still_other_count": 0}
+    assert job["result"] == {
+        "known_added": 3, "new_themes": [], "still_other_count": 0, "failed_classification_count": 0,
+    }
 
     themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
     labels = {t["label"] for t in themes}
@@ -1088,7 +1090,9 @@ def test_apply_other_classification_extends_a_known_theme(env):
         assert sorted(known.answer_refs) == [0, 1, 2, 3, 4, 13, 14]
         assert known.size == 7
         assert s.get(Theme, other_id) is None  # both rows matched - nothing left, row deleted
-        assert summary == {"known_added": 2, "new_themes": [], "still_other_count": 0}
+        assert summary == {
+            "known_added": 2, "new_themes": [], "still_other_count": 0, "failed_classification_count": 0,
+        }
 
 
 def test_apply_other_classification_creates_a_new_theme_above_the_minimum(env):
@@ -1137,7 +1141,9 @@ def test_apply_other_classification_below_minimum_new_theme_folds_back_into_othe
         assert s.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == "Tiny new group")) is None
         other = s.get(Theme, other_id)
         assert sorted(other.answer_refs) == sorted(too_few)  # folded straight back into Other
-        assert summary == {"known_added": 0, "new_themes": [], "still_other_count": len(too_few)}
+        assert summary == {
+            "known_added": 0, "new_themes": [], "still_other_count": len(too_few), "failed_classification_count": 0,
+        }
 
 
 def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other(env):
@@ -1149,8 +1155,12 @@ def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other
     row_text = {13: "a", 14: "b", 15: "c"}
 
     with env.Session() as s:
-        summary = _apply_other_classification(s, did, Q, other_id, by_row, {}, row_text)
-        assert summary == {"known_added": 0, "new_themes": [], "still_other_count": 3}
+        # failed_count=1 (fixed 2026-10-23): passed through as-is, independent of how many rows ended up
+        # staying in Other for other reasons - this is purely a reporting pass-through, not re-derived.
+        summary = _apply_other_classification(s, did, Q, other_id, by_row, {}, row_text, failed_count=1)
+        assert summary == {
+            "known_added": 0, "new_themes": [], "still_other_count": 3, "failed_classification_count": 1,
+        }
     with env.Session() as s:
         from app.models import Theme
         other = s.get(Theme, other_id)

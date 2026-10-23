@@ -134,6 +134,16 @@ export default function LookInsideOther({
         </div>
       )}
 
+      {isDone && result && result.failed_classification_count > 0 && (
+        <div className="lio-failed" role="alert">
+          <p className="err">
+            {result.failed_classification_count} answer{result.failed_classification_count === 1 ? '' : 's'} could
+            not be classified (a Jev request failed) and stayed in Other. If this number is large, check that
+            TYPESAFE_API_KEY is valid, then use "Look inside again."
+          </p>
+        </div>
+      )}
+
       {isDone && result && (
         <div className="lio-results">
           <ResultColumn

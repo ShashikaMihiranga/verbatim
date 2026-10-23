@@ -34,6 +34,11 @@ export interface LookInsideOtherResult {
   new_themes: LookInsideOtherNewTheme[]
   still_other_count: number
   charts?: Record<string, LookInsideOtherChart>
+  // Fixed 2026-10-23: a systemic Jev failure (every row rejected on a bad API key, say) used to look
+  // identical to a legitimate "nothing matched" result - known_added/new_themes both zero, with no
+  // visible sign anything went wrong. A failed row still stays in Other either way (never lost); this
+  // only makes a failure VISIBLE instead of indistinguishable from a real empty result.
+  failed_classification_count: number
 }
 
 // Theme editing (docs/TODO.md, fixed 2026-10-22): "split theme"'s own job result - the real pieces a

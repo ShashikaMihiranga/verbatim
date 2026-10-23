@@ -315,6 +315,7 @@ def _apply_other_classification(
     *,
     vec_by_row: dict[int, list[float]] | None = None,
     question: str | None = None, claude_client: ClaudeClient | None = None,
+    failed_count: int = 0,
 ) -> dict | None:
     """Writes "Look inside Other"'s results: UPDATES, not `_write_theme_rows`'s full delete-and-replace
     (that would also wipe every untouched known theme). `by_row` is `other_classify.OtherClassification
@@ -344,11 +345,18 @@ def _apply_other_classification(
     `LabelingError` here just means no new theme gets sub-themes this run, same graceful fallback
     `app/api_themes.py`'s own top-level build already uses for the identical failure.
 
+    `failed_count` (fixed 2026-10-23, found live on a 19,799-row Other bucket where every single Jev call
+    failed on a rejected API key): `len(OtherClassification.failed_rows)` from the caller's own
+    `classify_other_answers` run - surfaced in the summary so a systemic failure (every row failed) is
+    visible in the job's own result instead of looking identical to a legitimate "nothing matched"
+    outcome. A failed row already stays in Other either way (see this docstring's own note above) -
+    this only changes what gets REPORTED, never what gets written.
+
     Returns a small summary dict (Stage 3, docs/TODO.md 2026-10-21/23: the animated flow's own
     Known/New/Still-in-Other results panel and its own result-chart tabs need these real numbers, not a
     second query reconstructing them after the fact) - `{"known_added": int, "new_themes": [{"label",
-    "count", "sentiment", "tone"}], "still_other_count": int}` - or `None` if `other` was already gone
-    (nothing to summarize)."""
+    "count", "sentiment", "tone"}], "still_other_count": int, "failed_classification_count": int}` - or
+    `None` if `other` was already gone (nothing to summarize)."""
     other = db.get(Theme, other_theme_id)
     if other is None:
         return None  # dataset/column was deleted or rebuilt from under this job; nothing left to update
@@ -474,7 +482,10 @@ def _apply_other_classification(
         db.delete(other)
 
     db.commit()
-    return {"known_added": known_added, "new_themes": new_themes_summary, "still_other_count": len(still_other)}
+    return {
+        "known_added": known_added, "new_themes": new_themes_summary, "still_other_count": len(still_other),
+        "failed_classification_count": failed_count,
+    }
 
 
 _OTHER_RESULT_CHART_IDS = ("othergrowth", "rank", "icicle", "sentsun")
@@ -735,6 +746,7 @@ def look_inside_other(
                 job_db, dataset_id_, column, other_theme_id,
                 classification.by_row, new_label_descriptions, row_text,
                 vec_by_row=vec_by_row, question=question, claude_client=claude_client,
+                failed_count=len(classification.failed_rows),
             )
             # Result-chart fragments (Stage 3a, docs/TODO.md 2026-10-23): built in the SAME session,
             # right after the new Theme rows exist with real ids - re-queries by label rather than

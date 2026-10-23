@@ -1945,3 +1945,38 @@ their own earlier entries) both green after the move. Still to confirm live: res
 only `.env` set (no shell export) and re-checking that `THEMES_DEADLINE_SECONDS`/`JEV_CLASSIFY_CONCURRENCY`
 take effect purely from `.env` - the dataset-12 job that unblocked this investigation was itself still
 running on a shell-exported backend when this fix was written.
+
+## 2026-10-23 (Fix: a systemic Jev failure looked identical to a legitimate "nothing matched" result)
+
+Found live: after the `load_dotenv()` fix above, "Look inside Other" on dataset 12's 19,799-answer Other
+bucket finished `status: "done"` with `known_added: 0, new_themes: [], still_other_count: 19799` -
+completely unchanged, as if nothing in the bucket matched anything. Manually sampling the actual Other
+text showed clearly on-topic answers ("restroom situation," "elevators," storage/space complaints) that
+obviously should have matched existing known themes. Reproducing one `classify_choice` call directly
+against the real `TYPESAFE_API_KEY` in `.env` got `HTTP 401 authentication_error` - the key was being
+rejected by TypeSafe outright. Every one of the 19,799 calls failed identically; `classify_other_answers`
+(`app/text_pipeline/other_classify.py`) caught each one silently with a bare `except Exception: return
+row, None` - no logging anywhere, and the job's own summary had no field for it either. A total
+authentication failure and a real "none of these 19,799 answers match anything" result were
+indistinguishable from the job's own output.
+
+**Fix** (not a data-loss issue - a failed row already stayed in Other either way, the same safe default
+`NONE_OF_THESE` gets, per `_apply_other_classification`'s own docstring - this only makes the failure
+VISIBLE):
+- `classify_other_answers` now logs once per call (not per-row - this runs at thousands of rows): a new
+  `verbatim.other_classify` logger emits a `warning` for any failures, escalated to `error` when EVERY
+  row failed (the systemic case), with one sample exception message.
+- `_apply_other_classification` gained a `failed_count` parameter, threaded from the job route's own
+  `classification.failed_rows`, and now returns it in the summary dict as
+  `"failed_classification_count"`.
+- `LookInsideOtherResult` (frontend) gained the same field (made required, not optional, so a stale
+  cached job result without it is a visible TypeScript error rather than a silent `undefined`).
+  `LookInsideOther.tsx` shows a plain warning banner above the results panel whenever it is non-zero,
+  naming the likely cause (check `TYPESAFE_API_KEY`) rather than leaving the results panel looking clean.
+
+**Tests**: 2 new `tests/test_other_classify.py` tests (partial failure logs at `WARNING` with the right
+row count, total failure logs at `ERROR`), 1 existing `_apply_other_classification` test upgraded to pass
+and assert `failed_count` round-trips through the summary unchanged, 3 other existing summary-equality
+tests updated for the new dict key, 1 new frontend test (`look-inside-other.test.tsx`) for the warning
+banner. Full backend suite: 743 passed (same 5 pre-existing unrelated `test_auth.py`/`test_security.py`
+failures), full frontend suite: 93 passed, `tsc -b --force` clean.
