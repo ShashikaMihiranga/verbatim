@@ -43,4 +43,18 @@ describe('ThemeChartTabs', () => {
     expect(html).not.toContain('Icicle')
     expect(html).not.toContain('Sentiment sun')
   })
+
+  it('lists diverge/sunburst tabs when present (2026-10-24: reused as real variant tabs, see api_report.py)', () => {
+    const html = renderToStaticMarkup(
+      <ThemeChartTabs
+        overview={OVERVIEW}
+        variants={{
+          diverge: { chart_title: 'Diverging sentiment', chart_html: '<div>Reliability diverge</div>', chart_width: 800, chart_height: 400 },
+          sunburst: { chart_title: 'Themes, sunburst', chart_html: '<div>Reliability sunburst</div>', chart_width: 800, chart_height: 400 },
+        }}
+      />,
+    )
+    expect(html).toContain('Tone split')
+    expect(html).toContain('Sunburst')
+  })
 })

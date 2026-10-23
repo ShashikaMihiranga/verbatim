@@ -14,6 +14,8 @@ const VARIANT_ORDER: Array<{ id: string; label: string }> = [
   { id: 'icicle', label: 'Icicle' },
   { id: 'sentsun', label: 'Sentiment sun' },
   { id: 'rank', label: 'Rank' },
+  { id: 'diverge', label: 'Tone split' },
+  { id: 'sunburst', label: 'Sunburst' },
 ]
 
 export default function ThemeChartTabs({

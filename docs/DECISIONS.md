@@ -2125,3 +2125,30 @@ true/false assertions for every predicate with real logic, and a dedicated test 
 `False` even against the richest fixture (confirming it's excluded for its stated reason, not just
 under-resourced by the test data). Full backend suite: 764 passed (same 5 pre-existing unrelated
 auth/security failures) - 14 new, zero changed.
+
+## 2026-10-24 (Chart-block stream, "reuse group" batch 1: diverge + sunburst as real variant tabs)
+
+User asked to flip the plan's order - build every chart the registry can support BEFORE the scoring/
+selection engine (Stage 2), not after (plan file's new "Reordering" section). Starting with the "reuse
+group": blocks whose renderer and/or data already exist, just not exposed anywhere real yet.
+
+`tone_split` (chart_id `diverge`) and `theme_hierarchy`/`theme_hierarchy_compact` (chart_id `sunburst`)
+both had real, working renderers in `app/charts.py` (`f_diverge`, `f_sunburst`) that were gallery-only -
+never fed real `report_data`, per the earlier exploration this stream started from. `app/api_report.py`'s
+`theme_chart_variants` loop already does exactly this "expose a renderer as a real tab, no selection logic
+involved" job for icicle/sentsun/rank - added `"diverge"` and `"sunburst"` to that same loop (one line) and
+to `ThemeChartTabs.tsx`'s `VARIANT_ORDER` (two lines). No new chart code needed, no `pick_chart`/finding-
+selection logic touched - this is purely "make an already-built chart reachable," the cheapest possible
+item in the reuse group, same pattern the icicle/sentsun/rank tabs already established.
+
+**Tests**: `tests/test_api_report.py`'s existing 3-tab variant test renamed and extended to assert 5 tabs
+(`icicle, sentsun, rank, diverge, sunburst`) with real theme names in each's `chart_html`; a new
+`themechart-tabs.test.tsx` case confirms the two new tab labels ("Tone split", "Sunburst") render when
+present. Full backend suite: 764 passed (same 5 pre-existing failures - test count unchanged from Stage
+1, since this batch only extends an existing test rather than adding a new one). Frontend: 100 passed,
+`tsc --noEmit` clean.
+
+**Live-verified** (local dev server, dataset 12): both new tabs appear in the real report's tab bar,
+clicking "Tone split" shows a real diverging bar chart with this dataset's own 8 themes and real
+negative/positive percentages, clicking "Sunburst" shows the real theme ring with real counts/shares -
+confirmed via screenshot, not just HTTP response inspection.

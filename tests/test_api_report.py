@@ -275,13 +275,16 @@ def test_get_report_other_breakdown_none_with_two_ordinary_themes(env):
 
 # ---------------------------------------------------------------- chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2)
 
-def test_get_report_theme_chart_variants_has_icicle_sentsun_rank_but_not_arc_or_sankey(env):
-    """The chart-type switcher's 3 safe-to-wire tabs are rendered from the SAME report_data the treemap
+def test_get_report_theme_chart_variants_has_five_safe_tabs_but_not_arc_or_sankey(env):
+    """The chart-type switcher's safe-to-wire tabs are rendered from the SAME report_data the treemap
     above already used, with real theme names reaching real chart HTML - same discipline as
     test_build_then_get_round_trip_renders_real_chart_html_with_real_theme_names above. "arc" and
     "sankey" are deliberately excluded (see app/api_report.py's own comment: arc has no real multi-label
     cooccurrence signal this hard-clustering pipeline can produce, and sankey needs a score column and
-    is unrelated to the mockup's own bespoke "Known themes" tab)."""
+    is unrelated to the mockup's own bespoke "Known themes" tab). "diverge"/"sunburst" added 2026-10-24
+    (chart-block stream, "reuse group" - app/report_blocks.py's tone_split/theme_hierarchy blocks name
+    these as their chart_id; both renderers already existed, just needed the same variant-tab exposure
+    icicle/sentsun/rank already had)."""
     install_fake_claude()
     did = upload_csv(env, survey_df())
     clean_and_apply(env, did)
@@ -292,7 +295,7 @@ def test_get_report_theme_chart_variants_has_icicle_sentsun_rank_but_not_arc_or_
     body = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
 
     variants = body["theme_chart_variants"]
-    assert set(variants.keys()) == {"icicle", "sentsun", "rank"}
+    assert set(variants.keys()) == {"icicle", "sentsun", "rank", "diverge", "sunburst"}
     for variant_id, variant in variants.items():
         assert variant["chart_title"]
         assert "Reliability" in variant["chart_html"] and "Support" in variant["chart_html"]

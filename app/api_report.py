@@ -237,8 +237,13 @@ def _render_report(
     # not faked. "sankey" is also excluded here: that existing chart needs a real score column
     # (`data.score.bands`) and is unrelated to the mockup's own "Known themes" tab (a bespoke, separate
     # Stage 3 build, not a reuse of this renderer - see docs/DECISIONS.md).
+    # "diverge"/"sunburst" added (docs/DECISIONS.md, 2026-10-24 chart-block stream, "reuse group"): both
+    # renderers already existed in app/charts.py but were gallery-only (never fed real report_data) -
+    # app/report_blocks.py's new "tone_split"/"theme_hierarchy" blocks name them as their chart_id. This
+    # is the SAME "just expose it as a variant tab" treatment icicle/sentsun/rank already got - no new
+    # finding-selection logic, that stage is explicitly deferred (see the plan's reordering note).
     theme_chart_variants = {}
-    for variant_id in ("icicle", "sentsun", "rank"):
+    for variant_id in ("icicle", "sentsun", "rank", "diverge", "sunburst"):
         v_html, v_width, v_height = render_parts(variant_id, report_data)
         theme_chart_variants[variant_id] = {
             "chart_title": TITLES.get(variant_id, variant_id),
