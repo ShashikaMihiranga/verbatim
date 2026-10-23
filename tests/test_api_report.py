@@ -375,6 +375,53 @@ def test_rebuild_replaces_prior_report_not_duplicates(env):
     assert finding_kinds == sorted({"dominant_theme", "tone_contrast", "tone_contrast"})
 
 
+# ---------------------------------------------------------------- sentsun highlights its own finding's theme
+
+def two_tone_contrast_theme_specs() -> list[dict]:
+    """Unlike `notable_theme_specs()` (Support's size=20 sits below `min_group_size`'s default floor of 30,
+    so it never clears the tone_contrast gate at all - that fixture reliably yields only ONE tone_contrast
+    candidate, not two), both themes here clear the floor (40 each) with opposite, well-above-`TONE_GAP_MIN`
+    sentiment gaps - deliberately built to reproduce the live bug: two real tone_contrast findings in one
+    report, both mapped to chart "sentsun" by CHART_BY_KIND."""
+    return [
+        dict(label="Reliability", description="Battery and overheating complaints.", size=40, sentiment=-0.40,
+             tone={"neg": 75.0, "neu": 15.0, "pos": 10.0}, answer_refs=list(range(0, 40))),
+        dict(label="Support", description="Praise for staff and checkout.", size=40, sentiment=0.40,
+             tone={"neg": 10.0, "neu": 15.0, "pos": 75.0}, answer_refs=list(range(40, 80))),
+    ]
+
+
+def test_two_tone_contrast_findings_get_different_sentsun_charts(env):
+    """Found live, 2026-10-23: a report with two "tone_contrast" findings (one per theme whose sentiment
+    notably differs from the dataset's overall) - CHART_BY_KIND maps that whole kind to "sentsun" with no
+    awareness of other blocks, and the old f_sentsun(data) only ever drew the report's one global,
+    finding-independent breakdown - so both blocks rendered the exact same chart_html, with no visual
+    connection to either finding's own theme. Fixed by threading each finding's theme into a per-block
+    `selected_theme` override (app/api_report.py) that f_sentsun now outlines - this just proves the two
+    blocks diverge and each one's own theme name is the one visibly called out, not a hardcoded other."""
+    install_fake_claude()
+    did = upload_csv(env, survey_df(n_reliability=40, n_support=40))
+    clean_and_apply(env, did)
+    seed_themes(env, did, two_tone_contrast_theme_specs())
+
+    job = build_report_job(env, did)
+    assert job["status"] == "done", job
+    built = env.client.get(f"/api/datasets/{did}/report", params={"column": Q})
+    assert built.status_code == 200, built.text
+    sentsun_blocks = [b for b in built.json()["blocks"] if b["chart_id"] == "sentsun"]
+    assert len(sentsun_blocks) == 2  # one per tone_contrast finding (Reliability, Support)
+    a, b = sentsun_blocks
+    assert a["chart_html"] != b["chart_html"]  # no longer byte-identical
+    assert a["finding"]["sentence"] != b["finding"]["sentence"]
+    # each block's chart visibly outlines ITS OWN finding's theme, not the other one's
+    theme_by_block = {blk["finding"]["id"]: blk for blk in sentsun_blocks}
+    with env.Session() as s:
+        for finding in s.scalars(select(Finding).where(Finding.dataset_id == did, Finding.chart_type == "sentsun")).all():
+            theme = s.get(Theme, finding.theme_id)
+            blk = theme_by_block[finding.id]
+            assert f"{theme.label} is outlined." in blk["chart_html"]
+
+
 # ---------------------------------------------------------------- filters (segment / score band / date range)
 
 def survey_df_with_rating(n_reliability: int = 60, n_support: int = 20) -> pd.DataFrame:

@@ -2027,3 +2027,53 @@ correct relative times: triggered a fresh "Look inside Other" job via curl, watc
 dashboard within one poll cycle as "Running"/"Checking known themes", confirmed the Running filter tab
 isolated it, and watched it move to "Done" with a sane "just now"-scale timestamp once it finished -
 exactly the "11h ago" bug this fix targeted, now showing correctly.
+
+## 2026-10-23 (Fix: two `tone_contrast` findings rendered the byte-identical "sentsun" chart)
+
+User-reported ("same chart twise") and confirmed live on a real 40k-row dataset: a report with two
+`tone_contrast` findings ("cleanliness..." and "parking and access...") showed the exact same "Which
+themes sound negative or positive?" donut twice in a row. Root cause: `CHART_BY_KIND["tone_contrast"] =
+"sentsun"` (`app/findings.py`) maps every finding of that kind to the same chart id, and `f_sentsun(data)`
+(`app/charts.py`) only ever drew the whole report's global, finding-independent theme/tone breakdown - it
+had no idea which finding it was being rendered for, so any second `tone_contrast` finding produced
+byte-for-byte identical `chart_html`. Worse for "parking and access" specifically: that theme is too small
+to get its own node (`theme_nodes` folds any real theme past the top 7 into the merged "Other" node), so
+the chart wasn't just duplicated, it didn't even depict the finding's own subject.
+
+Checked `verbatim-visual-system/HANDOFF.md` for prior design intent: it explicitly flags chart-repetition
+as something to actively avoid (the overview-vs-treemap case, lines ~111/236 - "it deliberately does not
+repeat the treemap"), but that discipline was never extended to two same-kind findings reusing one global
+chart - a real gap between intent and `pick_chart`/`f_sentsun`, not a one-off rendering glitch.
+
+**Fix** (user's explicit choice: "make sentsun finding-aware", over simpler "skip the chart" or "fall back
+to a different chart id" options): `f_sentsun` now takes `data.selected_theme` (an existing field, already
+used by `f_rank`/`f_diverge`/`f_map`/`f_arc` for their own "selected, others dimmed" demo styling) and
+outlines that theme's inner wedge (bold ink stroke) plus its table row (surface-tint background, bold
+label) - same "selected theme" visual idiom already used elsewhere in this file, not a new one. The
+subtitle also names which theme is outlined, so two sentsun blocks read as different at a glance, not just
+on close inspection. `app/api_report.py`'s per-block render loop (which already builds ONE `report_data`
+and reuses it for every block - that rule is about not re-running the expensive `build_report_data` pass,
+not about every block seeing identical data) now does a per-call `dataclasses.replace(report_data,
+selected_theme=...)` for `sentsun` blocks only: the finding's own theme name when it has its own node, or
+"Other" when the theme was folded into the merged node (so the chart still points somewhere real and
+honest instead of silently falling back to the report's default global `selected_theme`, which would have
+outlined a completely unrelated theme - confirmed and fixed live before shipping, see below). Every other
+block's render call is untouched.
+
+**Tests**: `tests/test_api_report.py::test_two_tone_contrast_findings_get_different_sentsun_charts` (new
+`two_tone_contrast_theme_specs()` fixture - the existing `notable_theme_specs()` only ever yields ONE
+`tone_contrast` candidate, since its "Support" theme's size sits below `min_group_size`'s default floor of
+30; this one uses two 40-row themes with opposite, well-above-gate sentiment so both clear every gate) -
+asserts two real `sentsun` blocks come back, their `chart_html` differs, and each one's own theme name (by
+`theme_id`, looked up via `Finding.theme_id` -> `Theme.label`) is literally the one named as outlined.
+`tests/golden/sentsun.html` updated (the EV demo sample's own default-highlighted theme now gets the same
+new outline treatment, an intentional byte-for-byte golden change). Full backend suite: 750 passed (same 5
+pre-existing unrelated auth/security failures, confirmed present on `git stash` too). Full frontend suite
+unaffected (backend-only change): 99 passed, `tsc --noEmit` clean.
+
+**Live-verified** (local dev server, dataset 12): reloaded the exact report the user screenshotted - the
+"cleanliness..." finding's chart now outlines "Cleanliness, maintenance & building condition", and the
+"parking and access..." finding's chart (initially found outlining the WRONG theme, "Space, layout &
+crowding" - the report's default global selected theme - fixed with the "Other" fallback above before
+calling this done) now honestly outlines "Other", matching where that small theme's data actually sits in
+this chart.

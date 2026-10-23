@@ -33,6 +33,7 @@ Reuse, not duplication (per the brief this stream was built from):
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import threading
 from datetime import date
@@ -255,12 +256,36 @@ def _render_report(
     blocks_out: list[dict[str, Any]] = []
     for b in blocks_content:
         chart_id = b["chart_id"]
+        fid = b.get("finding_id")
+        finding_row = findings_by_id.get(fid) if b["kind"] == "finding" and fid is not None else None
+
+        # Finding-aware sentsun (fixes two tone_contrast findings rendering the byte-identical, globally-
+        # same chart - see docs/DECISIONS.md): `report_data` is built ONCE and reused for every block
+        # (comment above, "never rebuilt per block") - that rule is about not re-running the expensive
+        # build_report_data pass, not about every block seeing identical data. `dataclasses.replace` makes
+        # a cheap, un-shared view with just `selected_theme` swapped to THIS finding's own theme for this
+        # one render call; `report_data` itself (and every other block's render) is untouched.
+        block_data = report_data
+        if chart_id == "sentsun" and finding_row is not None and finding_row.theme_id is not None:
+            node = next((t for t in report_data.themes if t.theme_id == finding_row.theme_id), None)
+            if node is not None:
+                block_data = dataclasses.replace(report_data, selected_theme=node.name)
+            else:
+                # The finding's own theme is real but too small to get its own node - `theme_nodes` folds
+                # any real theme past the top 7 into the merged "Other" node (app/findings.py's own
+                # docstring on that). Falling through to the default `report_data.selected_theme` here
+                # would silently outline some UNRELATED theme (confirmed live: a "parking and access"
+                # finding's chart outlined "Space, layout & crowding" instead) - exactly the kind of
+                # misleading chart this fix exists to stop. "Other" is where this finding's data actually
+                # sits in THIS chart, so that is what gets outlined instead.
+                block_data = dataclasses.replace(report_data, selected_theme="Other")
+
         # `render_parts` returns the raw body fragment (no `<!doctype html>`/own background/own font load) -
         # see app/charts.py's own docstring split between `render_parts` and `render`. The frontend embeds
         # this fragment straight into the report page's DOM (never an iframe), so it inherits the page's own
         # already-loaded `--bg --surface --ink ...` tokens instead of carrying a second copy of them - see
         # docs/DECISIONS.md ("report page: fragments, not iframed documents").
-        chart_html, chart_width, chart_height = render_parts(chart_id, report_data)
+        chart_html, chart_width, chart_height = render_parts(chart_id, block_data)
         block: dict[str, Any] = {
             "kind": b["kind"],
             "chart_id": chart_id,
@@ -272,9 +297,8 @@ def _render_report(
             "finding_id": b.get("finding_id"),
             "finding": None,
         }
-        fid = b.get("finding_id")
-        if b["kind"] == "finding" and fid is not None and fid in findings_by_id:
-            f = findings_by_id[fid]
+        if finding_row is not None:
+            f = finding_row
             block["finding"] = {
                 "id": f.id, "theme_id": f.theme_id, "sentence": f.sentence, "confidence": f.confidence,
             }

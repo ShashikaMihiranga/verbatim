@@ -1287,7 +1287,15 @@ def f_sentsun(data: ReportData):
         span = share * 3.6
         a0, a1 = a, a + span
         a = a1
-        shapes.append(f'<path d="{wedge(cx, cy, hole, r1, a0, a1)}" style="fill:var(--{col});stroke:var(--surface);stroke-width:3"/>')
+        # Finding-aware highlight (fixes 2+ tone_contrast findings rendering the byte-identical chart,
+        # see docs/DECISIONS.md): `app/api_report.py` passes a per-finding `data.selected_theme` override
+        # into this one render call, so the inner wedge for THAT finding's theme gets a bold ink stroke -
+        # same "selected theme, others plain" language f_diverge/f_rank already use elsewhere in this file,
+        # not a new visual idiom.
+        is_sel = name == data.selected_theme
+        ring_stroke = "var(--ink)" if is_sel else "var(--surface)"
+        ring_width = 4.5 if is_sel else 3
+        shapes.append(f'<path d="{wedge(cx, cy, hole, r1, a0, a1)}" style="fill:var(--{col});stroke:{ring_stroke};stroke-width:{ring_width}"/>')
         labels.append(arc_label(cx, cy, (hole + r1) / 2, r1 - hole, a0, a1, name, f"{share}%", 13.5, TH_ON[col], W, H))
         aa = a0
         for v, c, on in zip(tones[name], ("neg", "neu", "pos"), ("var(--on-neg)", "var(--on-neu)", "var(--on-pos)")):
@@ -1304,15 +1312,20 @@ def f_sentsun(data: ReportData):
            '<span style="width:72px;text-align:right">Negative</span><span style="width:72px;text-align:right">Neutral</span><span style="width:72px;text-align:right">Positive</span></div>')
     for name, share, sent, cnt, col in rows(data):
         ng, nu, ps = tones[name]
-        tbl += (f'<div style="display:flex;align-items:center;gap:10px;height:44px;border-top:1px solid var(--line);font-size:15px">'
-                f'<span style="width:12px;height:12px;border-radius:3px;background:var(--{col})"></span><span style="flex:1;line-height:1.2">{esc(name)}</span>'
+        row_bg = "background:var(--surface);" if name == data.selected_theme else ""
+        name_weight = 600 if name == data.selected_theme else 400
+        tbl += (f'<div style="display:flex;align-items:center;gap:10px;height:44px;border-top:1px solid var(--line);font-size:15px;{row_bg}">'
+                f'<span style="width:12px;height:12px;border-radius:3px;background:var(--{col})"></span><span style="flex:1;line-height:1.2;font-weight:{name_weight}">{esc(name)}</span>'
                 f'<span style="width:72px;text-align:right;font-weight:600">{ng}%</span><span style="width:72px;text-align:right">{nu}%</span><span style="width:72px;text-align:right">{ps}%</span></div>')
     def sw(c, t):
         return f'<span style="display:inline-flex;align-items:center;gap:8px;margin-right:20px;font-size:14px;color:var(--muted)"><span style="width:14px;height:14px;border-radius:3px;background:{c}"></span>{t}</span>'
     tbl += f'<div style="margin-top:20px">{sw("var(--neg)", "Negative")}{sw("var(--neu)", "Neutral")}{sw("var(--pos)", "Positive")}</div></div>'
     inner = (f'<div style="display:flex;gap:40px;align-items:flex-start">'
              f'<div style="flex:1 1 320px;max-width:{W}px;aspect-ratio:1">{diagram}</div>{tbl}</div>')
-    return frame("Which themes sound negative or positive?", "Inner ring is the theme. Outer ring splits each theme by tone.", inner, 800)
+    subtitle = "Inner ring is the theme. Outer ring splits each theme by tone."
+    if data.selected_theme in {t.name for t in data.themes}:
+        subtitle += f" {data.selected_theme} is outlined."
+    return frame("Which themes sound negative or positive?", subtitle, inner, 800)
 
 # ---- marimekko
 def f_mekko(data: ReportData):
