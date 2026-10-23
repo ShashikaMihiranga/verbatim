@@ -180,6 +180,20 @@ def test_group_split_bars_compare_dots_slope_change_got_real_new_renderers():
     assert BY_SLUG["slope_change"].needs(thin_report()) is False
 
 
+def test_top_phrases_is_real_once_phrase_data_is_populated():
+    # Chart-block stream, "new pipeline" batch 1 (2026-10-24): app/text_pipeline/phrases.py extracts real
+    # phrases from real answer text; this just confirms the registry's own predicate and chart_id - the
+    # extraction logic itself is covered by tests/test_phrases.py.
+    from app.chart_data import Phrase, PhraseData
+    import dataclasses
+
+    b = BY_SLUG["top_phrases"]
+    assert b.chart_id == "phrases"
+    assert b.needs(rich_report()) is False  # rich_report's phrases placeholder is empty
+    with_phrases = dataclasses.replace(rich_report(), phrases=PhraseData([Phrase("home charger", 5, -0.1)], "home charger"))
+    assert b.needs(with_phrases) is True
+
+
 def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report():
     # Every one of these describes a column kind or cross-tab this app genuinely does not build today
     # (per each block's own comment in app/report_blocks.py) - confirms the registry doesn't silently
@@ -189,6 +203,6 @@ def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report(
         "ranked_answers", "vs_average", "tone_by_number", "quotes", "see_more", "trend_groups",
         "trend_styled", "trend_grid", "trend_aggregated", "trend_errorbars", "context_header",
         "theme_similarity", "answer_map", "ranked_list", "binned_grid", "region_map",
-        "trend_sparse", "top_phrases",
+        "trend_sparse",
     ):
         assert BY_SLUG[slug].needs(richest) is False, slug

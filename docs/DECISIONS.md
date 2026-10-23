@@ -2208,3 +2208,56 @@ hand-maintained tripwire, not self-referential), `test_api_charts_lists_20` rena
 existing set-equality assertion either way, so self-reference is harmless there), 3 new needle-text cases
 in the existing "renders its own names" test. `tests/test_report_blocks.py` - new true/false predicate
 test for all 3 blocks. Full backend suite: 772 passed (same 5 pre-existing failures).
+
+## 2026-10-24 (Chart-block stream, "new pipeline" batch 1: real phrase extraction for top_phrases)
+
+First of the ~13 "new pipeline" blocks (the ones needing real new upstream data work, not just a chart
+reusing existing data). New `app/text_pipeline/phrases.py::build_phrase_data` - real recurring-phrase
+extraction, pure code, no network, reusing `sentiment.py`'s own tokenizer/lexicon scorer rather than a
+second one: counts each phrase once per ANSWER it appears in (not once per raw occurrence, so one
+talkative respondent can't dominate the ranking), trims stopwords only at a phrase's edges (interior
+stopwords kept - "not worth the price" stays whole), and scores each phrase's `sentiment` as the average
+lexicon score of the FULL answers it appears in (the phrase alone is too short for the lexicon's
+negation/intensifier window to read reliably). Deliberately does NOT treat "not" as a stopword - dropping
+it would silently flip "not worth the price" into the opposite meaning, caught by a dedicated test before
+it shipped. Uses its own small `MIN_PHRASE_ANSWERS` floor (3), not `min_group_size()`'s 30 - a phrase
+mentioned by a handful of people is a looser, lower-stakes signal than a full theme, same class as
+`FreqData.items`/the long_tail footnote, neither of which uses that floor either.
+
+**The renderer (`f_phrases`) already existed** in `app/charts.py` but was never registered in `FRAMES` -
+found while wiring this up. Its chip layout (chip size scales with frequency) is structurally a word
+cloud, which CLAUDE.md explicitly bans ("No pie/donut, word cloud, 3D, or network graphs"). Flagged to the
+user before building anything further; their explicit decision was to use it anyway - recorded as a named
+exception directly in CLAUDE.md's own design-rules section, not silently overridden.
+
+**A real crash caught before shipping, not by the unit tests**: `f_phrases` did `max(c for _, c, _ in PH)`
+with no empty-sequence guard - fine for the EV demo sample (always non-empty, the only thing that ever
+called this function while it was unregistered) but a hard crash for any real `ReportData` with no
+recurring phrases (every report built without `answer_texts`, or a real one too small/varied for anything
+to recur - including this stream's own new `thin_report()` test fixture). Fixed with an honest "nothing
+recurred enough to call it recurring" message instead of a chart - same discipline as the Arc tab's own
+excluded-chart message, never an empty or fake chart.
+
+**Wiring**: `build_report_data` (`app/findings.py`) gains an optional `answer_texts` param, same shape and
+same reasoning as the existing `answer_lengths` param ("this function only has Theme rows, a caller with
+the dataframe already loaded passes the real thing through") - threaded through `build_findings` and both
+`app/api_report.py` call sites via a new `_answer_texts_for` helper, identical in shape to the existing
+`_answer_lengths_for`. Not the masked/model-safe text (phrase extraction never reaches a model, and the
+report's own "See answers" drill-down already shows raw verbatim text to the same viewer - no new trust
+boundary crossed). `app/report_blocks.py`'s `top_phrases` block: `chart_id="phrases"`,
+`needs = bool(data.phrases.phrases)`.
+
+**Tests**: `tests/test_text_pipeline_phrases.py` (new, 7 tests) - the empty/no-recurrence case, a real
+multi-answer recurring phrase, the once-per-answer-not-per-occurrence count rule, sentiment as a real
+average (not hardcoded), the edge-trim-but-keep-interior-stopwords rule (with the "not" case specifically),
+non-string/blank input handled without crashing, the deliberately-small suppression floor. New golden file
+for `phrases`; `test_frame_count` bumped to 25; the former "unregistered frames" test's comment/scope
+updated now that `f_phrases` is registered. `tests/test_report_blocks.py` - new test proving `top_phrases`
+goes from False (empty placeholder) to True once real `PhraseData` exists. Full backend suite: 782 passed
+(same 5 pre-existing failures), frontend untouched (`tsc --noEmit` clean, no frontend files changed - this
+chart isn't surfaced in any real report yet, selection logic is still deferred to Stage 2).
+
+**Live-verified**: ran the real extraction against dataset 12's actual 39,718 real answers (not a test
+fixture) - produced genuinely sensible, on-topic recurring phrases ("office space", "no privacy", "too
+small", "parking lot") with plausible negative-leaning sentiment matching that dataset's own -0.05 overall
+average, then rendered the real chip chart from that real data and confirmed it visually.

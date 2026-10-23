@@ -678,6 +678,17 @@ def ph_tint(s):
 
 def f_phrases(data: ReportData):
     PH = [(p.text, p.count, p.sentiment) for p in data.phrases.phrases]
+    if not PH:
+        # Found wiring this up for real (chart-block stream, 2026-10-24): this crashed on `max()` of an
+        # empty sequence whenever a report has no answer text to extract phrases from (every ReportData
+        # built without `answer_texts`, plus any real report too small/varied for a phrase to recur) -
+        # never caught before because this chart was never registered in FRAMES, so nothing but the demo
+        # EV sample (always non-empty) ever called it. Same "nothing real to show, say so honestly"
+        # discipline as the Arc tab's own excluded-chart message - never an empty or fake chart.
+        body = (f'<div style="padding:56px 48px">{hdr("Which phrases recur?", "Chip size is how often a phrase appears. Each chip shows its count and average sentiment.")}'
+                '<div style="height:28px"></div><div style="color:var(--muted);max-width:640px">'
+                "No phrase came up often enough, across enough different answers, to call it recurring.</div></div>")
+        return body, 1180, 280
     mx = max(c for _, c, _ in PH)
     chips = ""
     for p, c, s in PH:
@@ -1623,6 +1634,7 @@ FRAMES = {
     "trend": f_trend, "quality": f_quality, "context": f_context, "tokens": f_tokens,
     "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m, "othergrowth": f_other_growth,
     "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
+    "phrases": f_phrases,
 }
 
 # Human-readable title per frame id, for the chart list API.
@@ -1634,7 +1646,7 @@ TITLES = {
     "context": "Question context", "tokens": "Design tokens", "sunburst-mobile": "Themes, sunburst (mobile)",
     "rank-mobile": "Rank themes (mobile)", "othergrowth": "New themes found",
     "groupSplitBars": "Two groups side by side", "compareDots": "Many groups, little space",
-    "slopeChange": "First against last",
+    "slopeChange": "First against last", "phrases": "Which phrases recur?",
 }
 
 def render_parts(frame_id: str, data: ReportData | None = None):

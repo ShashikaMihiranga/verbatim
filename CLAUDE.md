@@ -15,7 +15,7 @@ Also read: `SPEC.md` (product decisions, data flow, chart-selection rules, struc
 - Font: Jost only (300 big numbers and headlines, 400 body, 500 labels, 600 titles). Body 16px/1.55, tabular numbers.
 - Tokens as CSS variables: `--bg --surface --ink --muted --line --accent`, themes `--t1..--t7 --other`, tone `--neg --neu --pos`, heatmap `--ramp`. Light theme only for now.
 - Theme colours only identify themes; tone colours only show sentiment. Colour is never the only carrier: print the number.
-- No pie/donut, word cloud, 3D, or network graphs. No gradients or shadows. Charts sit on the page; only the primary chart may sit on a raised surface.
+- No pie/donut, word cloud, 3D, or network graphs. No gradients or shadows. Charts sit on the page; only the primary chart may sit on a raised surface. Exception (user decision, 2026-10-24): the `top_phrases` block's chip chart (`f_phrases`, size-by-frequency, sentiment-tinted chips) is a word-cloud variant and is explicitly approved anyway - every other chart keeps this rule in full.
 - Reports: one insight per block (one sentence, one visual), "Solid" or "Tentative" badge, a "Also checked, nothing notable" line, max about 5 blocks.
 - No exact record counts on marketing or login screens.
 

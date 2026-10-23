@@ -112,6 +112,26 @@ def _answer_lengths_for(clean_df, column: str, themes: list[Theme]) -> list[int]
     return lengths
 
 
+def _answer_texts_for(clean_df, column: str, themes: list[Theme]) -> list[str]:
+    """Real cleaned answer strings for the `top_phrases` block (chart-block stream, 2026-10-24) - same
+    "a caller that already has the dataframe loaded can pass the real thing through" shape as
+    `_answer_lengths_for` above, feeding `app.text_pipeline.phrases.build_phrase_data` via
+    `build_report_data`'s `answer_texts` param. Not the masked/model-safe text: this never reaches a
+    model (phrase extraction is pure code, see that module's own docstring), and the report's own
+    "See answers" drill-down already shows raw verbatim text to the same viewer, so there is no extra
+    trust boundary to cross here that the rest of this app doesn't already cross."""
+    rows = sorted({r for t in themes for r in (t.answer_refs or [])})
+    texts: list[str] = []
+    for r in rows:
+        try:
+            v = clean_df.at[r, column]
+        except KeyError:
+            continue
+        if isinstance(v, str) and v.strip():
+            texts.append(v)
+    return texts
+
+
 def _structured_context_for(
     db: Session, ds: Dataset, clean_df, plan, themes: list[Theme], filter_rows: set[int] | None = None,
 ) -> StructuredContext:
@@ -218,10 +238,11 @@ def _render_report(
     if filter_rows is not None:
         structured = _structured_context_for(db, ds, clean_df, plan, themes, filter_rows=filter_rows)
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
+    answer_texts = _answer_texts_for(clean_df, column, themes)
     question = content.get("question") or column
     report_data = build_report_data(
-        ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths, structured=structured,
-        filter_rows=filter_rows,
+        ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths,
+        answer_texts=answer_texts, structured=structured, filter_rows=filter_rows,
     )
     breakdown, all_themes = other_breakdown(themes, report_data.answered, filter_rows=filter_rows)
 
@@ -396,10 +417,12 @@ def build_report(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
     ).all())
     answer_lengths = None
+    answer_texts = None
     structured = None
     if themes:
         clean_df, plan = _load_clean_df(ds, db)
         answer_lengths = _answer_lengths_for(clean_df, column, themes)
+        answer_texts = _answer_texts_for(clean_df, column, themes)
         # Built here (synchronously, alongside answer_lengths above) rather than re-queried inside `_work`'s
         # own job-thread session: `StructuredContext` is plain data once built (no lingering ORM references),
         # so it crosses into the closure below exactly like `answer_lengths` already does - one fewer
@@ -426,7 +449,8 @@ def build_report(
             step("Deciding what's worth telling")
             report = build_findings(
                 job_ds, column, job_db, claude_client,
-                cleaning_report=cleaning_report, answer_lengths=answer_lengths, structured=structured,
+                cleaning_report=cleaning_report, answer_lengths=answer_lengths, answer_texts=answer_texts,
+                structured=structured,
             )
             step("Drawing charts")
             # Rendered here too (and discarded) purely so a rendering bug fails the job with a plain

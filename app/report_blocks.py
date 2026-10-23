@@ -416,11 +416,14 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.trend.labels) and len(data.trend.labels) >= 2,
     ),
     Block(
-        "b47", "top_phrases", "6", "Recurring phrases", None,
+        "b47", "top_phrases", "6", "Recurring phrases", "phrases",
         '"No home charger" is the phrase that comes up most, and it sounds negative.',
         "Open-ended text.",
-        # PhraseData is always an empty placeholder - no phrase-extraction step exists upstream.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24): app/text_pipeline/phrases.py extracts real recurring
+        # phrases from real answer text, threaded through build_report_data's new answer_texts param.
+        # Renderer is f_phrases - an explicit, approved exception to CLAUDE.md's "no word cloud" rule
+        # (user decision, 2026-10-24, recorded in CLAUDE.md itself).
+        lambda data: bool(data.phrases.phrases),
     ),
 ]
 

@@ -85,7 +85,7 @@ def test_custom_data_renders_its_own_names():
         "treemap": ["Zebra crossing"], "diverge": ["Yak shaving"], "byScore": ["Mood"], "heatmap": ["region", "North"],
         "trend": ["W2"], "arc": ["Yak shaving"], "map": ["Zebras like stripes"],
         "groupSplitBars": ["Zebra crossing", "North", "South"], "compareDots": ["Zebra crossing", "North"],
-        "slopeChange": ["Zebra crossing", "Yak shaving", "W1", "W3"],
+        "slopeChange": ["Zebra crossing", "Yak shaving", "W1", "W3"], "phrases": ["zebra stripes"],
     }.items():
         html = render(frame_id, data)
         for n in needles:
@@ -100,10 +100,13 @@ def test_custom_data_renders_every_frame():
 
 
 def test_unregistered_frames_take_data_too():
+    # f_phrases moved to FRAMES (chart-block stream, 2026-10-24: see test_frame_identical_to_golden and
+    # test_custom_data_renders_its_own_names, which now cover it the normal way) - f_freq/f_quotes stay
+    # here, genuinely unregistered (no block in app/report_blocks.py reads FreqData/QuoteData yet).
     from app import charts
 
     data = small_report()
-    for fn, needle in [(charts.f_freq, "Zebra"), (charts.f_phrases, "zebra stripes"), (charts.f_quotes, "Stripes are confusing"),
+    for fn, needle in [(charts.f_freq, "Zebra"), (charts.f_quotes, "Stripes are confusing"),
                        (charts.f_quality, "Typical length 3 words")]:
         assert needle in fn(data)[0]
 
