@@ -337,14 +337,16 @@ OVERVIEW_TREEMAP_W = 1084
 OVERVIEW_TREEMAP_H = 320
 
 
-def f_overview(data: ReportData):
+def f_overview(data: ReportData, report: bool = False):
     stats = data.overview.stats
     # Same decision function as f_treemap (see _prefers_icicle's own docstring), but called with THIS
     # chart's own, smaller reference size - this hero chart can legitimately need icicle even when the
     # taller standalone "What are the themes?" chart below still has enough room for treemap.
-    chart = (icicle_html if _prefers_icicle(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H) else treemap_html)(
-        data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H,
-    )
+    if _prefers_icicle(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H):
+        chart = icicle_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H)
+    else:
+        # `report=True` (render_report_parts): adds the Other block's pointer to Inside Other below it.
+        chart = treemap_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H, other_hint=report)
     st = '<div style="display:flex;margin-top:36px">'
     for i, (l, n, note) in enumerate(stats):
         bd = "border-left:1px solid var(--line);padding-left:24px;" if i else ""
@@ -1000,7 +1002,7 @@ def _treemap_areas(rows_data) -> dict[str, float]:
 
 
 # ---- treemap
-def treemap_html(data: ReportData, w: int, h: int) -> str:
+def treemap_html(data: ReportData, w: int, h: int, other_hint: bool = False) -> str:
     """The treemap's own markup (no `frame()` wrapper) - `f_treemap` below calls this at its own
     standalone size, and `f_overview` calls it again at a smaller "hero"/browse size, so the layout logic
     itself exists in exactly one place rather than being copy-pasted per caller.
@@ -1111,8 +1113,21 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
             f'<div style="width:100%;height:100%;border-radius:5px;overflow:hidden;position:relative;'
             f'background:var(--{col})">'
             f'<div style="position:absolute;left:10px;top:12px;right:8px">{label}</div>'
-            f'{sub_html}</div></div>')
+            f'{sub_html}{_other_hint(name, share, areas, rw, rh) if other_hint and col == "other" else ""}</div></div>')
     return f'<div style="position:relative;width:100%;height:{h}px">{"".join(cells)}</div>'
+
+
+def _other_hint(name: str, share: float, areas: dict[str, float], rw: float, rh: float) -> str:
+    """Report page only (the Inside Other section sits right under the treemap): points the reader at it,
+    and says so when the box is drawn smaller than its real share (`_treemap_areas` caps Other's area).
+    Skipped in a box too small to hold it, rather than overflowing."""
+    if rw < 80 or rh < 64:
+        return ""  # below this the box only has room for its own name and share
+    capped = areas.get(name, share) < share - 1e-9
+    note = ('<div style="font-size:11.5px;font-weight:400;line-height:1.3;margin-top:2px">'
+            'Drawn smaller than its real share</div>') if capped and rw >= 120 and rh >= 84 else ""
+    return (f'<div style="position:absolute;left:10px;right:8px;bottom:10px;color:{TH_ON["other"]}">'
+            f'<div style="font-size:14px;font-weight:600">Look inside ↓</div>{note}</div>')
 
 
 def _too_narrow_for(name: str, box_w: float, fs: float = 15) -> bool:
@@ -1960,6 +1975,8 @@ def render_report_parts(frame_id: str, data: ReportData, selected: str | None = 
         return sunburst_report(data, selected)
     if frame_id == "context":
         return context_report(data)
+    if frame_id == "overview":
+        return f_overview(data, report=True)
     return render_parts(frame_id, data)
 
 def context_report(data: ReportData):

@@ -161,6 +161,9 @@ class Job(Base):
     # second query reconstructing them after the fact). `None` for every job kind that has nothing to
     # summarize (themes, report) - this column is optional on purpose, not every job needs one.
     result: Mapped[dict | None] = mapped_column(JSON)
+    # Live counts while a job runs ("Look inside Other": answers matched so far per known/new theme), so the
+    # report can show real progress rather than a simulated count-up. None for jobs that don't report any.
+    progress: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

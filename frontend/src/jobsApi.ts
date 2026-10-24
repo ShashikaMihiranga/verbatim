@@ -39,6 +39,10 @@ export interface LookInsideOtherResult {
   // visible sign anything went wrong. A failed row still stays in Other either way (never lost); this
   // only makes a failure VISIBLE instead of indistinguishable from a real empty result.
   failed_classification_count: number
+  // Added 2026-10-24 (docs/REPORT_UI_REWORK.md Phase 1). Optional: runs finished before then lack them.
+  other_before_count?: number
+  answered_total?: number
+  known_gains?: Array<{ label: string; count: number }>
 }
 
 // Theme editing (docs/TODO.md, fixed 2026-10-22): "split theme"'s own job result - the real pieces a
@@ -46,6 +50,14 @@ export interface LookInsideOtherResult {
 export interface SplitThemeResult {
   new_themes: Array<{ label: string; count: number }>
   remainder_count: number
+}
+
+export interface LookInsideOtherProgress {
+  done: number
+  total: number
+  known: Record<string, number>
+  new: Record<string, number>
+  still_other: number
 }
 
 export interface Job {
@@ -59,6 +71,9 @@ export interface Job {
   // `null` for every job kind that has nothing to summarize (themes, report) - only "look_inside_other"
   // and "split_theme" ever populate this, once they reach "done".
   result: LookInsideOtherResult | SplitThemeResult | null
+  // Live counts while "look_inside_other" matches answers (app/api_themes.py, step "Matching answers to
+  // themes"). Optional/null: other jobs, older servers, and the synthetic just-started Job never have it.
+  progress?: LookInsideOtherProgress | null
   // ISO 8601 strings (added 2026-10-23 for the jobs dashboard's own "how long has this been running"
   // display) - every per-column screen that only ever reads `status`/`step`/`result` ignores these.
   // Optional: Themes.tsx builds a synthetic "just started" Job locally right after POSTing a build,

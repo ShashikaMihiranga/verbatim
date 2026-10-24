@@ -117,6 +117,16 @@ def _set_step(job_id: int, step: str) -> None:
         db.commit()
 
 
+def set_progress(job_id: int, progress: dict) -> None:
+    """Live counts while a job runs (same own-session, still-running-only pattern as `_set_step`)."""
+    with _db.SessionLocal() as db:
+        job = db.get(Job, job_id)
+        if job is None or job.status != "running":
+            return
+        job.progress = progress
+        db.commit()
+
+
 def _mark_done(job_id: int) -> None:
     with _db.SessionLocal() as db:
         job = db.get(Job, job_id)
@@ -215,6 +225,7 @@ def job_dict(job: Job) -> dict:
         "step": job.step,
         "error": job.error,
         "result": job.result,
+        "progress": job.progress,
         # Jobs dashboard (docs/TODO.md, 2026-10-23): added for "how long has this been running" context -
         # every existing caller (per-column job polling) already ignored unknown fields, so this is a pure
         # addition, not a shape change. `_utc_iso` (not FastAPI's own encoder) so the string always carries

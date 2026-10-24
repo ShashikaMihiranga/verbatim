@@ -55,7 +55,7 @@ from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, theme_nodes
-from .jobs import REPORT_JOB_MAX_AGE, blocking_job, create_job, start_job
+from .jobs import REPORT_JOB_MAX_AGE, blocking_job, create_job, set_progress, start_job
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
     AnswerScore,
@@ -473,6 +473,10 @@ def _apply_other_classification(
             select(Theme).where(Theme.dataset_id == dataset_id, Theme.column_name == column, Theme.id != other_theme_id)
         ).all()
     }
+    # Captured before anything moves: the report's Inside Other panel shows "It was y% before this run",
+    # and every share it prints uses the column's answered total as its denominator.
+    other_before_count = len(other.answer_refs or [])
+    answered_total = sum(t.size for t in known_by_label.values()) + (other.size or 0)
 
     matched_known: dict[str, list[int]] = {}
     matched_new: dict[str, list[int]] = {}
@@ -591,10 +595,16 @@ def _apply_other_classification(
     return {
         "known_added": known_added, "new_themes": new_themes_summary, "still_other_count": len(still_other),
         "failed_classification_count": failed_count,
+        "other_before_count": other_before_count, "answered_total": answered_total,
+        "known_gains": [{"label": label, "count": len(rows)}
+                        for label, rows in sorted(matched_known.items(), key=lambda kv: -len(kv[1]))],
     }
 
 
-_OTHER_RESULT_CHART_IDS = ("othergrowth", "rank", "icicle", "sentsun")
+# One question per chart (docs/REPORT_UI_REWORK.md): rank = which new themes are biggest and how they
+# sound; icicle = what's inside them (only built when a new theme has sub-themes). "othergrowth" was a
+# bar chart shown under a "Sankey" label, and "sentsun" repeated the tone the rank chart already shows.
+_OTHER_RESULT_CHART_IDS = ("rank", "icicle")
 
 
 def _build_other_result_charts(theme_rows: list[Theme]) -> dict[str, dict]:
@@ -634,6 +644,8 @@ def _build_other_result_charts(theme_rows: list[Theme]) -> dict[str, dict]:
     )
     charts: dict[str, dict] = {}
     for chart_id in _OTHER_RESULT_CHART_IDS:
+        if chart_id == "icicle" and not any(n.children for n in nodes):
+            continue  # no new theme has sub-themes: an icicle would only repeat the rank chart
         chart_html, chart_width, chart_height = render_parts(chart_id, data)
         charts[chart_id] = {
             "chart_title": TITLES.get(chart_id, chart_id),
@@ -840,7 +852,7 @@ def look_inside_other(
     deadline = _themes_deadline_for(len(other_refs))
 
     def _work(step: Callable[[str], None]) -> None:
-        step("Checking known themes")
+        step("Finding patterns in Other")
         other_refs_set = set(other_refs)
         masked = model_safe_column(clean_df, plan, column)
         row_text: dict[int, str] = {
@@ -853,12 +865,29 @@ def look_inside_other(
         vectors = embedding_client.embed(texts)
         reclustered = recluster_other(rows, texts, vectors)
 
-        step("Grouping new themes into sub-themes")
+        step("Naming new themes")
         candidates = label_and_consolidate(reclustered, question, claude_client)
         criteria, new_label_descriptions = build_classification_question(known_themes, candidates)
 
-        step("Finalizing")
-        classification = classify_other_answers(rows, texts, criteria, jev_client)
+        step("Matching answers to themes")
+
+        def _progress(done: int, total: int, by_row: dict[int, str], failed: list[int]) -> None:
+            # Live counts for the report's Inside Other panel. Small new groups can still fold back into
+            # Other at the end (MIN_OTHER_NEW_THEME_SIZE), so the finished result is the final word.
+            known: dict[str, int] = {}
+            new: dict[str, int] = {}
+            still = len(failed)
+            for choice in by_row.values():
+                if choice in known_themes:
+                    known[choice] = known.get(choice, 0) + 1
+                elif choice in new_label_descriptions:
+                    new[choice] = new.get(choice, 0) + 1
+                else:
+                    still += 1
+            set_progress(job.id, {"done": done, "total": total, "known": known, "new": new, "still_other": still})
+
+        classification = classify_other_answers(rows, texts, criteria, jev_client, on_progress=_progress)
+        step("Updating the report")
         vec_by_row = dict(zip(rows, vectors))
         with _db.SessionLocal() as job_db:
             summary = _apply_other_classification(

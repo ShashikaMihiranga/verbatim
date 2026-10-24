@@ -23,7 +23,7 @@ only when its acceptance criteria and tests pass.**
 | 0 | (user) | Restore 34919df frontend files, release `UI-REPORT-07` | [x] done by the user |
 | bug | `RACE-GUARD-01` | Report build and theme rebuild can't overlap | [x] done, `182c891` |
 | doc | `REPORT-UI-DOC` | This document | [x] done |
-| 1 | `REPORT-UI-1` | Backend data for Inside Other, live progress, honest step names, treemap Other labels | [ ] |
+| 1 | `REPORT-UI-1` | Backend data for Inside Other, live progress, honest step names, treemap Other labels | [x] done |
 | 2 | `REPORT-UI-2` | Inside Other UI (flow, three columns, step rail, done state, charts) | [ ] |
 | 3 | `REPORT-UI-3` | Page order and text trim; overview without tabs | [ ] |
 | 4 | `REPORT-UI-4` | Visual / interaction / accessibility gate at 1280, 888 and 390px | [ ] |
@@ -280,12 +280,12 @@ python3 tools/taskboard.py release UI-REPORT-07 --agent user --message "Restored
 - `tests/test_api_themes.py`, `tests/test_other_classify.py`, `tests/test_charts_data.py`, `tests/golden/*`
 
 **Tasks**
-- [ ] Result fields `other_before_count`, `answered_total`, `known_gains`. Drop `othergrowth` and `sentsun`.
-- [ ] `Job.progress` column, migration, `job_dict`.
-- [ ] Throttled `on_progress` in `classify_other_answers`, wired through `set_progress` during step 3.
-- [ ] Step labels renamed to the four honest names. Check the frontend for anything keyed on the old
+- [x] Result fields `other_before_count`, `answered_total`, `known_gains`. Drop `othergrowth` and `sentsun`.
+- [x] `Job.progress` column, migration, `job_dict`.
+- [x] Throttled `on_progress` in `classify_other_answers`, wired through `set_progress` during step 3.
+- [x] Step labels renamed to the four honest names. Check the frontend for anything keyed on the old
       strings (`LookInsideOther.tsx` `STEPS`).
-- [ ] Treemap Other cell: "Look inside ↓" always when Other exists; "Drawn smaller than its real share"
+- [x] Treemap Other cell: "Look inside ↓" always when Other exists; "Drawn smaller than its real share"
       only when `_treemap_areas` capped Other's area. Regenerate goldens and review each diff.
 
 **Acceptance and tests**
@@ -403,3 +403,15 @@ cd frontend && npm run lint                           # 6 existing warnings, no 
   file is in `UI-REPORT-07`'s scope.
 - 2026-10-24 — Phase 0 done by the user: the five files restored to `34919df`, `UI-REPORT-07` released.
   Pointer added to `docs/UI_FIXES.md`.
+- 2026-10-24 — Phase 1 (`REPORT-UI-1`) done. Notes for Phase 2:
+  - Result fields, `Job.progress` (migration `3c7e1f2a9b40`), throttled progress, renamed steps
+    (`LookInsideOther.tsx` `STEPS` updated to match) and the result charts reduced to `rank` (+ `icicle` only
+    when a new theme has sub-themes) are in.
+  - The treemap hint is report-only: `render_report_parts("overview")` → `f_overview(report=True)` →
+    `treemap_html(other_hint=True)`. Gallery frames and golden files are unchanged.
+  - The hint is skipped when the Other box has no room (under 80×64; the "Drawn smaller…" line needs 120×84),
+    and when the overview uses its icicle layout. On dataset 12 the capped Other box is a narrow column (about
+    54×186), so no in-box hint shows there. Phase 2's ribbons must start from the Other block's real position
+    (`[data-theme="Other"]` in the overview fragment) to make that link visually.
+  - Live counts can fold slightly at the end: new groups smaller than `MIN_OTHER_NEW_THEME_SIZE` go back into
+    Other in the final result. The done state reads `job.result`.

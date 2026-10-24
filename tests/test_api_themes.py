@@ -1107,7 +1107,12 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
     # not reconstructed from a second query.
     assert job["result"] == {
         "known_added": 3, "new_themes": [], "still_other_count": 0, "failed_classification_count": 0,
+        # Inside Other panel fields (docs/REPORT_UI_REWORK.md Phase 1): Other held 3 before, 5 + 3 answered.
+        "other_before_count": 3, "answered_total": 8, "known_gains": [{"label": "Cost", "count": 3}],
     }
+    # Live progress was written during the matching step and ends complete.
+    assert job["progress"]["done"] == job["progress"]["total"] == 3
+    assert job["progress"]["known"] == {"Cost": 3} and job["progress"]["still_other"] == 0
 
     themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
     labels = {t["label"] for t in themes}
@@ -1157,7 +1162,9 @@ def test_look_inside_other_end_to_end_finds_real_new_themes_with_charts(env):
         assert set(entry["tone"]) == {"neg", "neu", "pos"}
 
     charts = result.get("charts") or {}
-    assert set(charts) == {"othergrowth", "rank", "icicle", "sentsun"}
+    # One question per chart (docs/REPORT_UI_REWORK.md): rank always; icicle only if a new theme has
+    # sub-themes. "othergrowth" (a bar chart labelled "Sankey") and "sentsun" (repeated tone) are gone.
+    assert "rank" in charts and set(charts) <= {"rank", "icicle"}
     new_names = {nt["label"] for nt in result["new_themes"]}
     for chart in charts.values():
         assert chart["chart_html"]
@@ -1195,6 +1202,7 @@ def test_apply_other_classification_extends_a_known_theme(env):
         assert s.get(Theme, other_id) is None  # both rows matched - nothing left, row deleted
         assert summary == {
             "known_added": 2, "new_themes": [], "still_other_count": 0, "failed_classification_count": 0,
+            "other_before_count": 2, "answered_total": 7, "known_gains": [{"label": "Cost", "count": 2}],
         }
 
 
@@ -1246,6 +1254,7 @@ def test_apply_other_classification_below_minimum_new_theme_folds_back_into_othe
         assert sorted(other.answer_refs) == sorted(too_few)  # folded straight back into Other
         assert summary == {
             "known_added": 0, "new_themes": [], "still_other_count": len(too_few), "failed_classification_count": 0,
+            "other_before_count": len(too_few), "answered_total": 5 + len(too_few), "known_gains": [],
         }
 
 
@@ -1263,6 +1272,7 @@ def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other
         summary = _apply_other_classification(s, did, Q, other_id, by_row, {}, row_text, failed_count=1)
         assert summary == {
             "known_added": 0, "new_themes": [], "still_other_count": 3, "failed_classification_count": 1,
+            "other_before_count": 3, "answered_total": 8, "known_gains": [],
         }
     with env.Session() as s:
         from app.models import Theme
@@ -1668,3 +1678,23 @@ def test_a_running_row_left_behind_by_a_crash_does_not_block_forever(env):
     assert build_themes_job(env, did)["status"] == "done"
     _running_job_row(env, did, "report", age_minutes=120)  # far past the 15-minute report cap
     assert env.client.post(f"/api/datasets/{did}/themes/build", json={"column": Q}).status_code == 202
+
+
+def test_other_result_charts_build_an_icicle_only_when_a_new_theme_has_sub_themes():
+    # One question per chart: without sub-themes an icicle only repeats the rank chart.
+    from app.api_themes import _build_other_result_charts
+    from app.models import Theme
+
+    def theme(tid, label, size, subs=None):
+        t = Theme(dataset_id=1, column_name=Q, label=label, size=size, sentiment=0.0,
+                  tone={"neg": 20, "neu": 60, "pos": 20}, answer_refs=list(range(size)), sub_themes=subs or [])
+        t.id = tid
+        return t
+
+    flat = [theme(1, "Parking", 40), theme(2, "Elevators", 30)]
+    assert set(_build_other_result_charts(flat)) == {"rank"}
+
+    subs = [{"label": "Distance from lots", "size": 20, "sentiment": 0.0, "tone": {"neg": 20, "neu": 60, "pos": 20}},
+            {"label": "Accessible spaces", "size": 15, "sentiment": 0.0, "tone": {"neg": 20, "neu": 60, "pos": 20}}]
+    with_subs = [theme(1, "Parking", 40, subs), theme(2, "Elevators", 30)]
+    assert set(_build_other_result_charts(with_subs)) == {"rank", "icicle"}

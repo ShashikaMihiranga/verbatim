@@ -3048,3 +3048,19 @@ order, the Inside Other spec mapped from `gen_otherflow.py` to real data, the da
 `Job.progress` and where to hook it), phases `REPORT-UI-1`..`5` with scope, tasks, acceptance and tests,
 known traps, and verification commands. Phase 0 (the user restoring 34919df and releasing UI-REPORT-07) is
 still pending; the pointer from `docs/UI_FIXES.md` waits for it because that file is in UI-REPORT-07's scope.
+
+## 2026-10-24 (REPORT-UI-1 done: backend data for the Inside Other panel)
+
+Per `docs/REPORT_UI_REWORK.md` Phase 1. The look-inside result gains `other_before_count` (captured before
+anything moves), `answered_total` and `known_gains` (per known theme, from `matched_known`). New nullable
+`Job.progress` (migration `3c7e1f2a9b40`, returned by `job_dict`) is written during "Matching answers to
+themes" through `set_progress`, from a throttled `on_progress` callback in `classify_other_answers` (about
+once a second, always once at the end). Steps renamed to the real work: "Finding patterns in Other",
+"Naming new themes", "Matching answers to themes", "Updating the report" (`LookInsideOther.tsx` `STEPS`
+updated to match). Result charts reduced to `rank`, plus `icicle` only when a new theme has sub-themes
+(dropped `othergrowth`, a bar chart labelled "Sankey", and `sentsun`). The report overview (only) adds
+"Look inside ↓" to the Other box and "Drawn smaller than its real share" when its area is capped, skipped
+when the box has no room (dataset 12's capped Other is a ~54px column, so Phase 2's ribbons make that link).
+Tests: result fields in 5 updated tests, progress throttling, icicle-only-with-sub-themes, report-only
+hint; backend 904, frontend 117 (restored report-ui test counted), tsc clean, lint 6. Migration upgrade,
+downgrade and upgrade run on dev.db.

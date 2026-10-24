@@ -9,7 +9,7 @@ import LookInsideOther from './LookInsideOther'
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 9, dataset_id: 1, column: 'Why', kind: 'look_inside_other',
-    status: 'running', step: 'Checking known themes', error: null, result: null,
+    status: 'running', step: 'Finding patterns in Other', error: null, result: null,
     ...overrides,
   }
 }
@@ -19,14 +19,17 @@ describe('LookInsideOther', () => {
     const html = renderToStaticMarkup(<LookInsideOther job={null} onStart={vi.fn()} />)
     expect(html).toContain('Look inside')
     expect(html).not.toContain('Look inside again')
-    expect(html).not.toContain('Checking known themes')
+    expect(html).not.toContain('Finding patterns in Other')
   })
 
   it('running: shows the live step tracker and the current step, no CTA button', () => {
-    const job = makeJob({ status: 'running', step: 'Grouping new themes into sub-themes' })
+    const job = makeJob({ status: 'running', step: 'Matching answers to themes' })
     const html = renderToStaticMarkup(<LookInsideOther job={job} onStart={vi.fn()} />)
-    expect(html).toContain('Grouping new themes into sub-themes')
+    expect(html).toContain('Matching answers to themes')
     expect(html).not.toContain('class="lio-cta"')
+    // The tracker follows the server's renamed steps: the first two are done, the third is active.
+    expect(html.match(/data-state="done"/g)?.length).toBe(2)
+    expect(html).toMatch(/data-state="active"[^>]*>[\s\S]*?Matching answers to themes/)
   })
 
   it('done: shows the real Known/New/Still-in-Other counts from job.result, and a re-run CTA', () => {

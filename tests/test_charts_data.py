@@ -755,3 +755,30 @@ def test_sunburst_callout_for_a_small_left_hand_theme_sits_on_the_left():
     html = sunburst(data, 640, 580, 380, 300, 245, 14, 12.5)
     right_anchored = re.findall(r'transform:translate\(-100%,-50%\)[^>]*>([^<]*\(\d+(?:\.\d+)?%\))', html)
     assert right_anchored, "expected at least one left-side callout anchored by its right edge"
+
+
+def test_report_overview_points_from_other_to_inside_other_and_says_when_it_is_drawn_smaller(monkeypatch):
+    # Report page only: the Inside Other section sits right under the treemap (docs/REPORT_UI_REWORK.md).
+    import app.charts as charts
+    from app.charts import render_parts, render_report_parts, treemap_html
+    data = _ev_copy()
+    other = next(t for t in data.themes if t.color == "other")
+    others = [t for t in data.themes if t.color != "other"]
+    other.share = 40.0  # well above the 5% area cap, so the box is drawn smaller than its real share
+    for t in others:
+        t.share = round(60.0 / len(others), 1)
+
+    hinted = treemap_html(data, 1084, 580, other_hint=True)
+    assert "Look inside ↓" in hinted and "Drawn smaller than its real share" in hinted
+    assert "Look inside ↓" not in treemap_html(data, 1084, 580)
+
+    # The report overview turns the hint on (when it draws a treemap); the gallery frame never does.
+    monkeypatch.setattr(charts, "_prefers_icicle", lambda *a, **k: False)
+    assert "Look inside ↓" in render_report_parts("overview", data)[0]
+    assert "Look inside ↓" not in render_parts("overview", data)[0]
+
+    other.share = 4.0  # under the cap: drawn at its real size, so only the pointer, no "smaller" note
+    for t in others:
+        t.share = round(96.0 / len(others), 1)
+    small = treemap_html(data, 1084, 580, other_hint=True)
+    assert "Drawn smaller than its real share" not in small

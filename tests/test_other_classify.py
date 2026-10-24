@@ -252,3 +252,26 @@ def test_classify_other_answers_can_return_none_of_these():
     )
     out = classify_other_answers([1], ["totally unrelated answer"], _CRITERIA, client)
     assert out.by_row[1] == NONE_OF_THESE
+
+
+def test_classify_other_answers_reports_live_progress_throttled_and_complete():
+    # Feeds the report's Inside Other panel real counts while Jev matches answers (docs/REPORT_UI_REWORK.md).
+    def pick(text, question_key, instructions, criteria):
+        return ChoiceAnswer(choice="Cost" if "price" in text else "Support", confidence=0.9, probabilities={})
+
+    calls = []
+    rows = list(range(10))
+    texts = ["bad price" if r % 2 else "rude staff" for r in rows]
+    client = FakeJevClient(("pos", 0.9), choice_result=pick)
+
+    out = classify_other_answers(rows, texts, _CRITERIA, client, concurrency=1,
+                                 on_progress=lambda d, t, by_row, failed: calls.append((d, t, dict(by_row))),
+                                 progress_interval=3600)
+    # A one-hour interval allows exactly the first report and the final, complete one.
+    assert [c[0] for c in calls] == [1, 10]
+    assert calls[-1][1] == 10 and calls[-1][2] == out.by_row
+
+    every = []
+    classify_other_answers(rows, texts, _CRITERIA, client, concurrency=1,
+                           on_progress=lambda d, t, by_row, failed: every.append(d), progress_interval=0)
+    assert every == list(range(1, 11))

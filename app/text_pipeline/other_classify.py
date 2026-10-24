@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -150,6 +152,8 @@ def classify_other_answers(
     *,
     instructions: str = "Classify which theme this survey answer is about.",
     concurrency: int = DEFAULT_CLASSIFY_CONCURRENCY,
+    on_progress: Callable[[int, int, dict[int, str], list[int]], None] | None = None,
+    progress_interval: float = 1.0,
 ) -> OtherClassification:
     """Runs every `(row, text)` pair through `client.classify_choice` against the SAME shared `criteria`,
     in parallel via a thread pool (same "network I/O releases the GIL, so this is real wall-clock
@@ -179,14 +183,23 @@ def classify_other_answers(
             return row, None, f"{type(e).__name__}: {e}"
 
     sample_error: str | None = None
+    total, done, last_report = len(row_indexes), 0, float("-inf")
     with ThreadPoolExecutor(max_workers=min(concurrency, len(row_indexes))) as pool:
         for row, answer, error in pool.map(_one, row_indexes, texts):
+            done += 1
             if answer is None:
                 out.failed_rows.append(row)
                 sample_error = sample_error or error
-                continue
-            out.by_row[row] = answer.choice
-            out.confidence_by_row[row] = answer.confidence
+            else:
+                out.by_row[row] = answer.choice
+                out.confidence_by_row[row] = answer.confidence
+            # Live progress for the report's "Inside Other" panel: throttled (thousands of rows), and
+            # always sent once at the end so the last counts are complete.
+            if on_progress is not None:
+                now = time.monotonic()
+                if now - last_report >= progress_interval or done == total:
+                    last_report = now
+                    on_progress(done, total, out.by_row, out.failed_rows)
     if out.failed_rows:
         level = log.error if len(out.failed_rows) == len(row_indexes) else log.warning
         level(

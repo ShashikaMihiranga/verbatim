@@ -15,7 +15,9 @@ import LookInsideOtherRibbons from './LookInsideOtherRibbons'
 // Known/New/Still-in-Other breakdown is what the "done" state shows, built from `job.result` - the one
 // place in this component real numbers appear.
 
-const STEPS = ['Checking known themes', 'Grouping new themes into sub-themes', 'Finalizing', 'Done']
+// Must match the job's step labels in app/api_themes.py look_inside_other (renamed 2026-10-24 to describe
+// the real work - docs/REPORT_UI_REWORK.md). 'Done' is the finished state, not a server step.
+const STEPS = ['Finding patterns in Other', 'Naming new themes', 'Matching answers to themes', 'Updating the report', 'Done']
 
 function stepIndex(job: Job): number {
   if (job.status === 'done') return STEPS.length - 1
