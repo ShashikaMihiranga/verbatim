@@ -328,6 +328,11 @@ def _render_report(
         }
 
     blocks_out: list[dict[str, Any]] = []
+    # A finding whose theme no longer exists (themes rebuilt, merged or emptied after the report was built;
+    # on Postgres its theme_id is then NULL via ON DELETE SET NULL, on SQLite it dangles) must not borrow
+    # another theme's chart: live on dataset 12, five such findings all drew the default theme's sunburst.
+    current_theme_ids = {t.id for t in themes}
+    orphaned_findings = 0
     for b in blocks_content:
         chart_id = b["chart_id"]
         # Always-on supplements are saved at build time from unfiltered data; a filter can leave them
@@ -381,7 +386,16 @@ def _render_report(
                                      finding_data.get('group', ''), chart_id)
         if finding_kind in STRUCTURED_KINDS and source_columns.get(finding_kind) != current_columns.get(finding_kind):
             focused_data = None  # A filter must not switch the finding to an unrelated source column.
-        if focused_data is None:
+        orphaned = finding_row is not None and (
+            finding_row.theme_id is None or finding_row.theme_id not in current_theme_ids)
+        if orphaned:
+            orphaned_findings += 1
+            focused_data = None
+            chart_html = ('<p style="padding:32px 48px;color:var(--muted)">The theme this finding describes no '
+                          'longer exists: the themes changed after this report was built. Rebuild the report '
+                          'to update it.</p>')
+            chart_width, chart_height = 1180, 120
+        elif focused_data is None:
             chart_html = '<p style="padding:32px 48px;color:var(--muted)">This finding has no eligible comparison in the current view. Clear filters or rebuild the report.</p>'
             chart_width, chart_height = 1180, 120
         else:
@@ -471,6 +485,8 @@ def _render_report(
             {"name": t.name, "share": t.share, "count": t.count, "sentiment": t.sentiment} for t in all_themes
         ],
         "theme_chart_variants": theme_chart_variants,
+        # True when any finding was written about a theme that no longer exists - the page offers a rebuild.
+        "stale": orphaned_findings > 0,
         "explorations": explorations,
     }
 

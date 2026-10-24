@@ -1582,3 +1582,24 @@ def test_apply_theme_split_never_loses_rows_when_nothing_real_is_found(env):
         assert sorted(original.answer_refs) == list(range(12))  # every answer preserved, none lost
         assert original.size == 12
         assert summary == {"new_themes": [], "remainder_count": 12}
+
+
+def test_rebuilding_themes_drops_the_report_built_on_the_old_ones(env):
+    # Live on dataset 12: themes were rebuilt after the report, so five findings described themes that
+    # no longer existed and all drew the same default-theme chart. Same rule as rename/merge/split now.
+    from sqlalchemy import select as _select
+    from app.models import Report
+
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    assert build_themes_job(env, did)["status"] == "done"
+    with env.Session() as s:
+        s.add(Report(dataset_id=did, content={"column": Q, "blocks": []}))
+        s.add(Report(dataset_id=did, content={"column": "Some other column", "blocks": []}))
+        s.commit()
+
+    assert build_themes_job(env, did)["status"] == "done"
+    with env.Session() as s:
+        columns = [r.content["column"] for r in s.scalars(_select(Report).where(Report.dataset_id == did))]
+    assert columns == ["Some other column"]  # only this column's report is dropped

@@ -400,6 +400,10 @@ def _write_theme_rows(
     for old in db.scalars(select(Theme).where(Theme.dataset_id == dataset_id, Theme.column_name == column)).all():
         db.delete(old)
     db.add_all(new_rows)
+    # New themes make every stored finding sentence describe themes that no longer exist (found live on
+    # dataset 12: five findings about deleted themes all fell back to the same chart). Same policy as
+    # rename/merge/split: drop the report so the page offers "Build report" again.
+    _invalidate_report_for_edit(db, dataset_id, column)
     db.commit()
     return new_rows
 

@@ -100,6 +100,8 @@ export interface ReportFilters {
 
 export interface ReportResponse {
   explorations?: ReportThemeChartVariant[]
+  // True when a finding describes a theme that no longer exists (themes changed after the build).
+  stale?: boolean
   dataset_id: number
   column: string
   question: string

@@ -1007,3 +1007,30 @@ def test_quotes_and_phrase_texts_follow_the_active_filter():
     assert _answer_texts_for(df, "Why", themes, keep) == ["kept one", "kept three"]
     assert _quote_theme_texts_for(df, "Why", themes, keep) == [("Cost", ["kept one", "kept three"])]
     assert len(_answer_texts_for(df, "Why", themes)) == 4  # no filter: unchanged
+
+
+def test_findings_about_deleted_themes_are_marked_not_drawn_with_another_themes_chart(env):
+    # Live on dataset 12: findings whose themes had been rebuilt away all rendered the same default-theme
+    # sunburst. theme_id None is what Postgres leaves (ON DELETE SET NULL); 999999 is SQLite's dangling id.
+    install_fake_claude()
+    did = upload_csv(env, survey_df(n_reliability=40, n_support=40))
+    clean_and_apply(env, did)
+    seed_themes(env, did, two_tone_contrast_theme_specs())
+    assert build_report_job(env, did)["status"] == "done"
+
+    before = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    assert before["stale"] is False
+    with env.Session() as s:
+        rows = s.scalars(select(Finding).where(Finding.dataset_id == did)).all()
+        assert len(rows) >= 2
+        rows[0].theme_id = None
+        rows[1].theme_id = 999999
+        orphaned = {rows[0].id, rows[1].id}
+        s.commit()
+
+    after = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    assert after["stale"] is True
+    for b in after["blocks"]:
+        if b["finding_id"] in orphaned:
+            assert "no longer exists" in b["chart_html"]
+            assert not b.get("chart_variants")

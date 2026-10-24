@@ -583,6 +583,14 @@ export default function Themes() {
 
       {themes !== null && report && !manageThemes && (
         <>
+          {report.stale && (
+            <div className="report-stale" role="status">
+              <span>The themes changed after this report was built, so some findings describe themes that no longer exist.</span>
+              <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={reportRunning}>
+                {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
+              </button>
+            </div>
+          )}
           <ReportView
             report={report}
             datasetId={id}

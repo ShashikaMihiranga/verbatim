@@ -95,3 +95,11 @@
 .report-foot { justify-content: space-between; }
 .report-foot-group { display: flex; flex-wrap: wrap; gap: 12px; }
 .report-foot .btn { min-width: 0; padding: 0 20px; }
+
+/* Shown when a report's findings refer to themes that no longer exist (report.stale). */
+.report-stale {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px;
+  margin: 24px 0; padding: 14px 18px; border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: 8px; background: var(--surface); font-size: 15px; line-height: 1.5;
+}
+.report-stale span { flex: 1 1 320px; min-width: 0; }

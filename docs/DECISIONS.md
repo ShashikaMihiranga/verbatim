@@ -2929,3 +2929,28 @@ estimated from theme averages, not per-answer scores.
 **Verified:** backend 891 passed (5 new regression tests confirmed to fail on the old code), frontend
 110 passed, tsc clean, lint back to its 6 existing warnings; live on dataset 11 with each fix screenshot-
 checked and no console errors.
+
+## 2026-10-24 (same sentiment sun repeated across findings: stale report after a theme rebuild)
+
+User screenshot (dataset 12): five "more positive than overall" findings each showed the same
+full-dataset sentiment sun. The five charts were byte-identical and all outlined "Temperature control".
+Cause: the findings referenced theme ids 241/244/218/245/204 (and labels such as "Positive overall
+building experience") that no longer exist - themes were rebuilt (now ids 263+) after the report was
+built. Two bugs:
+
+1. **A full theme rebuild never invalidated the report.** Rename/merge/split already call
+   `_invalidate_report_for_edit`; `_write_theme_rows` (the rebuild) did not. It now does, so a rebuild
+   returns the page to its existing "Build report" state. "Look inside Other" deliberately keeps the
+   report (the page refetches it and shows the results inside it), so it is not invalidated.
+2. **An orphaned finding borrowed another theme's chart.** With its theme gone (a dangling id on SQLite;
+   NULL on Postgres via `ON DELETE SET NULL`, which skipped highlighting altogether) the block fell back
+   to the report's default selected theme. `app/api_report.py` now detects findings whose theme is not
+   among the current themes, shows "The theme this finding describes no longer exists ... Rebuild the
+   report" instead of a chart (no variants), and returns `stale: true`; `Themes.tsx` shows a notice with
+   a Rebuild button. Covers reports that are already stale, and Other being emptied by look-inside.
+
+Tests (both fail on the previous code): a rebuild drops only that column's report; findings with a NULL
+or dangling theme id are marked and the report is flagged stale. Backend 898 passed, frontend 110.
+Live: dataset 12's report now reads `stale: true` with the notice; clicking Rebuild writes fresh
+findings (a Claude call, left to the user). The `:8000` page serves the built `frontend/dist` (built
+21:39, before this change) - the notice appears there after `npm run build`, or on the `:5173` dev server.
