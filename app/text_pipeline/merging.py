@@ -60,8 +60,34 @@ def merge_groups(cluster_ids: list[int], edges: dict[int, list[int]]) -> list[li
     return [sorted(group) for group in components.values()]
 
 
+def star_groups(nodes: list[list[int]], edges: dict[int, list[int]], size_by_id: dict[int, int]) -> list[list[int]]:
+    """Chain-free alternative to `merge_groups` (docs/BUGS.md BUG-032). `nodes` are groups of cluster ids
+    that always stay together (same label); `edges` are `merge_with` edges, undirected. Largest node first,
+    each unclaimed node becomes an anchor and takes only the unclaimed nodes DIRECTLY linked to it, so A-B
+    and B-C never pull C in under A's label unless A and C are linked themselves. Union-find would join
+    the whole chain and keep only the biggest cluster's label, dropping every narrower one."""
+    node_of = {cid: i for i, node in enumerate(nodes) for cid in node}
+    adjacent: list[set[int]] = [set() for _ in nodes]
+    for cid, targets in edges.items():
+        for target in targets:
+            if cid in node_of and target in node_of and node_of[cid] != node_of[target]:
+                adjacent[node_of[cid]].add(node_of[target])
+                adjacent[node_of[target]].add(node_of[cid])
+    order = sorted(range(len(nodes)), key=lambda i: (-sum(size_by_id[c] for c in nodes[i]), min(nodes[i])))
+    claimed: set[int] = set()
+    groups: list[list[int]] = []
+    for anchor in order:
+        if anchor in claimed:
+            continue
+        members = [anchor] + [i for i in order if i not in claimed and i != anchor and i in adjacent[anchor]]
+        claimed.update(members)
+        groups.append(sorted(cid for i in members for cid in nodes[i]))
+    return groups
+
+
 def _merge_one_level(
     cluster_ids: list[int], cluster_by_id: dict[int, Cluster], label_by_id: dict[int, ThemeLabel],
+    *, allow_chains: bool = True,
 ) -> tuple[list[Cluster], list[ThemeLabel]]:
     """Shared by `apply_merges` (top-level themes) and `apply_sub_merges` (one parent's own sub-themes):
     groups `cluster_ids` by `merge_with` (already filtered to this same id space by the caller - see
@@ -74,15 +100,21 @@ def _merge_one_level(
     (e.g. "Fit and sizing" x10) far more reliably than it exhaustively cross-references every one of those
     clusters against every other via `merge_with` - a same-label pair is useless to show as two separate
     boxes regardless of why Claude didn't also flag it, so two clusters sharing the exact same label
-    (case/whitespace-insensitive) are merged as a code-level guarantee, independent of `merge_with`."""
+    (case/whitespace-insensitive) are merged as a code-level guarantee, independent of `merge_with`.
+
+    `allow_chains=False` (Look inside Other, BUG-032) groups `merge_with` edges with `star_groups` instead
+    of union-find; same-label clusters still always merge."""
     edges: dict[int, list[int]] = {cid: list(label_by_id[cid].merge_with) for cid in cluster_ids}
     by_label: dict[str, list[int]] = {}
     for cid in cluster_ids:
         by_label.setdefault(label_by_id[cid].label.strip().lower(), []).append(cid)
-    for same_label_ids in by_label.values():
-        for cid in same_label_ids[1:]:
-            edges.setdefault(same_label_ids[0], []).append(cid)
-    groups = merge_groups(cluster_ids, edges)
+    if allow_chains:
+        for same_label_ids in by_label.values():
+            for cid in same_label_ids[1:]:
+                edges.setdefault(same_label_ids[0], []).append(cid)
+        groups = merge_groups(cluster_ids, edges)
+    else:
+        groups = star_groups(list(by_label.values()), edges, {cid: label_by_id[cid].size for cid in cluster_ids})
     groups.sort(key=lambda g: sum(label_by_id[cid].size for cid in g), reverse=True)
 
     new_clusters: list[Cluster] = []
@@ -103,7 +135,9 @@ def _merge_one_level(
     return new_clusters, new_labels
 
 
-def apply_merges(result: ClusterResult, labels: list[ThemeLabel]) -> tuple[ClusterResult, list[ThemeLabel]]:
+def apply_merges(
+    result: ClusterResult, labels: list[ThemeLabel], *, allow_chains: bool = True,
+) -> tuple[ClusterResult, list[ThemeLabel]]:
     """Consolidates `result.clusters`/`labels` per `merge_groups`, run over every real (non-"Other")
     cluster - "Other" (`cluster_id == OTHER_CLUSTER_ID`) is excluded from the merge graph entirely and
     passed through unchanged, since it's a locally-synthesized catch-all, never a real Claude-named
@@ -113,7 +147,8 @@ def apply_merges(result: ClusterResult, labels: list[ThemeLabel]) -> tuple[Clust
     largest-first) and a new `labels` list (merged real themes first, in the rebuilt result's own order,
     then the "Other" entry if one existed) - both are drop-in replacements for their inputs at every
     downstream call site (`sub_cluster_themes`, `_write_theme_rows`), which read `ClusterResult`/
-    `ThemeLabel` by their ordinary shape and need no changes to consume a merged result."""
+    `ThemeLabel` by their ordinary shape and need no changes to consume a merged result. `allow_chains`:
+    see `_merge_one_level`."""
     other_labels = [l for l in labels if l.cluster_id == OTHER_CLUSTER_ID]
     real_labels = [l for l in labels if l.cluster_id != OTHER_CLUSTER_ID]
     if not real_labels:
@@ -121,7 +156,9 @@ def apply_merges(result: ClusterResult, labels: list[ThemeLabel]) -> tuple[Clust
 
     cluster_by_id = {c.id: c for c in result.clusters}
     label_by_id = {l.cluster_id: l for l in real_labels}
-    new_clusters, new_labels = _merge_one_level(list(label_by_id), cluster_by_id, label_by_id)
+    new_clusters, new_labels = _merge_one_level(
+        list(label_by_id), cluster_by_id, label_by_id, allow_chains=allow_chains,
+    )
 
     new_result = ClusterResult(
         column=result.column, clusters=new_clusters, noise=result.noise, total_answers=result.total_answers,

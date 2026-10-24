@@ -1107,6 +1107,7 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
     # not reconstructed from a second query.
     assert job["result"] == {
         "known_added": 3, "new_themes": [], "still_other_count": 0, "failed_classification_count": 0,
+        "low_confidence_count": 0, "non_answer_count": 0,
         # Inside Other panel fields (docs/REPORT_UI_REWORK.md Phase 1): Other held 3 before, 5 + 3 answered.
         "other_before_count": 3, "answered_total": 8, "known_gains": [{"label": "Cost", "count": 3}],
     }
@@ -1172,6 +1173,64 @@ def test_look_inside_other_end_to_end_finds_real_new_themes_with_charts(env):
         assert "<!doctype html>" not in chart["chart_html"].lower()
 
 
+def test_look_inside_other_never_makes_a_theme_of_non_answers(env):
+    """BUG-048: Claude flags the reliability candidate as a non-answer. It must not become a theme, its
+    answers must never go to Jev (so not even a known theme can take them), and they stay in Other."""
+    def claude_reply(prompt):
+        payload = json.loads(prompt)
+        themes = []
+        for c in payload["clusters"]:
+            junk = any(w in " ".join(c["sample_answers"]) for w in _WORDS_RELIABILITY)
+            themes.append({"cluster_id": c["cluster_id"], "label": "No comment provided" if junk else "Support",
+                           "description": "x", "merge_with": [], "note": None, "non_answer": junk})
+        return json.dumps({"themes": themes})
+
+    claude = FakeLabelingClaudeClient(claude_reply)
+    jev = FakeJevClient(("pos", 0.8), choice_result=lambda t, k, i, criteria: ChoiceAnswer(
+        choice=next(l for l in criteria if l != NONE_OF_THESE), confidence=0.9, probabilities={}))
+    app.dependency_overrides[get_embedding_client] = lambda: FakeEmbeddingClient()
+    app.dependency_overrides[get_claude_client] = lambda: claude
+    app.dependency_overrides[get_jev_client] = lambda: jev
+    did = upload_csv(env, theme_df())  # 26 rows: 0-12 reliability, 13-25 support
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="Other", description="x", size=26, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=list(range(26)))
+
+    job = look_inside_other_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert "non_answer" in claude.calls[0]["system"]  # Look inside asks for the flag
+    result = job["result"]
+    assert result["non_answer_count"] > 0
+    assert "No comment provided" not in {nt["label"] for nt in result["new_themes"]}
+    sent = {c["text"] for c in jev.choice_calls}
+    assert all("No comment provided" not in c["criteria"] for c in jev.choice_calls)
+    themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    assert "No comment provided" not in {t["label"] for t in themes}
+    other = next(t for t in themes if t["label"] == "Other")
+    assert other["size"] >= result["non_answer_count"]
+    assert len(jev.choice_calls) == 26 - result["non_answer_count"]  # non-answers never reach Jev
+    assert not any(w in text for text in sent for w in ("battery", "overheats", "drains"))
+
+
+def test_look_inside_other_low_confidence_matches_stay_in_other(env):
+    """BUG-032: a Jev pick below MIN_MATCH_CONFIDENCE leaves the answer in Other instead of growing a theme."""
+    install_look_inside_other_fakes(jev_choice_result=ChoiceAnswer(choice="Cost", confidence=0.3, probabilities={}))
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="Cost", description="About pricing.", size=5, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4])
+    seed_theme(env, did, label="Other", description="x", size=3, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[13, 14, 15])
+
+    job = look_inside_other_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert job["result"]["known_added"] == 0
+    assert job["result"]["still_other_count"] == 3
+    assert job["result"]["low_confidence_count"] == 3
+    themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    assert next(t for t in themes if t["label"] == "Cost")["size"] == 5
+
+
 # ---------------------------------------------------------------- _apply_other_classification (direct,
 # unit-level: the DB write-back logic itself, independent of the route/job wrapper above)
 
@@ -1202,6 +1261,7 @@ def test_apply_other_classification_extends_a_known_theme(env):
         assert s.get(Theme, other_id) is None  # both rows matched - nothing left, row deleted
         assert summary == {
             "known_added": 2, "new_themes": [], "still_other_count": 0, "failed_classification_count": 0,
+            "low_confidence_count": 0, "non_answer_count": 0,
             "other_before_count": 2, "answered_total": 7, "known_gains": [{"label": "Cost", "count": 2}],
         }
 
@@ -1254,6 +1314,7 @@ def test_apply_other_classification_below_minimum_new_theme_folds_back_into_othe
         assert sorted(other.answer_refs) == sorted(too_few)  # folded straight back into Other
         assert summary == {
             "known_added": 0, "new_themes": [], "still_other_count": len(too_few), "failed_classification_count": 0,
+            "low_confidence_count": 0, "non_answer_count": 0,
             "other_before_count": len(too_few), "answered_total": 5 + len(too_few), "known_gains": [],
         }
 
@@ -1302,6 +1363,7 @@ def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other
         summary = _apply_other_classification(s, did, Q, other_id, by_row, {}, row_text, failed_count=1)
         assert summary == {
             "known_added": 0, "new_themes": [], "still_other_count": 3, "failed_classification_count": 1,
+            "low_confidence_count": 0, "non_answer_count": 0,
             "other_before_count": 3, "answered_total": 8, "known_gains": [],
         }
     with env.Session() as s:

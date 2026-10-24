@@ -15,7 +15,8 @@ good at, not inventing a third approach:
      dataset's known theme labels with the newly consolidated candidate labels, plus an explicit "none
      of these" option - deliberately explicit rather than a confidence-threshold guess, so Jev's own
      calibration (not an arbitrary cutoff this module would have to pick) decides what is genuinely
-     still unclassifiable.
+     still unclassifiable. (Since BUG-032 a pick Jev itself rates below 50% also stays in Other - see
+     `MIN_MATCH_CONFIDENCE`.)
   4. Run EVERY Other-bucket answer through Jev with that one question (`classify_other_answers` below) -
      cheap, high-volume, fixed-choice - exactly the profile that already motivated using Jev for
      sentiment (see `jev_sentiment.py`'s own docstring).
@@ -54,6 +55,15 @@ NONE_OF_THESE_DESCRIPTION = (
 # matching the rest of this codebase's `os.environ.get("...", default)` convention.
 DEFAULT_CLASSIFY_CONCURRENCY = max(1, int(os.environ.get("JEV_CLASSIFY_CONCURRENCY", "8") or 8))
 
+# A Jev theme match below this confidence stays in Other (docs/BUGS.md BUG-032). Jev's confidence is its
+# probability for the chosen option, so below 0.5 its own numbers say the answer is more likely NOT that
+# theme (some other option, or "None of these", holds the larger share) - the same "does not clearly
+# match" bar NONE_OF_THESE_DESCRIPTION asks for, and independent of how many options were offered.
+# Conservative on purpose: on dataset 12 one broad new label took 5,833 of 6,041 answers, and a broad
+# label is exactly what a weak "closest of many" pick lands on; an answer wrongly left in Other can still
+# be found by a later run, while one wrongly put in a theme is invisible.
+MIN_MATCH_CONFIDENCE = 0.5
+
 
 def recluster_other(
     row_indexes: list[int], texts: list[str], vectors: list[list[float]],
@@ -88,13 +98,16 @@ def recluster_other(
 class ConsolidatedCandidates:
     """Output of labeling + merging the raw clusters `recluster_other` found - everything downstream
     needs: the merged `ClusterResult` (for `answer_refs` per new theme) and its matching labels, already
-    reusing `labeling.py`'s own `size`-from-`len(members)` discipline (never trusted from a reply)."""
+    reusing `labeling.py`'s own `size`-from-`len(members)` discipline (never trusted from a reply).
+    `non_answer_rows`: members of candidates Claude flagged as non-answers (`for_other=True` only) - never
+    a theme, and the caller keeps them in Other without classifying them (BUG-048)."""
     result: ClusterResult
     labels: list[ThemeLabel]
+    non_answer_rows: list[int] = field(default_factory=list)
 
 
 def label_and_consolidate(
-    result: ClusterResult, question: str, client: ClaudeClient,
+    result: ClusterResult, question: str, client: ClaudeClient, *, for_other: bool = False,
 ) -> ConsolidatedCandidates:
     """Labels every raw candidate cluster `recluster_other` found with ONE batched Claude call
     (`label_clusters_with_retry`, completely unchanged - same retry-once-on-a-malformed-reply behaviour
@@ -103,13 +116,30 @@ def label_and_consolidate(
     normal build, just applied to the Other-bucket's own re-clustered candidates. No noise/"Other" entry
     is synthesized here (`result.noise`, if any, is simply dropped - see the module docstring: whatever
     Jev's own "None of these" classification later decides is still unclassifiable is this feature's own
-    answer to leftover noise, not a second, locally-synthesized "Other"-within-"Other")."""
-    labels = label_clusters_with_retry(result, question, client)
+    answer to leftover noise, not a second, locally-synthesized "Other"-within-"Other").
+
+    `for_other=True` (Look inside Other; split keeps the default) adds two guards found on dataset 12:
+      - BUG-048: Claude also flags each candidate as a non-answer or not (`NON_ANSWER_SYSTEM`). A flagged
+        candidate is dropped before merging, so it can never become a theme, and its rows come back in
+        `non_answer_rows`.
+      - BUG-032: merges never chain (`apply_merges(allow_chains=False)`), so one broad label cannot
+        swallow a run of narrower candidates and leave Jev only that broad label to choose."""
+    labels = label_clusters_with_retry(result, question, client, flag_non_answers=for_other)
     real_labels = [l for l in labels if l.cluster_id != OTHER_CLUSTER_ID]  # drop any synthesized "Other"
+    non_answer_ids = {l.cluster_id for l in real_labels if l.non_answer}
+    non_answer_rows = [m.row for c in result.clusters if c.id in non_answer_ids for m in c.members]
+    real_labels = [l for l in real_labels if not l.non_answer]
     if not real_labels:
-        return ConsolidatedCandidates(result=ClusterResult(column=result.column, clusters=[], noise=[], total_answers=result.total_answers), labels=[])
-    merged_result, merged_labels = apply_merges(result, real_labels)
-    return ConsolidatedCandidates(result=merged_result, labels=merged_labels)
+        return ConsolidatedCandidates(
+            result=ClusterResult(column=result.column, clusters=[], noise=[], total_answers=result.total_answers),
+            labels=[], non_answer_rows=non_answer_rows,
+        )
+    kept = ClusterResult(
+        column=result.column, clusters=[c for c in result.clusters if c.id not in non_answer_ids],
+        noise=result.noise, total_answers=result.total_answers,
+    )
+    merged_result, merged_labels = apply_merges(kept, real_labels, allow_chains=not for_other)
+    return ConsolidatedCandidates(result=merged_result, labels=merged_labels, non_answer_rows=non_answer_rows)
 
 
 def build_classification_question(
@@ -135,12 +165,11 @@ def build_classification_question(
 class OtherClassification:
     """Per-answer results of running every Other-bucket answer through Jev with one shared question.
     `by_row` is the authoritative result (row -> the chosen label, `NONE_OF_THESE` for "still
-    unclassifiable"); `low_confidence_rows` is tracked separately (not folded into a different label)
-    so a caller can choose its own policy for a low-confidence match - this module does not decide one,
-    consistent with every other confidence-carrying result in this pipeline (`AnswerScore`, `ThemeLabel`'s
-    own confidence handling) never silently discarding the number."""
+    unclassifiable"). A match below `MIN_MATCH_CONFIDENCE` is already `NONE_OF_THESE` in `by_row` and is
+    listed in `low_confidence_rows`; `confidence_by_row` keeps Jev's raw number for every answered row."""
     by_row: dict[int, str] = field(default_factory=dict)
     confidence_by_row: dict[int, float] = field(default_factory=dict)
+    low_confidence_rows: list[int] = field(default_factory=list)  # Jev picked a theme, but below the floor
     failed_rows: list[int] = field(default_factory=list)  # a row whose Jev call raised, text never lost
     sample_error: str | None = None  # the first failure's message, e.g. "JevError: Jev returned HTTP 402."
 
@@ -153,6 +182,7 @@ def classify_other_answers(
     *,
     instructions: str = "Classify which theme this survey answer is about.",
     concurrency: int = DEFAULT_CLASSIFY_CONCURRENCY,
+    min_confidence: float = MIN_MATCH_CONFIDENCE,
     on_progress: Callable[[int, int, dict[int, str], list[int]], None] | None = None,
     progress_interval: float = 1.0,
 ) -> OtherClassification:
@@ -169,7 +199,10 @@ def classify_other_answers(
     report `failed_rows` either - a 19,799-row job that failed 19,799/19,799 times on an auth error
     finished looking like a clean, legitimate zero-match result. Now logs once per call (not once per
     row - this can run at thousands of rows), at `warning` for any failures and `error` when EVERY row
-    failed (the systemic case), with one sample exception message to point at the real cause."""
+    failed (the systemic case), with one sample exception message to point at the real cause.
+
+    A theme match below `min_confidence` (default `MIN_MATCH_CONFIDENCE`) is recorded as `NONE_OF_THESE`,
+    so the answer stays in Other (BUG-032)."""
     out = OtherClassification()
     if not row_indexes:
         return out
@@ -191,6 +224,10 @@ def classify_other_answers(
             if answer is None:
                 out.failed_rows.append(row)
                 sample_error = sample_error or error
+            elif answer.choice != NONE_OF_THESE and answer.confidence < min_confidence:
+                out.by_row[row] = NONE_OF_THESE
+                out.confidence_by_row[row] = answer.confidence
+                out.low_confidence_rows.append(row)
             else:
                 out.by_row[row] = answer.choice
                 out.confidence_by_row[row] = answer.confidence

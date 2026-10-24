@@ -91,6 +91,18 @@ SYSTEM = (
     "count, percentage, or share for any cluster in your reply."
 )
 
+# Appended to SYSTEM only for "Look inside Other" (docs/BUGS.md BUG-048): its candidates come from the
+# answers the normal build could not place, which is where non-answers collect, and a candidate cluster of
+# them used to become a theme ("No comment provided", "Survey not applicable or irrelevant"). A per-cluster
+# flag lets code drop them structurally instead of guessing from the label's wording.
+NON_ANSWER_SYSTEM = (
+    ' Also give every entry a "non_answer" field, true or false. It is true only when the cluster\'s '
+    "answers do not answer the survey question at all: placeholders or refusals (\"no comment\", \"n/a\", "
+    "\"nothing to add\", \"none\"), saying the question does not apply to them, or only pointing elsewhere "
+    "(\"see above\", \"as I said before\"). It is false for any cluster with real content, even if that "
+    "content is short, vague, general, or a complaint about the survey itself."
+)
+
 SUB_SYSTEM = (
     "You help summarise open-ended survey answers that an automatic algorithm has already grouped into "
     "sub-clusters WITHIN a larger parent theme. You are given the survey question and, for each "
@@ -302,12 +314,17 @@ def _parse_response(text: str, expected_ids: set[int]) -> dict[int, dict[str, An
         if note is not None and not isinstance(note, str):
             raise LabelingError(f"Claude's reply had an invalid note for cluster {cluster_id}.", text)
 
+        non_answer = item.get("non_answer", False)  # only asked for with NON_ANSWER_SYSTEM; absent = False
+        if not isinstance(non_answer, bool):
+            raise LabelingError(f"Claude's reply had an invalid non_answer for cluster {cluster_id}.", text)
+
         by_id[cluster_id] = {
             "label": label.strip()[:120],
             "description": description.strip()[:400],
             # Only ids we actually sent, and never the cluster's own id, survive into the result.
             "merge_with": sorted({m for m in merge_with if m in expected_ids and m != cluster_id}),
             "note": note.strip()[:240] if isinstance(note, str) and note.strip() else None,
+            "non_answer": non_answer,
         }
 
     missing = expected_ids - by_id.keys()
@@ -334,6 +351,8 @@ def label_clusters(
     question: str,
     client: ClaudeClient,
     samples_per_cluster: int = DEFAULT_SAMPLES_PER_CLUSTER,
+    *,
+    flag_non_answers: bool = False,
 ) -> list[ThemeLabel]:
     """Label every cluster in `result.clusters` with one batched call to `client` (SPEC.md: "One
     batched call for all clusters" - never one call per cluster), plus a locally-synthesized "Other"
@@ -346,6 +365,9 @@ def label_clusters(
 
     Raises `LabelingError` (carrying the raw reply) if the reply cannot be trusted as theme labels -
     not valid JSON, missing an entry for a cluster id it was given, or a field of the wrong type.
+
+    `flag_non_answers=True` (Look inside Other) also asks for `NON_ANSWER_SYSTEM`'s per-cluster flag,
+    returned as `ThemeLabel.non_answer`.
     """
     labels: list[ThemeLabel] = []
 
@@ -354,7 +376,8 @@ def label_clusters(
         prompt = _build_prompt(result.clusters, question, samples_per_cluster)
         max_tokens = _max_tokens_for(len(result.clusters))
         log.info("Theme labeling: %d clusters, max_tokens=%d", len(result.clusters), max_tokens)
-        raw_response = client.complete(SYSTEM, prompt, max_tokens=max_tokens)
+        system = SYSTEM + NON_ANSWER_SYSTEM if flag_non_answers else SYSTEM
+        raw_response = client.complete(system, prompt, max_tokens=max_tokens)
         parsed = _parse_response(raw_response, expected_ids)
         for cluster in result.clusters:
             item = parsed[cluster.id]
@@ -366,6 +389,7 @@ def label_clusters(
                     size=len(cluster.members),
                     merge_with=item["merge_with"],
                     note=item["note"],
+                    non_answer=flag_non_answers and item["non_answer"],
                 )
             )
 
@@ -407,6 +431,8 @@ def label_clusters_with_retry(
     question: str,
     client: ClaudeClient,
     samples_per_cluster: int = DEFAULT_SAMPLES_PER_CLUSTER,
+    *,
+    flag_non_answers: bool = False,
 ) -> list[ThemeLabel]:
     """`label_clusters`, retried once on `LabelingError` before giving up - see
     `_retry_on_labeling_error`'s own docstring for why. This is the one real top-level theme labeling
@@ -414,7 +440,8 @@ def label_clusters_with_retry(
     sub-themes" rather than failing the build - see `app/api_themes.py::_work`), so it is the call this
     retry matters most for."""
     return _retry_on_labeling_error(
-        lambda: label_clusters(result, question, client, samples_per_cluster), what="Theme labeling",
+        lambda: label_clusters(result, question, client, samples_per_cluster, flag_non_answers=flag_non_answers),
+        what="Theme labeling",
     )
 
 

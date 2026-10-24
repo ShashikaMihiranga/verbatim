@@ -17,8 +17,10 @@ from app.text_pipeline.labeling import (
     LABELING_RETRY_ATTEMPTS,
     MAX_TOKENS,
     MAX_TOKENS_CEILING,
+    NON_ANSWER_SYSTEM,
     OTHER_CLUSTER_ID,
     OTHER_LABEL,
+    SYSTEM,
     TOKENS_PER_CLUSTER,
     _max_tokens_for,
 )
@@ -216,6 +218,46 @@ def test_prose_wrapped_json_is_still_parsed():
 
     labels = label_clusters(result, QUESTION, client)
     assert labels[0].label == "Theme 0"
+
+
+# ---------------------------------------------------------------- non-answer flag (BUG-048)
+
+
+def test_flag_non_answers_asks_for_the_flag_and_returns_it():
+    clusters = [make_cluster(0, ["no comment", "n/a"]), make_cluster(1, ["too hot", "too cold"])]
+    client = FakeClaudeClient(json.dumps({"themes": [
+        {"cluster_id": 0, "label": "No comment", "description": "x", "merge_with": [], "note": None, "non_answer": True},
+        {"cluster_id": 1, "label": "Temperature", "description": "y", "merge_with": [], "note": None, "non_answer": False},
+    ]}))
+
+    labels = label_clusters(make_result(clusters), QUESTION, client, flag_non_answers=True)
+
+    assert client.calls[0]["system"] == SYSTEM + NON_ANSWER_SYSTEM
+    assert [l.non_answer for l in labels] == [True, False]
+
+
+def test_without_the_option_the_prompt_is_unchanged_and_nothing_is_flagged():
+    clusters = [make_cluster(0, ["no comment", "n/a"])]
+    client = FakeClaudeClient(json.dumps({"themes": [
+        {"cluster_id": 0, "label": "No comment", "description": "x", "merge_with": [], "note": None, "non_answer": True},
+    ]}))
+
+    labels = label_clusters(make_result(clusters), QUESTION, client)
+
+    assert client.calls[0]["system"] == SYSTEM
+    assert labels[0].non_answer is False
+
+
+def test_missing_non_answer_field_means_false_and_a_bad_one_raises():
+    clusters = [make_cluster(0, ["a", "b"])]
+    labels = label_clusters(make_result(clusters), QUESTION, FakeClaudeClient(reply_for([0])), flag_non_answers=True)
+    assert labels[0].non_answer is False
+
+    bad = FakeClaudeClient(json.dumps({"themes": [
+        {"cluster_id": 0, "label": "X", "description": "Y", "merge_with": [], "note": None, "non_answer": "yes"},
+    ]}))
+    with pytest.raises(LabelingError):
+        label_clusters(make_result(clusters), QUESTION, bad, flag_non_answers=True)
 
 
 # ---------------------------------------------------------------- missing API key

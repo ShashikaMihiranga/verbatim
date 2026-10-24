@@ -422,6 +422,8 @@ def _apply_other_classification(
     vec_by_row: dict[int, list[float]] | None = None,
     question: str | None = None, claude_client: ClaudeClient | None = None,
     failed_count: int = 0,
+    low_confidence_count: int = 0,
+    non_answer_count: int = 0,
 ) -> dict | None:
     """Writes "Look inside Other"'s results: UPDATES, not `_write_theme_rows`'s full delete-and-replace
     (that would also wipe every untouched known theme). `by_row` is `other_classify.OtherClassification
@@ -457,6 +459,9 @@ def _apply_other_classification(
     visible in the job's own result instead of looking identical to a legitimate "nothing matched"
     outcome. A failed row already stays in Other either way (see this docstring's own note above) -
     this only changes what gets REPORTED, never what gets written.
+
+    `low_confidence_count` (BUG-032) and `non_answer_count` (BUG-048) are reported the same way: rows the
+    caller already left out of `by_row` or set to `NONE_OF_THESE`, so they stay in Other here.
 
     Returns a small summary dict (Stage 3, docs/TODO.md 2026-10-21/23: the animated flow's own
     Known/New/Still-in-Other results panel and its own result-chart tabs need these real numbers, not a
@@ -595,6 +600,7 @@ def _apply_other_classification(
     return {
         "known_added": known_added, "new_themes": new_themes_summary, "still_other_count": len(still_other),
         "failed_classification_count": failed_count,
+        "low_confidence_count": low_confidence_count, "non_answer_count": non_answer_count,
         "other_before_count": other_before_count, "answered_total": answered_total,
         "known_gains": [{"label": label, "count": len(rows)}
                         for label, rows in sorted(matched_known.items(), key=lambda kv: -len(kv[1]))],
@@ -880,8 +886,13 @@ def look_inside_other(
         reclustered = recluster_other(rows, texts, vectors)
 
         step("Naming new themes")
-        candidates = label_and_consolidate(reclustered, question, claude_client)
+        candidates = label_and_consolidate(reclustered, question, claude_client, for_other=True)
         criteria, new_label_descriptions = build_classification_question(known_themes, candidates)
+        # Non-answers ("no comment", "n/a") never go to Jev: missing from `by_row`, they stay in Other
+        # (BUG-048), and cannot be pulled into a known theme either.
+        non_answer_rows = set(candidates.non_answer_rows)
+        classify_rows = [r for r in rows if r not in non_answer_rows]
+        classify_texts = [row_text[r] for r in classify_rows]
 
         step("Matching answers to themes")
 
@@ -900,11 +911,13 @@ def look_inside_other(
                     still += 1
             set_progress(job.id, {"done": done, "total": total, "known": known, "new": new, "still_other": still})
 
-        classification = classify_other_answers(rows, texts, criteria, jev_client, on_progress=_progress)
-        if rows and len(classification.failed_rows) == len(rows):
+        classification = classify_other_answers(
+            classify_rows, classify_texts, criteria, jev_client, on_progress=_progress,
+        )
+        if classify_rows and len(classification.failed_rows) == len(classify_rows):
             # Every call failed: a systemic problem (key, credit, outage), not "nothing matched". Fail the
             # job before anything is applied, with the real reason (docs/BUGS.md BUG-040).
-            raise JevError(_all_rows_failed_message(len(rows), classification.sample_error))
+            raise JevError(_all_rows_failed_message(len(classify_rows), classification.sample_error))
         step("Updating the report")
         vec_by_row = dict(zip(rows, vectors))
         with _db.SessionLocal() as job_db:
@@ -913,6 +926,8 @@ def look_inside_other(
                 classification.by_row, new_label_descriptions, row_text,
                 vec_by_row=vec_by_row, question=question, claude_client=claude_client,
                 failed_count=len(classification.failed_rows),
+                low_confidence_count=len(classification.low_confidence_rows),
+                non_answer_count=len(non_answer_rows),
             )
             # Result-chart fragments (Stage 3a, docs/TODO.md 2026-10-23): built in the SAME session,
             # right after the new Theme rows exist with real ids - re-queries by label rather than

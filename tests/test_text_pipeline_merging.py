@@ -4,7 +4,7 @@ why this exists: Claude's `merge_with` field was parsed and validated but never 
 this module."""
 from app.text_pipeline import Cluster, ClusterMember, ClusterResult, ThemeLabel
 from app.text_pipeline.labeling import OTHER_CLUSTER_ID
-from app.text_pipeline.merging import apply_merges, apply_sub_merges, merge_groups
+from app.text_pipeline.merging import apply_merges, apply_sub_merges, merge_groups, star_groups
 
 
 def _cluster(id_: int, n: int) -> Cluster:
@@ -203,3 +203,38 @@ def test_apply_sub_merges_keeps_parent_when_merge_leaves_two_or_more_groups():
 
 def test_apply_sub_merges_empty_input_is_a_no_op():
     assert apply_sub_merges({}, {}) == ({}, {})
+
+
+# ---------------------------------------------------------------------------------- no chaining (BUG-032)
+
+
+def test_star_groups_does_not_follow_a_chain_past_the_anchor():
+    """A-B and B-C, A largest: C was only ever linked to B, so it keeps its own group."""
+    assert star_groups([[0], [1], [2]], {0: [1], 1: [2]}, {0: 30, 1: 20, 2: 10}) == [[0, 1], [2]]
+
+
+def test_star_groups_largest_node_anchors_everything_it_links_directly():
+    assert star_groups([[0], [1], [2]], {0: [1], 1: [2]}, {0: 10, 1: 30, 2: 20}) == [[0, 1, 2]]
+
+
+def test_apply_merges_without_chains_keeps_narrow_labels_out_of_a_broad_one():
+    """The dataset 12 shape: a broad candidate flags one neighbour, which flags the next, and so on.
+    Union-find made one theme under the broad label; without chains only direct neighbours join it."""
+    result = ClusterResult(column="q", clusters=[_cluster(i, 10 - i) for i in range(4)], noise=[], total_answers=34)
+    labels = [_label(0, "Office layout and facility condition", 10, [1]), _label(1, "Cubicle walls", 9, [2]),
+              _label(2, "Desk handedness", 8, [3]), _label(3, "Desk furniture", 7)]
+
+    _res, chained_labels = apply_merges(result, labels)
+    assert [l.label for l in chained_labels] == ["Office layout and facility condition"]
+
+    _res, star_labels = apply_merges(result, labels, allow_chains=False)
+    assert [(l.label, l.size) for l in star_labels] == [
+        ("Office layout and facility condition", 19), ("Desk handedness", 15),
+    ]
+
+
+def test_apply_merges_without_chains_still_merges_same_label_clusters():
+    result = ClusterResult(column="q", clusters=[_cluster(0, 5), _cluster(1, 4), _cluster(2, 3)], noise=[], total_answers=12)
+    labels = [_label(0, "Fit", 5), _label(1, "fit ", 4), _label(2, "Price", 3)]
+    _res, new_labels = apply_merges(result, labels, allow_chains=False)
+    assert [(l.label, l.size) for l in new_labels] == [("Fit", 9), ("Price", 3)]

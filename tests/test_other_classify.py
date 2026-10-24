@@ -10,6 +10,7 @@ import pytest
 from app.text_pipeline.jev_sentiment import ChoiceAnswer, FakeJevClient, JevError
 from app.text_pipeline.labeling import FakeClaudeClient
 from app.text_pipeline.other_classify import (
+    MIN_MATCH_CONFIDENCE,
     NONE_OF_THESE,
     build_classification_question,
     classify_other_answers,
@@ -40,6 +41,15 @@ def reply_for(cluster_ids, **overrides):
         entry.update(overrides.get(cid, {}))
         themes.append(entry)
     return json.dumps({"themes": themes})
+
+
+def _reply_with(cluster_ids, overrides):
+    """`reply_for`, but with int cluster-id keys (keyword arguments cannot be ints)."""
+    return json.dumps({"themes": [
+        {"cluster_id": cid, "label": f"Theme {cid}", "description": f"About cluster {cid}.",
+         "merge_with": [], "note": None, **overrides.get(cid, {})}
+        for cid in cluster_ids
+    ]})
 
 
 # ---------------------------------------------------------------- recluster_other
@@ -123,6 +133,48 @@ def test_label_and_consolidate_drops_synthesized_other_entry():
 
     assert len(out.labels) == 1
     assert all(l.label != "Other" for l in out.labels)
+
+
+def test_label_and_consolidate_for_other_drops_non_answer_candidates():
+    """BUG-048: a candidate Claude flags as a non-answer never becomes a theme or a Jev option, even if a
+    real candidate points at it with merge_with; its rows come back so the caller keeps them in Other."""
+    clusters = [
+        make_cluster(0, ["too hot", "too cold", "thermostat broken"]),
+        make_cluster(1, ["no comment", "n/a"]),
+    ]
+    reply = _reply_with([0, 1], {
+        0: {"label": "Temperature", "merge_with": [1], "non_answer": False},
+        1: {"label": "No comment provided", "non_answer": True},
+    })
+    client = FakeClaudeClient(reply)
+
+    out = label_and_consolidate(make_result(clusters), QUESTION, client, for_other=True)
+
+    assert [(l.label, l.size) for l in out.labels] == [("Temperature", 3)]
+    assert sorted(out.non_answer_rows) == [100, 101]
+    assert sum(len(c.members) for c in out.result.clusters) == 3
+    criteria, new_labels = build_classification_question({}, out)
+    assert "No comment provided" not in criteria and "No comment provided" not in new_labels
+
+
+def test_label_and_consolidate_for_other_all_non_answers_returns_no_labels_but_the_rows():
+    clusters = [make_cluster(0, ["no comment", "nothing"])]
+    client = FakeClaudeClient(_reply_with([0], {0: {"non_answer": True}}))
+    out = label_and_consolidate(make_result(clusters), QUESTION, client, for_other=True)
+    assert out.labels == [] and sorted(out.non_answer_rows) == [0, 1]
+
+
+def test_label_and_consolidate_for_other_does_not_chain_merges():
+    """BUG-032: 0 flags 1, 1 flags 2. Only 1 joins 0; 2 keeps its own, narrower label."""
+    clusters = [make_cluster(0, ["a"] * 5), make_cluster(1, ["b"] * 4), make_cluster(2, ["c"] * 3)]
+    reply = _reply_with([0, 1, 2], {0: {"label": "Facility condition", "merge_with": [1]},
+                                    1: {"merge_with": [2]}, 2: {"label": "Desk handedness"}})
+
+    chained = label_and_consolidate(make_result(clusters), QUESTION, FakeClaudeClient(reply))
+    assert [l.label for l in chained.labels] == ["Facility condition"]  # split / default: unchanged
+
+    out = label_and_consolidate(make_result(clusters), QUESTION, FakeClaudeClient(reply), for_other=True)
+    assert [(l.label, l.size) for l in out.labels] == [("Facility condition", 9), ("Desk handedness", 3)]
 
 
 def test_label_and_consolidate_no_real_clusters_returns_empty():
@@ -252,6 +304,25 @@ def test_classify_other_answers_can_return_none_of_these():
     )
     out = classify_other_answers([1], ["totally unrelated answer"], _CRITERIA, client)
     assert out.by_row[1] == NONE_OF_THESE
+    assert out.low_confidence_rows == []  # "None of these" is never a low-confidence match
+
+
+def test_classify_other_answers_low_confidence_match_stays_in_other():
+    # BUG-032: a theme pick Jev itself rates below MIN_MATCH_CONFIDENCE is not trusted.
+    confidence = {"weak": MIN_MATCH_CONFIDENCE - 0.01, "edge": MIN_MATCH_CONFIDENCE, "sure": 0.9}
+
+    def pick(text, question_key, instructions, criteria):
+        return ChoiceAnswer(choice="Cost", confidence=confidence[text], probabilities={})
+
+    client = FakeJevClient(("pos", 0.9), choice_result=pick)
+    out = classify_other_answers([1, 2, 3], ["weak", "edge", "sure"], _CRITERIA, client)
+
+    assert out.by_row == {1: NONE_OF_THESE, 2: "Cost", 3: "Cost"}
+    assert out.low_confidence_rows == [1]
+    assert out.confidence_by_row[1] == pytest.approx(MIN_MATCH_CONFIDENCE - 0.01)  # raw number kept
+
+    out = classify_other_answers([1], ["weak"], _CRITERIA, client, min_confidence=0.0)
+    assert out.by_row == {1: "Cost"}
 
 
 def test_classify_other_answers_reports_live_progress_throttled_and_complete():
