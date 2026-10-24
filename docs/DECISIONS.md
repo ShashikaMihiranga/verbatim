@@ -3130,3 +3130,21 @@ User approved. When Jev rejects every Other answer (job 47 on dataset 11: HTTP 4
 now fails before anything is applied, with the reason and a hint for 402 (credit) and 401/403 (API key).
 Partial failures keep the old behaviour: the run finishes and the page shows "N answers could not be
 checked and stayed in Other." Test: `test_look_inside_other_fails_with_the_real_reason_when_every_answer_fails`.
+
+## 2026-10-25 (dataset 12 bug sweep: BUG-032 to BUG-049)
+
+User asked to fix every open bug, using subagents. Four subagents worked in separate git worktrees
+(findings; report charts; frontend; text pipeline) and Claude merged them into staging: `f35e9d5`
+(frontend, fast-forward), `b85d9f7`, `688ba21`, `79faf04`, `0a8a36a`, plus `ddc3852`. Backend 935, frontend
+128, tsc clean, lint 6. Defaults Claude chose where the user had not answered:
+- BUG-043: the treemap's folded block is named "N more themes" (or "Other and N more themes"); "Other" means
+  unthemed answers only.
+- BUG-048/BUG-032: Look inside drops groups the labeller flags as non-answers (they stay in Other), merges
+  candidate labels without chaining, and leaves Jev picks below confidence 0.5 in Other.
+- BUG-033: typographic apostrophes are normalised before sentiment scoring (scores shift slightly on
+  future builds).
+- BUG-041: a region skew is measured against the theme's share among answers that have a region, and must
+  survive rounding. This removes dataset 12's three false region findings once its report is rebuilt.
+Still open: BUG-031 (Rebuild report on dataset 12 - a paid call; Claude's attempt was blocked by the
+permission check) and BUG-034 (exact per-answer score-group sentiment needs paid calls or a stored column -
+user decision). Per-bug detail in `docs/BUGS.md`.

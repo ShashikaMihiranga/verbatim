@@ -19,7 +19,68 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Open
 
-- [ ] **BUG-041 — Region findings compare against the wrong baseline, so they are false (dataset 12)**
+- [ ] **BUG-031 — Dataset 12's report still shows findings for deleted themes**
+  - Found: 2026-10-24, Claude, dataset 12 report. Leftover from BUG-022, which stops it happening again.
+  - Cause: the report was built while a theme rebuild was running (BUG-022).
+  - Fix: press Rebuild report on dataset 12. **User's call** (one paid Claude call).
+  - 2026-10-25: still open. Rebuild report on dataset 12 is a paid call; Claude's attempt was blocked by the permission check, so the user clicks Rebuild report.
+- [ ] **BUG-034 — Score-group sentiment is an approximation, not computed per answer**
+  - Found: 2026-10-24, Claude, UI review of dataset 11.
+  - Fix: **needs a user decision** on whether to compute it exactly.
+  - 2026-10-25: investigated. The pill is a count-weighted average of each theme's stored sentiment; per-answer sentiment is not stored (DECISIONS 2026-09-25). Exact values need Jev calls or a stored per-answer column. **User decision**; behaviour unchanged.
+
+## Fixed
+
+- [x] **BUG-049 — A heatmap opened scrolled sideways, with its theme-name column cut off**
+  - Found: 2026-10-25, Claude, dataset 12 at 1568px: the first heatmap's scroll box was at its end
+    (32 of 32px), hiding the left labels.
+  - Cause: not found yet (no code scrolls it). Needs a repro.
+  - **Fixed:** `f35e9d5`. Defensive: charts open at scrollLeft 0 when content changes or resizes, and `overflow-anchor: none` on chart scroll boxes. Not reproduced; after the fix every chart box on dataset 12 opened at 0. Test: `ThemeChart.test.tsx` (3 jsdom tests).
+- [x] **BUG-048 — Dataset 12 has 120 themes, many of them junk ("No comment provided", "Survey not
+  applicable or irrelevant", "Non-substantive or referential response")**
+  - Found: 2026-10-25, Claude. Theme build gave 46 clusters; splits and repeated Look inside runs added the
+    rest. Look inside creates new themes from non-answers.
+  - Fix: needs a user decision; ties in with BUG-032.
+  - **Fixed:** `0a8a36a`. Look inside asks the labeller to flag non-answer groups (`non_answer`); flagged groups never become themes and their answers stay in Other, never sent to Jev. Result gains `non_answer_count`. Tests in `test_text_pipeline_labeling.py`, `test_other_classify.py`, `test_api_themes.py`. Dataset 12's existing junk themes are still there (needs a merge or a theme rebuild).
+- [x] **BUG-047 — While the report loads (about 6 s on dataset 12), the page shows the theme-editing view
+  with "Build report"**
+  - Found: 2026-10-25, user (second screenshot) and Claude. `GET /report` takes 5.7 s; until it returns the
+    page shows the treemap, theme card, a 121-checkbox merge list and "Ready to build the report".
+  - Fix: proposed - show a loading line for the report instead of the editing view; make the merge list
+    a search box rather than 121 checkboxes.
+  - **Fixed:** `aac60fc`. A "Loading the report..." line until the report fetch finishes; the editing view and "Build report" only after a 404 or Manage themes. Merge list gets a filter box (9+ themes). Test: `themes-loading.test.tsx`.
+- [x] **BUG-046 — "Done. Everything is updated above." while the report is stale**
+  - Found: 2026-10-25, dataset 12: Look inside finished after the report was built; the findings are still
+    the old ones (stale banner at the top).
+  - Fix: proposed - when the report is stale say "Done. Rebuild the report to update the findings."
+  - **Fixed:** `7173d44`. Stale report: "Done. Rebuild the report to update the findings." Test: `inside-other.test.tsx`.
+- [x] **BUG-045 — Known themes in Inside Other show "+0%" for real gains**
+  - Found: 2026-10-25, dataset 12: 18 answers out of 39,718 rounds to 0.0%, printed as "+0%".
+  - Fix: proposed - print the answer count when the share rounds to 0 (e.g. "+18").
+  - **Fixed:** `7173d44` + `ddc3852`. A share under 0.1% prints the answer count ("+18"), and a list uses one unit for all rows (no mixed "0.1%" and "19"). Tests: `inside-other.test.tsx`, `inside-other-model.test.ts`.
+- [x] **BUG-044 — The overview draws the icicle on desktop for dataset 12, with rotated, broken labels**
+  - Found: 2026-10-25, user (screenshot). `_prefers_icicle` picks the icicle when the treemap can't fit;
+    labels then rotate and break mid-word ("Temperat ure", "Privac y"), sub-themes hang below, there is a
+    large empty area under the biggest theme, and no "Look inside ↓" hint.
+  - Fix: proposed - in the report, keep the treemap on desktop and show tiny themes as labelled slivers;
+    no mid-word breaks.
+  - **Fixed:** `688ba21`. Report overview always draws the treemap; labels wrap at spaces only and fall back to the share, then nothing, by box width (container query); full names in `title` and screen-reader text. Gallery unchanged. Tests in `test_charts_data.py`. Checked live on dataset 12.
+- [x] **BUG-043 — With 120 themes, the treemap shows 7 and folds 113 into "Other 50.7%"; Inside Other
+  then says Other is 0%**
+  - Found: 2026-10-25, user (screenshot) and Claude, dataset 12. The treemap's Other = 12 unthemed answers
+    + 113 real themes that have no colour (`other_breakdown.hidden_real_share` 50.7). Inside Other only
+    counts the 12 unthemed answers ("0% of all answers. It was 1.7% before"), so the two sections
+    contradict each other.
+  - Fix: needs a user decision - e.g. call the treemap block "113 more themes" instead of "Other", and/or
+    show the folded themes in Inside Other's "See all 120 themes". Also why 120 themes: see BUG-048.
+  - **Fixed:** `688ba21`. The folded block reads "113 more themes 50.7%" (or "Other and N more themes" when unthemed answers dominate); "Other" only when nothing is folded. Look inside hint only when there are unthemed answers. Tests in `test_charts_data.py`, `test_api_report.py`, `test_report_medium.py`.
+- [x] **BUG-042 — The same theme gets several near-identical findings (one per region)**
+  - Found: 2026-10-25, Claude, dataset 12: three heatmap findings, same theme and chart, only the
+    highlighted cell differs.
+  - Fix: proposed - at most one segment finding per theme (keep the strongest). Recheck after BUG-041,
+    which removes these three anyway.
+  - **Fixed:** `b85d9f7`. At most one segment-skew finding per theme (largest gap). Test in `test_findings_structured.py`.
+- [x] **BUG-041 — Region findings compare against the wrong baseline, so they are false (dataset 12)**
   - Found: 2026-10-25, Claude, from the user's dataset 12 screenshot. Three findings say "privacy, safety,
     and layout design for patient care" is almost never mentioned in regions 9, 11 and 3 ("about a thirtieth
     as often as overall").
@@ -30,83 +91,40 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
     value recomputed from this subset"), which is wrong when many rows have no group.
   - Fix: proposed - compute `overall` over rows that have a group (`app/findings_structured.py`), and add a
     test with missing groups. Same check for score and date (`build_score_data`, `build_trend_data`).
-- [ ] **BUG-042 — The same theme gets several near-identical findings (one per region)**
-  - Found: 2026-10-25, Claude, dataset 12: three heatmap findings, same theme and chart, only the
-    highlighted cell differs.
-  - Fix: proposed - at most one segment finding per theme (keep the strongest). Recheck after BUG-041,
-    which removes these three anyway.
-- [ ] **BUG-043 — With 120 themes, the treemap shows 7 and folds 113 into "Other 50.7%"; Inside Other
-  then says Other is 0%**
-  - Found: 2026-10-25, user (screenshot) and Claude, dataset 12. The treemap's Other = 12 unthemed answers
-    + 113 real themes that have no colour (`other_breakdown.hidden_real_share` 50.7). Inside Other only
-    counts the 12 unthemed answers ("0% of all answers. It was 1.7% before"), so the two sections
-    contradict each other.
-  - Fix: needs a user decision - e.g. call the treemap block "113 more themes" instead of "Other", and/or
-    show the folded themes in Inside Other's "See all 120 themes". Also why 120 themes: see BUG-048.
-- [ ] **BUG-044 — The overview draws the icicle on desktop for dataset 12, with rotated, broken labels**
-  - Found: 2026-10-25, user (screenshot). `_prefers_icicle` picks the icicle when the treemap can't fit;
-    labels then rotate and break mid-word ("Temperat ure", "Privac y"), sub-themes hang below, there is a
-    large empty area under the biggest theme, and no "Look inside ↓" hint.
-  - Fix: proposed - in the report, keep the treemap on desktop and show tiny themes as labelled slivers;
-    no mid-word breaks.
-- [ ] **BUG-045 — Known themes in Inside Other show "+0%" for real gains**
-  - Found: 2026-10-25, dataset 12: 18 answers out of 39,718 rounds to 0.0%, printed as "+0%".
-  - Fix: proposed - print the answer count when the share rounds to 0 (e.g. "+18").
-- [ ] **BUG-046 — "Done. Everything is updated above." while the report is stale**
-  - Found: 2026-10-25, dataset 12: Look inside finished after the report was built; the findings are still
-    the old ones (stale banner at the top).
-  - Fix: proposed - when the report is stale say "Done. Rebuild the report to update the findings."
-- [ ] **BUG-047 — While the report loads (about 6 s on dataset 12), the page shows the theme-editing view
-  with "Build report"**
-  - Found: 2026-10-25, user (second screenshot) and Claude. `GET /report` takes 5.7 s; until it returns the
-    page shows the treemap, theme card, a 121-checkbox merge list and "Ready to build the report".
-  - Fix: proposed - show a loading line for the report instead of the editing view; make the merge list
-    a search box rather than 121 checkboxes.
-- [ ] **BUG-048 — Dataset 12 has 120 themes, many of them junk ("No comment provided", "Survey not
-  applicable or irrelevant", "Non-substantive or referential response")**
-  - Found: 2026-10-25, Claude. Theme build gave 46 clusters; splits and repeated Look inside runs added the
-    rest. Look inside creates new themes from non-answers.
-  - Fix: needs a user decision; ties in with BUG-032.
-- [ ] **BUG-049 — A heatmap opened scrolled sideways, with its theme-name column cut off**
-  - Found: 2026-10-25, Claude, dataset 12 at 1568px: the first heatmap's scroll box was at its end
-    (32 of 32px), hiding the left labels.
-  - Cause: not found yet (no code scrolls it). Needs a repro.
-- [ ] **BUG-031 — Dataset 12's report still shows findings for deleted themes**
-  - Found: 2026-10-24, Claude, dataset 12 report. Leftover from BUG-022, which stops it happening again.
-  - Cause: the report was built while a theme rebuild was running (BUG-022).
-  - Fix: press Rebuild report on dataset 12. **User's call** (one paid Claude call).
-- [ ] **BUG-032 — Look inside Other put 5,833 of 6,041 answers into one new theme on dataset 12**
+  - **Fixed:** `b85d9f7`. `overall` is the theme's share of the answers in the heatmap's own groups; a skew must also survive the 0.1-point rounding. Score and trend paths checked: already like-for-like. Test: `test_build_segment_data_overall_ignores_rows_with_no_group_bug_041`. Confirm on dataset 12 after Rebuild report (BUG-031).
+- [x] **BUG-039 — `localhost:8000` serves an old frontend build**
+  - Found: 2026-10-24, Claude. `:8000` serves `frontend/dist`, which isn't rebuilt automatically.
+  - Fix: run `npm run build` before using `:8000`, or check UI on the Vite dev server `:5173`.
+  - **Fixed:** (no code change). Rebuilt `frontend/dist` with `npm run build` on 2026-10-25. It goes stale again after frontend changes: rebuild, or use `:5173`.
+- [x] **BUG-038 — The server still builds three overview charts the page no longer shows**
+  - Found: 2026-10-25, Claude, Phase 3. `report_medium.theme_views` builds `sentsun`, `rank` and
+    `sunburst`; only `icicle` and `diverge` are used. Wasted work and payload, nothing visible.
+  - Fix: trim `theme_views` (check that no finding uses them first).
+  - **Fixed:** `688ba21`. `theme_views` builds only `icicle` and `diverge`. Tests updated.
+- [x] **BUG-037 — The phone overview is headed "Themes and sub-themes", desktop "What are the themes?"**
+  - Found: 2026-10-25, Claude, phone width. The phone layout reuses the icicle fragment and its header.
+  - Fix: minor; align in Phase 4.
+  - **Fixed:** `688ba21`. Phone overview (icicle) is headed "What are the themes?". Test in `test_report_medium.py`.
+- [x] **BUG-036 — On dataset 12 the treemap's Other block has no "Look inside ↓" hint**
+  - Found: 2026-10-24, Claude. The capped Other box is about 54px wide, below the 80×64 the hint needs.
+  - Fix: Phase 4 to decide (the Inside Other section sits right under it, so the link is still visible).
+  - **Fixed:** `688ba21`. A narrow Other box gets a compact "↓" hint with an accessible label. Test in `test_charts_data.py`. Seen live on dataset 12.
+- [x] **BUG-035 — Before a run, Inside Other's ribbon area is mostly empty**
+  - Found: 2026-10-25, Claude, dataset 11 at 1280px. One Still-in-Other ribbon on the right, blank space on
+    the left.
+  - Fix: compare with `Other-Flow.dc.html` in Phase 4 (`REPORT-UI-4`).
+  - **Fixed:** `7173d44`. Idle (and failed) flow is a short band from the centred Other strip down to Still in Other (152 instead of 346 units tall). Test in `inside-other.test.tsx`.
+- [x] **BUG-033 — Curly apostrophes split words in the sentiment tokenizer ("don’t" → "don", "t")**
+  - Found: 2026-10-24, Claude, during the phrase-apostrophe fix (BUG-003 only fixed phrases).
+  - Fix: **needs a user decision** (it changes sentiment scores on existing datasets).
+  - **Fixed:** `79faf04`. Typographic apostrophes are normalised before sentiment tokenising; "don’t" scores like "don't". Test in `test_text_pipeline_sentiment.py`. Lexicon sentiment shifts slightly on datasets scored after this.
+- [x] **BUG-032 — Look inside Other put 5,833 of 6,041 answers into one new theme on dataset 12**
   - Found: 2026-10-24, Claude, dataset 12 ("Office Layout and Facility Condition").
   - Cause (likely, not confirmed): Jev classifies against a broad merged label with no size or confidence
     cap. `confidence_by_row` is computed but unused (`other_classify.py`); union-find merging can chain
     labels (`merging.py`).
   - Fix: investigate in `REPORT-UI-5`. **Needs the user's approval** before any change.
-- [ ] **BUG-033 — Curly apostrophes split words in the sentiment tokenizer ("don’t" → "don", "t")**
-  - Found: 2026-10-24, Claude, during the phrase-apostrophe fix (BUG-003 only fixed phrases).
-  - Fix: **needs a user decision** (it changes sentiment scores on existing datasets).
-- [ ] **BUG-034 — Score-group sentiment is an approximation, not computed per answer**
-  - Found: 2026-10-24, Claude, UI review of dataset 11.
-  - Fix: **needs a user decision** on whether to compute it exactly.
-- [ ] **BUG-035 — Before a run, Inside Other's ribbon area is mostly empty**
-  - Found: 2026-10-25, Claude, dataset 11 at 1280px. One Still-in-Other ribbon on the right, blank space on
-    the left.
-  - Fix: compare with `Other-Flow.dc.html` in Phase 4 (`REPORT-UI-4`).
-- [ ] **BUG-036 — On dataset 12 the treemap's Other block has no "Look inside ↓" hint**
-  - Found: 2026-10-24, Claude. The capped Other box is about 54px wide, below the 80×64 the hint needs.
-  - Fix: Phase 4 to decide (the Inside Other section sits right under it, so the link is still visible).
-- [ ] **BUG-037 — The phone overview is headed "Themes and sub-themes", desktop "What are the themes?"**
-  - Found: 2026-10-25, Claude, phone width. The phone layout reuses the icicle fragment and its header.
-  - Fix: minor; align in Phase 4.
-- [ ] **BUG-038 — The server still builds three overview charts the page no longer shows**
-  - Found: 2026-10-25, Claude, Phase 3. `report_medium.theme_views` builds `sentsun`, `rank` and
-    `sunburst`; only `icicle` and `diverge` are used. Wasted work and payload, nothing visible.
-  - Fix: trim `theme_views` (check that no finding uses them first).
-- [ ] **BUG-039 — `localhost:8000` serves an old frontend build**
-  - Found: 2026-10-24, Claude. `:8000` serves `frontend/dist`, which isn't rebuilt automatically.
-  - Fix: run `npm run build` before using `:8000`, or check UI on the Vite dev server `:5173`.
-
-## Fixed
-
+  - **Fixed:** `0a8a36a`. Cause (from code; the original job's data was gone): Jev's per-answer picks, after union-find merging chained candidate labels into one broad option. Now: Look inside merges without chaining (`star_groups`), and a pick below `MIN_MATCH_CONFIDENCE = 0.5` stays in Other (`low_confidence_count` in the result). Threshold not yet checked against real Jev confidences.
 - [x] **BUG-040 — A Look inside run where every answer failed reported "Done. No new themes found"**
   - Found: 2026-10-25, user's real run on dataset 11 (job 47). All 314 answers failed with
     `Jev returned HTTP 402` (payment required: the Jev account looks out of credit).
