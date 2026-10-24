@@ -2632,3 +2632,54 @@ lookup table + a new renderer), `trend_grid`, `trend_aggregated`, `trend_errorba
 (smaller trend variants needing finer per-period data `TrendData` doesn't carry yet). User has explicitly
 asked to hold off starting these until Codex is available to help build them in parallel - the scoring/
 selection engine (deferred Stage 2) stays last either way, per the existing reordering decision.
+
+## 2026-10-24 (chart-block stream, Stage 2: scoring engine ported, NOT yet wired into live selection)
+
+User explicitly asked to start Stage 2 (the scoring/selection engine) now, ahead of finishing the
+remaining 5 chart blocks - a deliberate reorder of this stream's own plan, done on direct request.
+Claimed on the task board as `SCORE-ENGINE-01`.
+
+**Ported, real, tested** (`app/report_blocks.py`): `SIGNAL`/`GOAL_WEIGHTS["default"]` (the design's own
+"big picture" goal table - `verbatim-visual-system/generator/gen_dynreport.py`'s `SCRIPT.renderVals()` -
+the closest existing-behavior match, per the plan's own scope decision to defer the goal/reader picker),
+`score_block(kind, goal="default") -> float` (`value = min(1, signal * goalWeight)`, the design's exact
+formula), `pick_chart_candidates(candidate, goal="default") -> list[tuple[chart_id, value]]`, and
+`select_blocks(candidates, goal, bar, max_blocks) -> (kept, left_out)` (the design's include-bar + cap +
+"Value X is below the bar of Y." / "Cut to keep the report short." left-out reasoning, generalized over a
+candidate list that can repeat a kind - see the module's own long comment for why `value` is kind-level
+while same-kind ordering still uses each candidate's real `score`). `app.findings.pick_chart` now
+delegates to `pick_chart_candidates` - byte-identical output (every kind still has exactly one wired
+chart), confirmed by the pre-existing `pick_chart` test passing unmodified.
+
+**Deliberately NOT wired into live selection yet** - `candidate_findings`'s/`build_findings`'s own
+cap-by-raw-score-then-sort-by-`(PRIORITY_BY_KIND, -score)` logic is untouched. Reason, found while
+reviewing before wiring it in rather than after: `tests/test_findings_structured.py`'s own
+`test_candidate_findings_all_five_kinds_qualify_and_new_kinds_are_not_crowded_out` - explicitly commented
+in that file as "the single most important new test in this whole stream" - pins that a real
+`score_correlation`/`segment_skew`/`trend_shift` candidate with a big, solid effect size (engineered in
+that test to be far larger than a typical `tone_contrast` gap) DOES beat older-kind candidates for the cap,
+proving the 2026-09-29 "Score-scale decision" already fixed exactly the cross-kind scale mismatch this
+engine's "value" formula was also meant to fix (plan's own Stage 2 TODO: "fold in the known scoring-scale
+debt fix... confirm this is a real fix, not just a relocation").
+
+Swapping the cap/order to use kind-level `value` instead would UNDO that fix: `score_correlation`'s value
+(0.26) and `trend_shift`'s (0.348) are both below the design's own 0.35 bar and well below `long_tail`
+(0.9)/`dominant_theme`(0.82)'s - a report with 5+ qualifying old-kind candidates would never let a new
+kind in again, regardless of real effect size, exactly the bug that test was written to catch. This is
+why `INCLUDE_BAR_DEFAULT = 0.0` (a true no-op) rather than the design's 0.35 - the mechanism is real,
+tested and ready; the cutoff value, and whether/how to actually swap it into `candidate_findings`/
+`build_findings`, is a real design decision (reconcile the two scale-fixing approaches, or keep them
+separate and use `select_blocks` for something else - e.g. only the block-COUNT cap, not kind inclusion)
+that needs the user's explicit call, not a silent engine swap that would regress a test written to catch
+exactly this class of bug.
+
+**Tests** (`tests/test_report_blocks.py`): `score_block` against the design's own ported numbers per kind,
+raises `KeyError` on an unknown kind/goal (never a silent 0), `pick_chart_candidates` degrades to
+`CHART_BY_KIND`, `select_blocks`'s zero-bar no-op default, same-kind tie-break by real `score` (not an
+arbitrary/insertion order), the cap-and-explain-what-was-cut path, and the below-bar-left-out-with-reason
+path. Also added a real positive-case test for batch 4's `answer_map` block's `needs()` (true once
+`points_by_theme` has real data) - a gap left over from that batch's own test pass, caught while touching
+this file again for Stage 2.
+
+Full suite green (minus the same 5 pre-existing, unrelated auth/security failures already confirmed via
+`git stash` in the batch-4 entry above).

@@ -458,4 +458,123 @@ BLOCKS: list[Block] = [
 ]
 
 BY_ID: dict[str, Block] = {b.id: b for b in BLOCKS}
+
+
+# ==================================================================== Stage 2: scoring/selection engine
+# (chart-block stream, 2026-10-24) - ported from verbatim-visual-system/generator/gen_dynreport.py's
+# SCRIPT.renderVals(), the design's own "value = min(1, signal * goalWeight)" formula plus its include-bar
+# + block-count cap + left-out-reasoning selection logic.
+#
+# The design scores 9 FIXED ids, one per design "block" (never repeated). This app's `Candidate`s
+# (app/findings.py) are per-THEME instances of 6 finding KINDS - a report can have, say, three
+# `tone_contrast` candidates (one per theme) at once, something the design's own fixed-id model never had
+# to handle. SIGNAL/GOAL_WEIGHTS below are keyed by KIND, so every candidate of the same kind gets the
+# SAME value - a kind-level "how much does this chapter matter", not a per-instance ranking. Ordering
+# BETWEEN same-kind candidates still uses each candidate's own real `score` (the effect-size/group-size
+# blend `app.findings.candidate_findings` already computes, since scale-matched across kinds by the
+# existing 2026-09-29 "Score-scale decision" work in app/findings_structured.py) - value only decides
+# which KINDS clear the bar and fit the cap, never re-ranks candidates of the same kind against each other.
+#
+# Only the "big picture" goal table is ported for now (`GOAL_WEIGHTS["default"]`) - the closest existing-
+# behavior match, per this stream's own scope decision to defer the goal/reader picker UI (plan Stage 8).
+# "fix"/"who"/"change" goal tables, and the executive-vs-team block cap, are not ported - no caller can
+# reach them yet (no goal picker exists), and porting data nothing calls would be dead code, not progress.
+#
+# Maps the design's fixed ids onto this app's 6 real finding kinds (`overview`/`quality`/`quotes` have no
+# equivalent `Candidate` kind - they are always-on blocks `build_findings` already handles outside the
+# candidate pool, untouched by this engine):
+#   design id   ->  this app's kind        design's own idea
+#   other       ->  long_tail              "Inside Other" - an oversized unclustered bucket
+#   drivers     ->  dominant_theme         "What matters most" - the clear #1 theme
+#   tone        ->  tone_contrast          "How it feels" - a theme's sentiment vs. the dataset's overall
+#   segment     ->  segment_skew           "Who sees it differently"
+#   score       ->  score_correlation      "What higher/lower scorers say"
+#   trend       ->  trend_shift            "What is changing"
+SIGNAL: dict[str, float] = {
+    "long_tail": 0.9, "dominant_theme": 0.82, "tone_contrast": 0.74,
+    "segment_skew": 0.64, "score_correlation": 0.52, "trend_shift": 0.58,
+}
+
+GOAL_WEIGHTS: dict[str, dict[str, float]] = {
+    # "big picture" (gen_dynreport.py's GW.big) - every real kind present here; a kind missing from a goal
+    # table would be a KeyError in score_block, by design, not a silent 0.
+    "default": {
+        "long_tail": 1.0, "dominant_theme": 1.0, "tone_contrast": 0.8,
+        "segment_skew": 0.6, "score_correlation": 0.5, "trend_shift": 0.6,
+    },
+}
+
+# Kept at 0.0, NOT the design's own 0.35 slider default: the design's bar would newly exclude
+# score_correlation (value 0.26) and trend_shift (value 0.348) candidates that pass today's real gates in
+# app/findings_structured.py - a genuine behavior change to what a report shows, not yet reviewed/verified
+# live against a real dataset (this stream's own stated bar for changing live selection - see the plan's
+# Stage 2 TODO). 0.0 makes the bar a true no-op for now: the mechanism is real and tested, the cutoff
+# itself is a later, explicit decision once a goal picker (or a reviewed default) exists.
+INCLUDE_BAR_DEFAULT = 0.0
+
+
+def score_block(kind: str, goal: str = "default") -> float:
+    """`value = min(1, signal * goalWeight)` for one finding KIND (gen_dynreport.py's own formula,
+    `cl(SIGNAL[id] * weights[id])` where `cl` clamps 0..1 - `SIGNAL`/`GOAL_WEIGHTS` values here are always
+    non-negative, so only the upper clamp can ever bind). `goal` not in `GOAL_WEIGHTS`, or `kind` not in
+    `SIGNAL`, raises `KeyError` - every real candidate kind has an entry; a missing one is a bug to surface,
+    never a silent 0."""
+    return min(1.0, SIGNAL[kind] * GOAL_WEIGHTS[goal][kind])
+
+
+def pick_chart_candidates(candidate, goal: str = "default") -> list[tuple[str, float]]:
+    """Replaces `app.findings.pick_chart`'s flat dict lookup with a real, scored candidate list - today
+    degrades to exactly one entry for every kind (all 6 of them have exactly one wired chart via
+    `app.findings.CHART_BY_KIND`), so `pick_chart_candidates(c)[0][0] == pick_chart(c)` always - a
+    behavior-preserving refactor, not a new decision. A kind with a second real chart option (none yet)
+    would simply add a second `(chart_id, value)` tuple here later."""
+    from .findings import CHART_BY_KIND  # local import: findings.py imports this module, so this avoids a cycle
+
+    return [(CHART_BY_KIND[candidate.kind], score_block(candidate.kind, goal))]
+
+
+# Display name for a kind's left-out reason, matching gen_dynreport.py's own NAME table's spirit (one
+# short noun phrase per chapter) - not the design's literal strings (those name design ids like "Inside
+# Other", not this app's kind strings), but the same idea: short indexes.
+_KIND_DISPLAY_NAME: dict[str, str] = {
+    "long_tail": "Long tail (Other)", "dominant_theme": "Dominant theme", "tone_contrast": "Tone contrast",
+    "segment_skew": "Segment skew", "score_correlation": "Score correlation", "trend_shift": "Trend shift",
+}
+
+
+def select_blocks(
+    candidates: list, goal: str = "default", bar: float = INCLUDE_BAR_DEFAULT, max_blocks: int = 5,
+) -> tuple[list, list[dict[str, str]]]:
+    """Ports `gen_dynreport.py`'s include-bar + block-count cap + left-out-reasoning selection, generalized
+    over a list of `Candidate`s that may repeat a kind (see module-section docstring above for why value is
+    kind-level while the cap decision still needs a per-candidate order).
+
+    Each candidate's `value = score_block(candidate.kind, goal)`. A candidate whose value is below `bar` is
+    left out with reason "Value X is below the bar of Y." (gen_dynreport.py's own exact phrasing). Of the
+    rest, if there are more than `max_blocks`, the lowest-ranked ones (by `(value, candidate.score)`, both
+    descending - value picks the chapter, `candidate.score` breaks ties within the same kind) are left out
+    with reason "Cut to keep the report short." (also gen_dynreport.py's own phrasing).
+
+    Returns `(kept, left_out)`: `kept` is ordered highest-ranked first by the same `(value, score)` key -
+    NOT the final chapter-priority display order (`app.findings.PRIORITY_BY_KIND` still owns that, applied
+    by the caller) - this function's job is only which candidates survive, not their eventual chapter
+    position. `left_out` is `[{"name": ..., "reason": ...}, ...]`, ready for the "also checked, nothing
+    notable" / left-out surface (`app/api_report.py`)."""
+    scored = [(c, score_block(c.kind, goal)) for c in candidates]
+    kept: list[tuple[object, float]] = []
+    left_out: list[dict[str, str]] = []
+    for c, value in scored:
+        if value < bar:
+            left_out.append({
+                "name": _KIND_DISPLAY_NAME[c.kind],
+                "reason": f"Value {round(value * 100)} is below the bar of {round(bar * 100)}.",
+            })
+        else:
+            kept.append((c, value))
+    kept.sort(key=lambda cv: (cv[1], cv[0].score), reverse=True)
+    if len(kept) > max_blocks:
+        for c, value in kept[max_blocks:]:
+            left_out.append({"name": _KIND_DISPLAY_NAME[c.kind], "reason": "Cut to keep the report short."})
+        kept = kept[:max_blocks]
+    return [c for c, _ in kept], left_out
 BY_SLUG: dict[str, Block] = {b.slug: b for b in BLOCKS}

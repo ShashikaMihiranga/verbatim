@@ -6,13 +6,15 @@ an oversight a future edit could silently break).
 """
 from __future__ import annotations
 
+import pytest
+
 from app.chart_data import (
     BinnedGridData, CategoryAvgData, ContextData, CoPair, FreqData, GroupTrendData, MapData, OverviewData,
     PhraseData, QualityData, QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup,
     SegmentRow, SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
 )
 from app.charts import FRAMES
-from app.report_blocks import BLOCKS, BY_ID, BY_SLUG
+from app.report_blocks import BLOCKS, BY_ID, BY_SLUG, GOAL_WEIGHTS, SIGNAL, pick_chart_candidates, score_block, select_blocks
 
 
 def _empty_placeholders() -> dict:
@@ -265,12 +267,114 @@ def test_theme_similarity_is_real_once_at_least_three_themes_have_a_real_positio
 def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report():
     # Every one of these describes a column kind or cross-tab this app genuinely does not build today
     # (per each block's own comment in app/report_blocks.py) - confirms the registry doesn't silently
-    # start claiming readiness once rich_report() happens to have unrelated real data.
+    # start claiming readiness once rich_report() happens to have unrelated real data. `answer_map` is
+    # NOT here (chart-block stream, 2026-10-24, batch 4) - its pipeline is real now; `rich_report()`'s own
+    # `MapData` just has no stored points, so its needs() is False for that reason, checked separately
+    # below alongside the true-when-real-points-exist case.
     richest = rich_report()
     for slug in (
         "see_more",
         "trend_grid", "trend_aggregated", "trend_errorbars",
-        "answer_map", "region_map",
+        "region_map",
         "trend_sparse",
     ):
         assert BY_SLUG[slug].needs(richest) is False, slug
+
+
+def test_answer_map_needs_real_stored_points_not_just_a_rich_report():
+    # chart-block stream, 2026-10-24, batch 4: needs() went from a permanent `lambda data: False`
+    # placeholder to a real check once app/api_themes.py started sampling and storing real per-answer
+    # positions - this pins both halves: False with no stored points (rich_report()'s own MapData
+    # default), True once ReportData.answer_map.points_by_theme actually has some.
+    richest = rich_report()
+    assert richest.answer_map.points_by_theme == {}
+    assert BY_SLUG["answer_map"].needs(richest) is False
+
+    richest.answer_map.points_by_theme = {"Cost": [(0.1, 0.2), (0.3, 0.4)]}
+    assert BY_SLUG["answer_map"].needs(richest) is True
+
+
+# ==================================================================== Stage 2: scoring/selection engine
+# (chart-block stream, 2026-10-24) - score_block/pick_chart_candidates/select_blocks
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass
+class _FakeCandidate:
+    """Minimal stand-in for app.findings.Candidate - only `kind` and `score` matter to this engine."""
+    kind: str
+    score: float = 0.0
+
+
+def test_score_block_matches_the_design_formula_for_every_real_kind():
+    # value = min(1, signal * goalWeight) - gen_dynreport.py's own formula, checked against every real
+    # kind's actual ported numbers rather than just trusting the implementation to multiply correctly.
+    for kind in SIGNAL:
+        expected = min(1.0, SIGNAL[kind] * GOAL_WEIGHTS["default"][kind])
+        assert score_block(kind) == pytest.approx(expected)
+    # spot check the exact numbers, so a future edit to either table is caught, not just internal consistency
+    assert score_block("long_tail") == pytest.approx(0.9)  # 0.9 * 1.0
+    assert score_block("tone_contrast") == pytest.approx(0.592)  # 0.74 * 0.8
+    assert score_block("score_correlation") == pytest.approx(0.26)  # 0.52 * 0.5
+
+
+def test_score_block_raises_on_an_unknown_kind_or_goal_rather_than_defaulting_to_zero():
+    with pytest.raises(KeyError):
+        score_block("not_a_real_kind")
+    with pytest.raises(KeyError):
+        score_block("tone_contrast", goal="not_a_real_goal")
+
+
+def test_pick_chart_candidates_degrades_to_exactly_one_entry_matching_chart_by_kind():
+    from app.findings import CHART_BY_KIND
+
+    for kind in CHART_BY_KIND:
+        out = pick_chart_candidates(_FakeCandidate(kind))
+        assert len(out) == 1
+        chart_id, value = out[0]
+        assert chart_id == CHART_BY_KIND[kind]
+        assert value == pytest.approx(score_block(kind))
+
+
+def test_select_blocks_keeps_everything_with_the_default_zero_bar():
+    # INCLUDE_BAR_DEFAULT = 0.0 is a deliberate no-op (see report_blocks.py's own comment) - nothing is
+    # ever left out for being "below the bar" until a reviewed non-zero default exists.
+    candidates = [_FakeCandidate("score_correlation", score=1.0), _FakeCandidate("trend_shift", score=1.0)]
+    kept, left_out = select_blocks(candidates)
+    assert len(kept) == 2
+    assert left_out == []
+
+
+def test_select_blocks_same_kind_candidates_order_by_their_own_score_not_value():
+    # Same kind -> identical value for all of them - the tie-break must be each candidate's OWN score
+    # (today's real effect-size/group-size blend), never an arbitrary/insertion order.
+    weak = _FakeCandidate("tone_contrast", score=0.1)
+    strong = _FakeCandidate("tone_contrast", score=0.9)
+    middle = _FakeCandidate("tone_contrast", score=0.5)
+    kept, left_out = select_blocks([weak, strong, middle])
+    assert kept == [strong, middle, weak]
+    assert left_out == []
+
+
+def test_select_blocks_caps_at_max_blocks_and_explains_what_was_cut():
+    # 3 candidates of different kinds (different values), max_blocks=2: the lowest-value one is cut, with
+    # the design's own exact phrasing for why.
+    low = _FakeCandidate("score_correlation", score=1.0)  # value 0.26 - lowest
+    mid = _FakeCandidate("trend_shift", score=1.0)  # value 0.348
+    high = _FakeCandidate("long_tail", score=1.0)  # value 0.9 - highest
+    kept, left_out = select_blocks([low, mid, high], max_blocks=2)
+    assert kept == [high, mid]
+    assert left_out == [{"name": "Score correlation", "reason": "Cut to keep the report short."}]
+
+
+def test_select_blocks_below_bar_is_left_out_with_a_real_value_reason():
+    low = _FakeCandidate("score_correlation", score=1.0)  # value 0.26
+    high = _FakeCandidate("long_tail", score=1.0)  # value 0.9
+    kept, left_out = select_blocks([low, high], bar=0.35)
+    assert kept == [high]
+    assert left_out == [{"name": "Score correlation", "reason": "Value 26 is below the bar of 35."}]
+
+
+def test_select_blocks_empty_input_returns_empty_output():
+    assert select_blocks([]) == ([], [])
