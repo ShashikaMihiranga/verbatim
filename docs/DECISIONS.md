@@ -2843,3 +2843,42 @@ numeric grid appears as an exploration, and no Sankey is offered (correct - data
 themes; theme_flow needs 3). Two small notes, not bugs: the overview "Icicle" tab now uses the 390px
 compact layout on desktop too; and when a `trend_shift` finding's canonical chart is
 `themeMixOverTime` (Stage 4), the plain `trend` line is not offered as a variant.
+
+## 2026-10-24 (question-context block: a real correction control, not a static mockup)
+
+User reported the context block ("This question asks for ...") as broken: it is meant to be interactive.
+Cause: `app/charts.py:f_context` is a design-gallery mockup - it draws the question-type menu
+permanently open over the sentence, reserves a fixed 340px gap for it, ends with an empty "How the
+charts were chosen" section, and has no control at all (report charts are static HTML fragments, so no
+script could make it work). Wiring batch A (`f1e47c1`) put this mockup on real reports; I checked the
+block's data was real but not that its drawing was a demo - the same mistake as the sunburst.
+User chose the real correction control (over a static sentence or hiding the block). Claimed as
+`CONTEXT-CTRL-01`.
+
+**What is editable, and why only that**: the question type is the only guessed value (a keyword match on
+the question text). Framing comes from the real overall sentiment and length from real answer word
+counts, so they are shown as measured facts with a one-line note saying so. Nothing downstream reads the
+question type yet; the correction is saved and replaces the guess everywhere the guess appears (the
+sentence, exports, every report view and rebuild).
+
+**Built**:
+- `app/api_context.py` (new): `GET/PUT /api/datasets/{id}/question-kind` - owner/editor checks via
+  `_own_dataset`, validated against `QUESTION_KINDS`, 404 for unknown columns, saved under
+  `Dataset.profile["question_kinds"][column]`; choosing the guess or `kind: null` removes the entry.
+- `app/findings.py`: `stored_question_kind`; `_build_context` applies it and records `guessed_kind`/
+  `corrected` (two new defaulted `ContextData` fields).
+- `app/charts.py:context_report` (via `render_report_parts`): the report/export version is a plain
+  sentence (no fake menu, no gap, no empty section) that also carries the values in one `data-context`
+  attribute. The gallery `f_context` is unchanged.
+- Frontend: `QuestionContext.tsx` - a real `<select>` for the type, "You changed this from Verbatim's
+  guess ... Use Verbatim's guess", save errors shown inline. `Report.tsx` falls back to the plain
+  fragment when there is no payload.
+- Why a `data-context` attribute rather than a `context` field on the report response: that field
+  belongs in `app/api_report.py`, which Codex had claimed (`REPORT-FOCUS-01`) during this work. A
+  follow-up can move to a proper response field once that claim clears; the attribute keeps the server
+  as the single source of these values either way.
+
+**Verified**: backend 889 passed (4 new API/report tests); frontend 110 passed (4 new, parsing the exact
+fragment the server produces, including quotes, `&` and `<>`); tsc clean; no new lint warnings. Live in
+the real report page for dataset 11: the dropdown changes the type, the correction survives a full
+reload, "Use Verbatim's guess" resets it (dataset profile back to `{}`), no console errors.

@@ -160,3 +160,23 @@ export async function getReport(id: number, column: string, filters?: ReportFilt
   if (!r.ok) throw await asError(r)
   return r.json()
 }
+
+// The user's correction of what the question asks for (app/api_context.py). `kind: null` resets to
+// Verbatim's own guess.
+export interface QuestionKindState {
+  column: string
+  kind: string
+  guessed_kind: string
+  corrected: boolean
+  options: string[]
+}
+
+export async function saveQuestionKind(id: number, column: string, kind: string | null): Promise<QuestionKindState> {
+  const r = await authFetch(`/api/datasets/${id}/question-kind`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ column, kind }),
+  })
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}

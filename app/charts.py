@@ -1,4 +1,4 @@
-import html, math, random
+import html, json, math, random
 
 from .chart_data import ReportData
 from .charts_medium import f_group_mix
@@ -1921,7 +1921,31 @@ def render_report_parts(frame_id: str, data: ReportData, selected: str | None = 
     side get their single real state instead. Every other frame is unchanged."""
     if frame_id == "sunburst":
         return sunburst_report(data, selected)
+    if frame_id == "context":
+        return context_report(data)
     return render_parts(frame_id, data)
+
+def context_report(data: ReportData):
+    """The question-context sentence as plain text, for exports and any client without the live control.
+    `f_context` is the gallery mockup: it draws the type menu permanently open over the sentence, leaves a
+    fixed gap for it, and ends in an empty "How the charts were chosen" section. On the report page the
+    frontend replaces this with a real dropdown (frontend/src/QuestionContext.tsx)."""
+    cx = data.context
+    em = "color:var(--accent);font-weight:400"
+    note = f" You changed this from Verbatim's guess, {esc(cx.guessed_kind)}." if cx.corrected else ""
+    payload = json.dumps({
+        "kind": cx.kind, "options": cx.kind_options, "guessed_kind": cx.guessed_kind, "corrected": cx.corrected,
+        "framing": cx.framing, "length": cx.length,
+        "answered_note": f"{fmt(data.answered)} of {fmt(data.total)} responses had an answer to analyse.",
+        "columns_note": cx.columns_note,
+    })
+    body = (f'<div style="padding:56px 48px" data-context="{esc(payload)}">'
+            f'<div style="font-size:36px;font-weight:300;line-height:1.3;max-width:1020px">This question asks for '
+            f'<span style="{em}">{esc(cx.kind)}</span>, framed <span style="{em}">{esc(cx.framing)}</span>, and '
+            f'answers run <span style="{em}">{esc(cx.length)}</span>.</div>'
+            f'<div style="margin-top:20px;font-size:17px;line-height:1.55;max-width:820px;color:var(--muted)">'
+            f'{fmt(data.answered)} of {fmt(data.total)} responses had an answer to analyse. {esc(cx.columns_note)}{note}</div></div>')
+    return body, 1180, 300
 
 def render(frame_id: str, data: ReportData | None = None) -> str:
     body, w, h = render_parts(frame_id, data)

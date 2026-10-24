@@ -5,6 +5,8 @@ import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse }
 import type { ThemeCard } from './themesApi'
 import LookInsideOther from './LookInsideOther'
 import OtherExploration from './OtherExploration'
+import QuestionContext from './QuestionContext'
+import { parseContextData } from './questionContextData'
 import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
 import ThemeChartTabs from './ThemeChartTabs'
@@ -123,6 +125,7 @@ export default function ReportView({
   const quality = report.blocks.find((b) => b.kind === 'quality')
   const findings = report.blocks.filter((b) => b.kind === 'finding')
   const context = report.blocks.find((b) => b.kind === 'context')
+  const contextData = context ? parseContextData(context.chart_html) : null
   const quotes = report.blocks.find((b) => b.kind === 'quotes')
   const phrases = report.blocks.find((b) => b.kind === 'phrases')
   const [selectedThemeName, setSelectedThemeName] = useState<string | null>(null)
@@ -133,7 +136,9 @@ export default function ReportView({
       <div className="rp-title">{report.question}</div>
       <div className="rp-summary">{report.summary}</div>
 
-      {context && <SupplementBlock block={context} />}
+      {context && (contextData
+        ? <QuestionContext datasetId={datasetId} column={report.column} block={context} data={contextData} />
+        : <SupplementBlock block={context} />)}
 
       <div className="rp-chips-label">Columns used</div>
       <div className="rp-chips">

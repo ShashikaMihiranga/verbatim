@@ -560,7 +560,11 @@ def build_report_data(
     trend = structured.trend if structured and structured.trend else TrendData(
         labels=[], series=[], sentiment=[], hover_index=0, note="",
     )
-    context = _build_context(question, overall, answer_lengths, score, segment, trend, structured)
+    # Every theme row passed here belongs to the one report column (callers query by column), so the
+    # first row's column name is the report's - used to look up the user's saved question-type correction.
+    column = themes[0].column_name if themes else None
+    context = _build_context(question, overall, answer_lengths, score, segment, trend, structured,
+                             kind_override=stored_question_kind(dataset, column))
 
     return ReportData(
         question=question, total=total_rows, answered=total_answered, overall_sentiment=round(overall, 3),
@@ -666,6 +670,20 @@ _KIND_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
+QUESTION_KINDS = ["reasons", "improvements", "experiences", "facts", "opinions", "anything else"]
+
+
+def stored_question_kind(dataset: Any, column: str | None) -> str | None:
+    """The user's own correction of the question type for this dataset + column, if they made one
+    (saved by `app/api_context.py` under `profile["question_kinds"][column]`). Overrides the keyword
+    guess everywhere the guess is shown."""
+    if not column:
+        return None
+    kinds = (getattr(dataset, "profile", None) or {}).get("question_kinds") or {}
+    kind = kinds.get(column)
+    return kind if kind in QUESTION_KINDS else None
+
+
 def _classify_question_kind(question: str) -> str:
     q = question.lower()
     for kind, needles in _KIND_PATTERNS:
@@ -677,9 +695,10 @@ def _classify_question_kind(question: str) -> str:
 def _build_context(
     question: str, overall: float, answer_lengths: list[int] | None,
     score: "ScoreData", segment: "SegmentData", trend: "TrendData",
-    structured: "StructuredContext | None",
+    structured: "StructuredContext | None", kind_override: str | None = None,
 ) -> ContextData:
-    kind = _classify_question_kind(question)
+    guessed = _classify_question_kind(question)
+    kind = kind_override or guessed
     framing = "positively" if overall >= 0.05 else "negatively" if overall <= -0.05 else "neutrally"
     if answer_lengths:
         median = statistics.median(answer_lengths)
@@ -697,9 +716,9 @@ def _build_context(
         else "No score, segment or date column was found to cross-cut this report."
     )
     return ContextData(
-        kind=kind,
-        kind_options=["reasons", "improvements", "experiences", "facts", "opinions", "anything else"],
+        kind=kind, kind_options=list(QUESTION_KINDS),
         kind_hover=kind, framing=framing, length=length, columns_note=columns_note,
+        guessed_kind=guessed, corrected=kind != guessed,
     )
 
 

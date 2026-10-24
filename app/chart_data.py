@@ -255,6 +255,8 @@ class ContextData:
     framing: str  # e.g. "negatively"
     length: str  # e.g. "a sentence or two"
     columns_note: str  # sentence about the other columns found
+    guessed_kind: str = ""  # Verbatim's own keyword guess, kept so a correction can be reset to it
+    corrected: bool = False  # True when the user replaced the guess (kind != guessed_kind)
 
 
 @dataclass

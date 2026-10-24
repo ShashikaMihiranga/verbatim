@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from .api import router as api_router  # noqa: E402
 from .api_auth import router as auth_router  # noqa: E402
 from .api_charts import router as charts_router  # noqa: E402
+from .api_context import router as context_router  # noqa: E402
 from .api_cleaning import router as cleaning_router  # noqa: E402
 from .api_jobs import router as jobs_router  # noqa: E402
 from .api_projects import router as projects_router  # noqa: E402
@@ -70,6 +71,7 @@ app.include_router(auth_router)
 app.include_router(cleaning_router)
 app.include_router(themes_router)
 app.include_router(report_router)
+app.include_router(context_router)
 app.include_router(projects_router)
 app.include_router(jobs_router)
 app.include_router(sharing_router)
