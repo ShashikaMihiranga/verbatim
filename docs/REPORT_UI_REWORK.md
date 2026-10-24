@@ -14,6 +14,7 @@ only when its acceptance criteria and tests pass.**
    modified, or `report-ui.test.tsx` shows as deleted, **stop and resolve Phase 0 first**.
 4. Do the phase, then run the verification commands at the bottom.
 5. Commit to `staging` with explicit file names (never `git add -A`). Add a `docs/DECISIONS.md` entry.
+   Log every bug you find in `docs/BUGS.md` (even one fixed in the same session).
 6. Tick the boxes here and close the board task.
 
 ## Status

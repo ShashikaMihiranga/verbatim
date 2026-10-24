@@ -3109,3 +3109,10 @@ Decisions taken while building, all under the text-budget and one-question rules
 - Fix found live: the overview needs its compact layout only at phone width (`compactOnPhoneOnly`), not
   under 1000px like the sunburst.
 Backend 905, frontend 116, tsc clean, lint 6. Checked live on dataset 11 at 1280px and phone width.
+
+## 2026-10-25 (bug log: docs/BUGS.md)
+
+User request: one checklist where every bug found is logged. `docs/BUGS.md` holds all bugs found since
+2026-10-24 (BUG-004 to BUG-030 fixed, each with its commit and test; BUG-031 to BUG-039 open, with the ones
+that need the user's decision or a paid call marked). Rule for Claude and Codex: log a bug there as soon as
+it is found, even if it is fixed in the same session; tick it only when the fix is committed and tested.
