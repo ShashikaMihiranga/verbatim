@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { AnswerList } from './Themes'
 import type { Job } from './jobsApi'
-import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse } from './reportApi'
+import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse, ReportThemeChartVariant } from './reportApi'
 import type { ThemeCard } from './themesApi'
 import LookInsideOther from './LookInsideOther'
 import OtherExploration from './OtherExploration'
@@ -46,8 +46,8 @@ function ChartFragment({
   return <ThemeChart fragment={block} title={block.chart_title} onThemeSelect={onThemeSelect} selectedTheme={selectedTheme} />
 }
 
-function Divider({ children }: { children: ReactNode }) {
-  return <div className="rp-section">{children}</div>
+function Divider({ children, id }: { children: ReactNode; id?: string }) {
+  return <section className="rp-section" id={id}>{children}</section>
 }
 
 // "context"/"quotes"/"phrases" blocks (chart-block stream, 2026-10-24, wiring batch A): always-on
@@ -74,9 +74,9 @@ function FindingBlock({
   const finding = block.finding
   if (!finding) return null
   return (
-    <Divider>
+    <Divider id={`report-finding-${finding.id}`}>
       <div className="rp-head">
-        <p className="rp-sentence">{finding.sentence}</p>
+        <h3 className="rp-sentence">{finding.sentence}</h3>
         <div className="rp-head-side">
           <Badge confidence={finding.confidence} />
           {finding.theme_id != null && (
@@ -123,7 +123,20 @@ export default function ReportView({
 }) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
-  const findings = report.blocks.filter((b) => b.kind === 'finding')
+  // The API explicitly labels broad context. Do not infer a relationship from headline prose or
+  // discard findings merely because they use the same chart family. Only identical context repeats.
+  const shared = new Map<string, ReportThemeChartVariant>()
+  const findings = report.blocks.filter((b) => b.kind === 'finding').map((block) => {
+    const local: Record<string, ReportThemeChartVariant> = {}
+    for (const [key, view] of Object.entries(block.chart_variants ?? {})) {
+      if (view.chart_label?.startsWith('All themes:')) {
+        const identity = JSON.stringify([key, view.chart_html, view.chart_note, view.chart_width, view.chart_height])
+        if (!shared.has(identity)) shared.set(identity, { ...view, chart_id: view.chart_id ?? key })
+      } else local[key] = view
+    }
+    return { ...block, chart_variants: local }
+  })
+  const sharedViews = Array.from(shared.values())
   const context = report.blocks.find((b) => b.kind === 'context')
   const contextData = context ? parseContextData(context.chart_html) : null
   const quotes = report.blocks.find((b) => b.kind === 'quotes')
@@ -133,7 +146,7 @@ export default function ReportView({
 
   return (
     <div className="rp">
-      <div className="rp-title">{report.question}</div>
+      <h1 className="rp-title">{report.question}</h1>
       <div className="rp-summary">{report.summary}</div>
 
       {context && (contextData
@@ -158,23 +171,15 @@ export default function ReportView({
         />
       )}
 
-      {findings.length > 0 && (
-        <div className="rp-standout">
-          <div className="rp-standout-title">What stands out</div>
-          <div className="rp-standout-list">
-            {findings.map((b, i) => (
-              <div className="rp-standout-row" key={b.finding_id ?? b.chart_id}>
-                <span className="rp-standout-n">{i + 1}</span>
-                <span className="rp-standout-sentence">{b.finding?.sentence}</span>
-                {b.finding && <Badge confidence={b.finding.confidence} />}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <nav className="rp-outline" aria-label="Report sections">
+        {overview && <a href="#report-overview">Big picture</a>}
+        {findings.length > 0 && <a href="#report-findings">Findings ({findings.length})</a>}
+        {quality && <a href="#report-quality">Data quality</a>}
+      </nav>
 
       {overview && (
-        <Divider>
+        <Divider id="report-overview">
+          <h2 className="rp-section-title">The big picture</h2>
           <ThemeChartTabs
             overview={overview}
             variants={report.theme_chart_variants}
@@ -187,15 +192,31 @@ export default function ReportView({
       )}
 
       <OtherExploration breakdown={report.other_breakdown} allThemes={report.all_themes} />
+      {report.other_breakdown && <p className="rp-method-note">Other is a catch-all bucket, not a single topic. Check its breakdown before interpreting differences between groups.</p>}
 
       {onLookInsideOther && (report.other_breakdown !== null || lookInsideOtherJob) && (
         <LookInsideOther job={lookInsideOtherJob ?? null} onStart={onLookInsideOther} allThemes={report.all_themes} />
       )}
 
+      {sharedViews.length > 0 && <Divider id="report-explore">
+        <details className="rp-exploration">
+          <summary>Explore all themes</summary>
+          <p className="rp-method-note">These views show the broader context under the current filters. Individual findings below keep their own focused evidence.</p>
+          {sharedViews.map((view, index) => <details className="rp-context-view" key={`${view.chart_id}-${index}`}>
+            <summary>{view.chart_label?.replace(/^All themes:\s*/, '') || view.chart_title}</summary>
+            {view.chart_note && <p className="rp-method-note">{view.chart_note}</p>}
+            <ThemeChart fragment={view} title={view.chart_title} selectedTheme={selectedThemeName} />
+          </details>)}
+        </details>
+      </Divider>}
+
       {findings.length > 0
-        ? findings.map((b) => (
+        ? <div id="report-findings">
+          <h2 className="rp-section-title rp-findings-title">What stands out</h2>
+          {findings.map((b) => (
             <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} selectedTheme={selectedThemeName} />
-          ))
+          ))}
+        </div>
         : report.also_checked_nothing_notable && (
             <Divider>
               <div className="rp-nothing">Also checked, nothing notable.</div>
@@ -216,7 +237,7 @@ export default function ReportView({
       {phrases && <SupplementBlock block={phrases} />}
 
       {quality && (
-        <Divider>
+        <Divider id="report-quality">
           <ChartFragment block={quality} selectedTheme={selectedThemeName} />
         </Divider>
       )}

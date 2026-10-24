@@ -3,20 +3,21 @@ import type { KeyboardEvent } from 'react'
 import type { ReportBlock, ReportThemeChartVariant } from './reportApi'
 import ThemeChart from './ThemeChart'
 
-type Fragment = Pick<ReportThemeChartVariant, 'chart_html' | 'chart_width' | 'chart_height'>
+type Fragment = Pick<ReportThemeChartVariant, 'chart_html' | 'chart_width' | 'chart_height' | 'chart_id'>
 
-export function ResponsiveChart({ fragment, compact, title, selectedTheme, onThemeSelect }: {
+export function ResponsiveChart({ fragment, compact, title, selectedTheme, onThemeSelect, finding = false }: {
   fragment: Fragment
   compact?: Fragment
   title: string
   selectedTheme?: string | null
   onThemeSelect?: (name: string) => void
+  finding?: boolean
 }) {
-  if (!compact) return <ThemeChart fragment={fragment} title={title} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} />
+  if (!compact) return <ThemeChart fragment={fragment} title={title} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} finding={finding} />
   return (
-    <div>
-      <div className="rp-chart-desktop"><ThemeChart fragment={fragment} title={title} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} /></div>
-      <div className="rp-chart-compact"><ThemeChart fragment={compact} title={`${title}, compact`} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} /></div>
+    <div className="rp-responsive-chart">
+      <div className="rp-chart-desktop"><ThemeChart fragment={fragment} title={title} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} finding={finding} /></div>
+      <div className="rp-chart-compact"><ThemeChart fragment={compact} title={`${title}, compact`} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} finding={finding} /></div>
     </div>
   )
 }
@@ -48,7 +49,7 @@ export default function FindingChartTabs({ block, selectedTheme }: { block: Repo
     buttons?.[next]?.focus()
   }
 
-  if (options.length === 1) return <ThemeChart fragment={block} title={block.chart_title} selectedTheme={selectedTheme} />
+  if (options.length === 1) return <ThemeChart fragment={block} title={block.chart_title} selectedTheme={selectedTheme} finding />
   return (
     <div>
       <div className="rp-tabs" role="tablist" aria-label="Ways to view this finding">
@@ -64,7 +65,7 @@ export default function FindingChartTabs({ block, selectedTheme }: { block: Repo
       </div>
       <div id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-${selected.key}`}>
         {typeof note === 'string' && note && <p className="rp-method-note">{note}</p>}
-        <ResponsiveChart fragment={selected.fragment} compact={compact} title={selected.fragment.chart_title} selectedTheme={selectedTheme} />
+        <ResponsiveChart fragment={selected.fragment} compact={compact} title={selected.fragment.chart_title} selectedTheme={selectedTheme} finding />
       </div>
     </div>
   )

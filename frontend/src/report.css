@@ -6,7 +6,13 @@
 
 .rp { margin-top: 8px; }
 
-.rp-title { font-size: clamp(26px, 5vw, 40px); font-weight: 300; line-height: 1.2; }
+.rp-title { font-size: clamp(26px, 5vw, 40px); font-weight: 300; line-height: 1.2; margin: 0; }
+.rp-section-title { font-size: 22px; font-weight: 600; margin: 0 0 18px; line-height: 1.35; }
+.rp-findings-title { margin-top: 36px; }
+.rp-outline { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 28px; font-size: 15px; }
+.rp-outline a { color: var(--accent); text-underline-offset: 4px; }
+.rp-outline a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.rp-section[id], #report-findings { scroll-margin-top: 24px; }
 .rp-summary { color: var(--muted); font-size: 16px; margin-top: 6px; }
 
 .rp-chips-label { margin-top: 24px; font-size: 13px; font-weight: 500; color: var(--muted); }
@@ -37,7 +43,7 @@
 
 /* Every section below (overview chart, each finding, the quality footer, "nothing notable") shares this
    one rhythm - a top divider and generous top margin - instead of a bordered/backgrounded card. */
-.rp-section { margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--line); }
+.rp-section { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
 
 /* Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2) - ThemeChartTabs.tsx. Reuses .rp-chip's own
    pill shape/tokens (--surface/--line/32px-ish height) rather than inventing a second button style, same
@@ -69,6 +75,22 @@
    margin:auto is what centers it instead of leaving it flush against the container's left edge with
    empty space to the right. */
 .rp-chart { margin: 0 auto; }
+.rp-chart-body { padding: 20px 0 !important; }
+.rp-chart-spacer { height: 16px !important; }
+.rp-chart[data-presentation="finding"] .rp-chart-question { display: none; }
+.rp-focus-label { padding: 0 !important; margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+.rp-chart-scroll { container-type: inline-size; }
+.rp-chart-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.rp-heatmap-grid { min-width: var(--rp-grid-min, 460px); grid-template-columns: minmax(140px,180px) repeat(var(--rp-group-count, 3), minmax(96px,1fr)) !important; }
+.rp-heatmap-grid > div { overflow-wrap: anywhere; }
+@container (max-width: 700px) {
+  .rp-score-row { flex-wrap: wrap; gap: 12px; }
+  .rp-score-label { width: 100% !important; }
+  .rp-score-bar { flex: 1 1 100% !important; min-width: 0; }
+  .rp-score-pill { margin-left: 0 !important; }
+}
+.rp-selected-explanation { margin-top: 16px; padding: 10px 0; color: var(--muted); font-size: 15px; line-height: 1.55; max-width: 70ch; }
+.rp-heatmap-grid [tabindex="0"]:focus-visible { outline: 3px solid var(--accent) !important; outline-offset: 3px; }
 .rp-chart svg { display: block; overflow: visible; max-width: 100%; }
 
 /* Lets .rp-chart-scroll grow past .page's normal 960px reading column, so a genuinely fluid chart (see
@@ -86,9 +108,9 @@
    ceiling that would otherwise sit below that inline cap and make it unreachable. */
 @media (min-width: 960px) {
   .rp-chart-scroll {
-    width: calc(100vw - 32px);
-    max-width: none;
-    margin-left: calc(480px - 50vw);
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
   }
 }
 
@@ -222,12 +244,22 @@
   .lio-step-bar { display: none; }
 }
 .rp-chart-compact { display: none; }
+.rp-responsive-chart { container-type: inline-size; }
+@container (max-width: 1000px) {
+  .rp-responsive-chart > .rp-chart-desktop { display: none; }
+  .rp-responsive-chart > .rp-chart-compact { display: block; }
+}
 .rp-method-note { color: var(--muted); font-size: 14px; line-height: 1.55; margin: 12px 0; max-width: 900px; }
 .rp-exploration > summary { color: var(--accent); cursor: pointer; font-size: 18px; font-weight: 500; }
 .rp-exploration > summary:focus-visible, .rp-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.rp-context-view { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.rp-context-view > summary { cursor: pointer; color: var(--accent); font-size: 16px; font-weight: 500; }
+.rp-context-view > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 @media (max-width: 640px) {
-  .rp-chart-desktop { display: none; }
-  .rp-chart-compact { display: block; }
+  .rp-head { flex-direction: column; gap: 12px; }
+  .rp-head-side { flex-wrap: wrap; }
+  .rp-tab { height: auto; min-height: 40px; padding: 8px 14px; }
+  .rp-tabs { gap: 8px; }
 }
 
 /* Question context (QuestionContext.tsx): the type is a real dropdown; framing/length are measured facts. */
