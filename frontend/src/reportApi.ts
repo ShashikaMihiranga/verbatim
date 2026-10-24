@@ -76,7 +76,7 @@ export interface ReportThemeSummary {
 
 // Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): alternate views of the SAME theme data the
 // treemap's overview block already shows, rendered server-side from the one already-built report_data.
-// Keyed by chart id ("icicle" | "sentsun" | "rank") - deliberately no "arc" or "sankey" key; see
+// Keyed by chart id ("icicle" | "diverge" - the overview's phone layout and tone split) - deliberately no "arc" or "sankey" key; see
 // app/api_report.py's own comment for why those two are excluded from this feature.
 export interface ReportThemeChartVariant {
   chart_id?: string

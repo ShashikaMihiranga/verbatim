@@ -96,3 +96,14 @@ describe('insideOtherModel', () => {
     expect(m.error).toBe('Jev returned HTTP 401.')
   })
 })
+
+describe('listValue', () => {
+  it('uses one unit per list: counts for every row once any share is too small to print', async () => {
+    const { listValue } = await import('./insideOtherModel')
+    const leaf = (count: number, share: number) => ({ label: String(count), count, share, color: '', onColor: '' })
+    const mixed = [leaf(40, 0.1), leaf(19, 0.05)]
+    expect(mixed.map(listValue(mixed))).toEqual(['40', '19'])
+    const shares = [leaf(400, 1), leaf(200, 0.5)]
+    expect(shares.map(listValue(shares, '+'))).toEqual(['+1%', '+0.5%'])
+  })
+})

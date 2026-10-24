@@ -56,6 +56,13 @@ export function shareOrCount(l: Leaf, sign = ''): string {
   return hasShare(l) ? `${sign}${l.share}%` : `${sign}${l.count.toLocaleString('en-US')}`
 }
 
+// One unit per list: if any row's share is too small to print, every row shows its answer count, so a
+// column never mixes "0.1%" and "19".
+export function listValue(items: Leaf[], sign = ''): (l: Leaf) => string {
+  const byCount = items.some((l) => !hasShare(l))
+  return (l) => (byCount ? `${sign}${l.count.toLocaleString('en-US')}` : shareOrCount(l, sign))
+}
+
 function knownColor(label: string, realThemes: string[]): { color: string; onColor: string } {
   // Same colour the theme has in the treemap: the first 7 real themes (largest first) get --t1..--t7.
   const i = realThemes.indexOf(label)

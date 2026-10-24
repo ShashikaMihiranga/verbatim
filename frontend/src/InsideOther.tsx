@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import InsideOtherFlow from './InsideOtherFlow'
 import { prefersReducedMotion } from './insideOtherGeometry'
-import { hasShare, insideOtherModel, shareOrCount, STEPS, type InsideOtherModel, type Leaf } from './insideOtherModel'
+import { hasShare, insideOtherModel, listValue, STEPS, type InsideOtherModel, type Leaf } from './insideOtherModel'
 import type { Job } from './jobsApi'
 import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
 import ThemeChart from './ThemeChart'
@@ -47,7 +47,7 @@ function Columns({ m, allThemesToggle }: { m: InsideOtherModel; allThemesToggle?
         <h4 className="io-col-title">Known themes</h4>
         <p className="io-col-note">Answers that match a theme already in the chart</p>
         <p className="io-col-n">{showNumbers ? `+${fmt(m.knownTotal)}` : '+0'} <span>answers</span></p>
-        <Rows items={m.known} largest={largestKnown} value={(l) => shareOrCount(l, '+')} />
+        <Rows items={m.known} largest={largestKnown} value={listValue(m.known, '+')} />
         {m.knownMore > 0 && <p className="io-more">and {m.knownMore} more</p>}
       </section>
       <section className="io-col io-col-new" aria-label="New themes found">
@@ -56,7 +56,7 @@ function Columns({ m, allThemesToggle }: { m: InsideOtherModel; allThemesToggle?
         <p className="io-col-n">
           {fmt(showNumbers ? m.newTotal : 0)} <span>answers, {m.newThemes.length + m.newMore} theme{m.newThemes.length + m.newMore === 1 ? '' : 's'}</span>
         </p>
-        <Rows items={m.newThemes} largest={largestNew} value={(l) => shareOrCount(l)} />
+        <Rows items={m.newThemes} largest={largestNew} value={listValue(m.newThemes)} />
         {m.newMore > 0 && <p className="io-more">and {m.newMore} more</p>}
       </section>
       <section className="io-col io-col-still" aria-label="Still in Other">
@@ -140,6 +140,7 @@ function toneOf(l: Leaf): { color: string; text: string } {
 function Results({ m }: { m: InsideOtherModel }) {
   const largest = Math.max(0, ...m.known.map((l) => l.count))
   const largestNew = Math.max(0, ...m.newThemes.map((l) => l.count))
+  const newValue = listValue(m.newThemes)
   return (
     <div className="io-results">
       <div className="io-banner">
@@ -152,7 +153,7 @@ function Results({ m }: { m: InsideOtherModel }) {
             <li key={l.label} className="io-newchip">
               <span className="io-newbadge">new</span>
               {l.label}
-              <span className="io-newshare">{shareOrCount(l)}</span>
+              <span className="io-newshare">{newValue(l)}</span>
             </li>
           ))}
         </ul>
