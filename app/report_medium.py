@@ -172,14 +172,17 @@ def complete_numeric_grid(data: ReportData, clean_df, columns: dict[str, list[st
     return data
 
 
-def finding_views(data: ReportData, kind: str, theme_name: str, comparisons: ReportData | None = None) -> dict[str, dict]:
+def finding_views(data: ReportData, kind: str, theme_name: str, comparisons: ReportData | None = None,
+                  *, focused: ReportData | None = None) -> dict[str, dict]:
     result = {}
+    detail = focused or data
+    context_note = 'Broader context for this finding; this view includes all displayed themes under the current filters. '
     if kind == 'score_correlation' and BY_SLUG['theme_flow'].needs(data) and valid_flow(data):
-        result['sankey'] = view('sankey', data, 'Theme flow', FLOW_NOTE)
+        result['sankey'] = view('sankey', data, 'All themes: flow', context_note + FLOW_NOTE)
     if kind == 'segment_skew' and valid_segment(data):
-        result['groupMix'] = view('groupMix', data, 'Group size and mix')
+        result['groupMix'] = view('groupMix', data, 'All themes: group mix', context_note)
         if BY_SLUG['group_split_bars'].needs(data):
-            result['groupSplitBars'] = view('groupSplitBars', data, 'Two groups')
+            result['groupSplitBars'] = view('groupSplitBars', detail, 'Two groups')
         compare_data = comparisons or data
         if BY_SLUG['compare_dots'].needs(compare_data) and valid_segment(compare_data):
             selected_row = next((r for r in compare_data.segment.rows if r.theme == theme_name), None)
@@ -188,9 +191,9 @@ def finding_views(data: ReportData, kind: str, theme_name: str, comparisons: Rep
                 result['compareDots'] = view('compareDots', replace(compare_data, segment=segment), 'Compare groups')
         flow_data = segment_flow_data(data)
         if flow_data is not None and BY_SLUG['theme_flow'].needs(flow_data) and valid_flow(flow_data):
-            result['sankey'] = view('sankey', flow_data, 'Theme flow', FLOW_NOTE)
+            result['sankey'] = view('sankey', flow_data, 'All themes: flow', context_note + FLOW_NOTE)
     if kind == 'trend_shift' and BY_SLUG['slope_change'].needs(data) and valid_slope(data):
-        result['slopeChange'] = view('slopeChange', data, 'First vs last')
+        result['slopeChange'] = view('slopeChange', detail, 'First vs last')
     return result
 
 

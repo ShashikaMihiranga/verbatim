@@ -36,6 +36,68 @@ from tests.job_test_support import BlockingClient, wait_for_job
 Q = "What could we do better?"
 
 
+def test_build_multiple_findings_of_one_kind_does_not_repeat_the_same_chart(env):
+    """Exercise real candidate selection/build/read, not just distinct manually saved fragments."""
+    install_fake_claude()
+    df = survey_df(200, 200)
+    df['Customer type'] = ['A'] * 200 + ['B'] * 200
+    df['Rating'] = [0] * 200 + [10] * 200
+    did = upload_csv(env, df)
+    profile = env.client.get(f'/api/datasets/{did}/profile').json()['profile']
+    roles = {Q: 'open_text', 'Customer type': 'segment', 'Rating': 'score'}
+    choices = [{'position': c['position'], 'name': c['name'],
+                'kind': roles.get(c['name'], c['kind']), 'off': False} for c in profile['columns']]
+    assert env.client.patch(f'/api/datasets/{did}/columns', json={'columns': choices}).status_code == 200
+    clean_and_apply(env, did)
+    seed_themes(env, did, [dict(label=name, size=200, sentiment=0,
+                              tone={'neg': 20, 'neu': 60, 'pos': 20}, answer_refs=list(range(start, start + 200)))
+                          for name, start in [('Reliability', 0), ('Support', 200)]])
+    assert build_report_job(env, did)['status'] == 'done'
+    response = env.client.get(f'/api/datasets/{did}/report', params={'column': Q})
+    assert response.status_code == 200, response.text
+    blocks = [b for b in response.json()['blocks'] if b['kind'] == 'finding']
+    assert len(blocks) == 5  # Preserve the existing global cap and strongest-finding selection.
+    repeated = [[b for b in blocks if b['chart_id'] == chart] for chart in ('heatmap', 'byScore')]
+    assert all(len(group) >= 2 for group in repeated)
+    for group in repeated:
+        assert len({b['chart_html'] for b in group}) == len(group)
+    with env.Session() as db:
+        for block in blocks:
+            finding = db.get(Finding, block['finding_id'])
+            theme = db.get(Theme, finding.theme_id)
+            assert f'Focus: {theme.label}' in block['chart_html']
+
+    # Filtering away a selected group must not highlight whichever group happens to remain.
+    filtered = env.client.get(f'/api/datasets/{did}/report', params={'column': Q, 'segment': 'A'}).json()
+    assert any('no eligible comparison' in b['chart_html'] for b in filtered['blocks'] if b['kind'] == 'finding')
+
+
+def test_findings_for_two_folded_themes_show_real_themes_instead_of_the_same_other(env):
+    did = upload_csv(env, survey_df(200, 200))
+    clean_and_apply(env, did)
+    seed_themes(env, did, [dict(label=f'Topic {i}', size=40, sentiment=-0.3 if i % 2 else 0.3,
+                              tone={'neg': 30, 'neu': 40, 'pos': 30}, answer_refs=list(range(i * 40, i * 40 + 40)))
+                          for i in range(10)])
+    with env.Session() as db:
+        themes = list(db.scalars(select(Theme).where(Theme.dataset_id == did).order_by(Theme.id)))
+        blocks = []
+        for theme in themes[-2:]:
+            f = Finding(dataset_id=did, theme_id=theme.id, sentence=f'Finding for {theme.label}',
+                        confidence='solid', chart_type='sentsun', data={'column': Q, 'kind': 'tone_contrast', 'theme': theme.label})
+            db.add(f)
+            db.flush()
+            blocks.append({'kind': 'finding', 'chart_id': 'sentsun', 'priority': 3, 'finding_id': f.id})
+        db.add(Report(dataset_id=did, content={'column': Q, 'question': Q, 'blocks': blocks}))
+        db.commit()
+    r = env.client.get(f'/api/datasets/{did}/report', params={'column': Q})
+    assert r.status_code == 200, r.text
+    a, b = r.json()['blocks']
+    assert 'Topic 8 is outlined.' in a['chart_html']
+    assert 'Topic 9 is outlined.' in b['chart_html']
+    assert a['chart_html'] != b['chart_html']
+    assert 'All other answers' in a['chart_html']
+
+
 def test_stage5_views_and_numeric_score_grid_are_reachable_and_filter_aware(env):
     """Existing saved reports gain views without a rebuild, extra finding or model call."""
     df = survey_df(180, 60)

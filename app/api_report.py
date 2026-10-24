@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session
 from . import db as _db
 from .api_themes import _load_clean_df, get_claude_client
 from .api_upload import _own_dataset, current_user
-from .charts import TITLES, render_report_parts
+from .charts import TITLES, esc, render_report_parts
 from .export import ExportBlock, build_report_pdf, build_report_pptx, render_report_png
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .db import get_db
@@ -69,6 +69,7 @@ from .findings_structured import (
 from .jobs import create_job, start_job
 from .models import Column, Dataset, Finding, Report, Theme, User
 from .report_medium import comparison_groups, complete_numeric_grid, finding_views, numeric_explorations, theme_views
+from .report_focus import STRUCTURED_KINDS, focus_finding, reveal_folded_theme
 from .text_pipeline import ClaudeClient
 from .text_pipeline.labeling import OTHER_LABEL
 
@@ -336,6 +337,12 @@ def _render_report(
             continue
         fid = b.get("finding_id")
         finding_row = findings_by_id.get(fid) if b["kind"] == "finding" and fid is not None else None
+        finding_data = finding_row.data if finding_row is not None and isinstance(finding_row.data, dict) else {}
+        finding_kind = finding_data.get('kind', '')
+        # IDs survive renames; the saved headline's theme name may no longer match the live chart.
+        live_node = next((t for t in report_data.themes if finding_row is not None
+                          and finding_row.theme_id is not None and t.theme_id == finding_row.theme_id), None)
+        finding_theme = live_node.name if live_node is not None else finding_data.get('theme', '')
 
         # Finding-aware sentsun/diverge/sunburst (fixes two findings sharing one chart_id rendering the
         # byte-identical, globally-same chart - see docs/DECISIONS.md): `report_data` is built ONCE and
@@ -355,23 +362,38 @@ def _render_report(
             if node is not None:
                 block_data = dataclasses.replace(report_data, selected_theme=node.name)
             else:
-                # The finding's own theme is real but too small to get its own node - `theme_nodes` folds
-                # any real theme past the top 7 into the merged "Other" node (app/findings.py's own
-                # docstring on that). Falling through to the default `report_data.selected_theme` here
-                # would silently outline some UNRELATED theme (confirmed live: a "parking and access"
-                # finding's chart outlined "Space, layout & crowding" instead) - exactly the kind of
-                # misleading chart this fix exists to stop. "Other" is where this finding's data actually
-                # sits in THIS chart, so that is what gets outlined instead.
-                block_data = dataclasses.replace(report_data, selected_theme="Other")
+                source = next((t for t in themes if t.id == finding_row.theme_id), None)
+                if source is not None:
+                    # One real theme, no top-seven competition. It was folded away only for display;
+                    # recover its live numbers rather than giving every small-theme finding "Other".
+                    nodes = theme_nodes([source], report_data.answered, filter_rows)
+                    if nodes and nodes[0].count > 0:
+                        block_data = reveal_folded_theme(report_data, nodes[0])
+                    else:
+                        block_data = dataclasses.replace(report_data, selected_theme='')
 
         # `render_parts` returns the raw body fragment (no `<!doctype html>`/own background/own font load) -
         # see app/charts.py's own docstring split between `render_parts` and `render`. The frontend embeds
         # this fragment straight into the report page's DOM (never an iframe), so it inherits the page's own
         # already-loaded `--bg --surface --ink ...` tokens instead of carrying a second copy of them - see
         # docs/DECISIONS.md ("report page: fragments, not iframed documents").
-        chart_html, chart_width, chart_height = render_report_parts(
-            chart_id, block_data, block_data.selected_theme if block_data is not report_data else None,
-        )
+        focused_data = focus_finding(block_data, finding_kind, finding_theme,
+                                     finding_data.get('group', ''), chart_id)
+        if finding_kind in STRUCTURED_KINDS and source_columns.get(finding_kind) != current_columns.get(finding_kind):
+            focused_data = None  # A filter must not switch the finding to an unrelated source column.
+        if focused_data is None:
+            chart_html = '<p style="padding:32px 48px;color:var(--muted)">This finding has no eligible comparison in the current view. Clear filters or rebuild the report.</p>'
+            chart_width, chart_height = 1180, 120
+        else:
+            chart_html, chart_width, chart_height = render_report_parts(
+                chart_id, focused_data, focused_data.selected_theme if focused_data is not report_data else None,
+            )
+            if finding_kind in STRUCTURED_KINDS:
+                if chart_id == 'heatmap':
+                    chart_height = 460  # One evidence row, rather than the gallery's seven-row canvas.
+                chart_html = (f'<p style="padding:16px 48px 0;font-weight:500">Focus: {esc(finding_theme)}</p>'
+                              + chart_html)
+                chart_height += 48
         block: dict[str, Any] = {
             "kind": b["kind"],
             "chart_id": chart_id,
@@ -388,14 +410,12 @@ def _render_report(
             block["finding"] = {
                 "id": f.id, "theme_id": f.theme_id, "sentence": f.sentence, "confidence": f.confidence,
             }
-            finding_data = f.data if isinstance(f.data, dict) else {}
-            kind = finding_data.get("kind", "")
             block["chart_variants"] = finding_views(
-                block_data, finding_data.get("kind", ""), finding_data.get("theme", ""), comparison_data,
-            ) if source_columns.get(kind) == current_columns.get(kind) else {}
+                block_data, finding_kind, finding_theme, comparison_data, focused=focused_data,
+            ) if focused_data is not None else {}
             if chart_id == "sunburst" and "icicle" in theme_chart_variants:
                 block["compact_chart_id"] = "icicle"
-                block["chart_variants"]["icicle"] = theme_chart_variants["icicle"]
+                block["chart_variants"]["icicle"] = theme_views(block_data).get('icicle', theme_chart_variants['icicle'])
         blocks_out.append(block)
 
     # SPEC.md section 2's "aggregated numbers only" rule applies to this header line too: it is plain
