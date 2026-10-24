@@ -60,6 +60,15 @@ def test_score_text_negation_flips_polarity():
     assert not_bad_polarity > bad_polarity
 
 
+@pytest.mark.parametrize("apostrophe", ["’", "‘", "ʼ", "′", "＇"])
+def test_score_text_typographic_apostrophe_scores_like_a_straight_one(apostrophe):
+    # BUG-033: "don’t" used to split into "don", "t", so the negation was lost and this read as positive.
+    for straight in ["I don't love it", "The desk isn't good", "It wasn't helpful at all"]:
+        typed = straight.replace("'", apostrophe)
+        assert score_text(typed) == score_text(straight)
+    assert score_text("I don’t love it")[1] == "neg"
+
+
 def test_score_text_no_sentiment_words_is_neutral():
     polarity, tone = score_text("The order arrived on Tuesday from the warehouse.")
     assert tone == "neu"

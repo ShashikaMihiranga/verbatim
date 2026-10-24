@@ -34,10 +34,8 @@ STOPWORDS = frozenset({
 
 
 def _phrase_tokens(text: str) -> list[str]:
-    # The shared lexicon tokenizer keeps a bare "'" as a word (heights like 5'4") and splits curly
-    # apostrophes ("I’m" -> "i", "m"); both leaked into phrase chips. Fixed here, not in _tokenize, so
-    # sentiment scores stay exactly as they are.
-    text = text.replace("’", "'").replace("‘", "'")
+    # The shared lexicon tokenizer keeps a bare "'" as a word (heights like 5'4"), which leaked into
+    # phrase chips. Curly apostrophes ("I’m") are normalised inside _tokenize itself since BUG-033.
     return [w.strip("'") for w in _tokenize(text) if w.strip("'")]
 
 MIN_PHRASE_WORDS, MAX_PHRASE_WORDS = 2, 4

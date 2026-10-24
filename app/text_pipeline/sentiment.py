@@ -125,6 +125,12 @@ INTENSIFIER_WINDOW = 2
 
 _TOKEN_RE = re.compile(r"[a-z']+")
 
+# Typographic apostrophes, mapped to "'" before tokenising (docs/BUGS.md BUG-033). `_TOKEN_RE` only knows
+# the straight one, so "don’t" (as typed on phones or pasted from Word) used to split into "don", "t" and
+# its negation was lost. Right/left single quote, modifier letter apostrophe, prime, reversed-9 quote,
+# grave/acute accents and the fullwidth apostrophe.
+_APOSTROPHES = str.maketrans({c: "'" for c in "’‘ʼ′‛`´＇"})
+
 # Tone thresholds. `score_text` averages the weight of every matched sentiment word (not diluted by
 # sentence length), so a single mild word already lands at +/-0.3 and a single moderate word at +/-0.6.
 # The neutral band only needs to catch scores near zero: genuine cancellation (roughly equal positive and
@@ -139,7 +145,7 @@ POS_THRESHOLD = 0.15
 
 
 def _tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall(text.lower())
+    return _TOKEN_RE.findall(text.lower().translate(_APOSTROPHES))
 
 
 def score_text(text: str) -> tuple[float, Literal["neg", "neu", "pos"]]:
