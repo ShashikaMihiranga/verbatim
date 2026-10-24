@@ -160,7 +160,7 @@ export function insideOtherModel(
     phase: 'done',
     stepIndex: STEPS.length,
     matchingProgress: 1,
-    status: reportStale ? 'Done. Rebuild the report to update the findings.' : 'Done. Everything is updated above.',
+    status: reportStale ? 'Done. Rebuild the report to update the findings.' : 'Done. The report below is updated.',
     known: known.shown, knownMore: known.more,
     // Older runs have no per-theme breakdown; the total is still real.
     knownTotal: r.known_added,

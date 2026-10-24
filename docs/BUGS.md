@@ -37,6 +37,20 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-053 — After Look inside, the report keeps its old findings and doesn't say so**
+  - Found: 2026-10-25, the user: "when look inside click it shows the inside the new found theme, but it
+    did not update the rest of the report with new finding".
+  - Cause: findings are written once, at report build. Look inside's last step was named "Updating the
+    report" but only changed Theme rows. The stale banner only fired for findings about deleted themes;
+    Look inside grows known themes and adds new ones without deleting any, so nothing flagged it.
+  - **Fixed:** (this commit). Look inside now rebuilds the report from the changed themes as its last step
+    (`app.api_report.refresh_report`, one Claude call, same as Rebuild report); if that fails, the run still
+    finishes with `report_updated: false` and `report_error`. Every report stores a `themes_signature`
+    (theme ids, sizes, labels) and reads as stale when the live themes differ. Tests:
+    `test_look_inside_other_refreshes_the_report_it_changed`,
+    `test_report_is_stale_when_its_themes_changed_even_if_none_was_deleted`,
+    `test_look_inside_other_still_succeeds_when_the_report_refresh_fails`.
+
 - [x] **BUG-051 — A barcode column ("ean") is used as the region/group column on dataset 1**
   - Found: 2026-10-25, Claude, local check of the BUG-050 tests. Dataset 1's heatmap groups were EAN values
     such as "848719000000.0", so its findings read "in 848719000000.0".

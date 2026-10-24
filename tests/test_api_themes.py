@@ -1110,6 +1110,7 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
         "low_confidence_count": 0, "non_answer_count": 0,
         # Inside Other panel fields (docs/REPORT_UI_REWORK.md Phase 1): Other held 3 before, 5 + 3 answered.
         "other_before_count": 3, "answered_total": 8, "known_gains": [{"label": "Cost", "count": 3}],
+        "report_updated": False,  # no report had been built for this column, so there was none to refresh
     }
     # Live progress was written during the matching step and ends complete.
     assert job["progress"]["done"] == job["progress"]["total"] == 3
@@ -1125,6 +1126,98 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
         from app.models import Theme
         row = s.get(Theme, cost_id)
         assert sorted(row.answer_refs) == [0, 1, 2, 3, 4, 13, 14, 15]
+
+
+def _reply_with_headlines(prompt: str) -> str:
+    """Theme labelling plus the report's headline call, for runs that refresh the report at the end."""
+    payload = json.loads(prompt)
+    if "findings" in payload:
+        return json.dumps({"headlines": [
+            {"id": f["id"], "sentence": f"Stub sentence about {f['theme']}."} for f in payload["findings"]
+        ]})
+    return _fake_claude_reply(prompt)
+
+
+def _seed_cost_and_other(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="Cost", description="About pricing.", size=5, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4])
+    seed_theme(env, did, label="Other", description="x", size=3, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[13, 14, 15])
+    return did
+
+
+def _build_report(env, did):
+    r = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
+    assert r.status_code == 202, r.text
+    job = wait_for_job(env.client, did, r.json()["job_id"], timeout=30)
+    assert job["status"] == "done", job
+
+
+def _report_id(env, did):
+    with env.Session() as s:
+        from app.models import Report
+        return [r.id for r in s.query(Report).filter(Report.dataset_id == did).all()]
+
+
+def test_look_inside_other_refreshes_the_report_it_changed(env):
+    """User report, 2026-10-25: Look inside showed the new themes, but the rest of the report kept its old
+    findings. Its last step ("Updating the report") now rebuilds the findings from the changed themes."""
+    install_look_inside_other_fakes(jev_choice_result=ChoiceAnswer(choice="Cost", confidence=0.9, probabilities={}))
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_reply_with_headlines)
+    did = _seed_cost_and_other(env)
+    _build_report(env, did)
+
+    job = look_inside_other_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert job["result"]["report_updated"] is True
+    assert "report_error" not in job["result"]
+    assert len(_report_id(env, did)) == 1
+    # Cost grew from 5 to 8 answers: the old report would read as stale (see the next test); this one was
+    # written from the new themes.
+    report = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    assert report["stale"] is False
+
+
+def test_report_is_stale_when_its_themes_changed_even_if_none_was_deleted(env):
+    """A theme that only grew (Look inside, or any later edit) leaves no finding about a deleted theme,
+    so the old orphan check missed it. The stored themes signature catches it."""
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_reply_with_headlines)
+    did = _seed_cost_and_other(env)
+    _build_report(env, did)
+    assert env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()["stale"] is False
+
+    with env.Session() as s:
+        from app.models import Theme
+        cost = s.query(Theme).filter(Theme.dataset_id == did, Theme.label == "Cost").one()
+        cost.size = 6
+        cost.answer_refs = [0, 1, 2, 3, 4, 13]
+        s.commit()
+    assert env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()["stale"] is True
+
+
+def test_look_inside_other_still_succeeds_when_the_report_refresh_fails(env, monkeypatch):
+    """The theme changes are already committed when the report refresh runs; if it fails (Claude down,
+    say) the run still finishes, says the report was not updated, and the report shows as stale."""
+    import app.api_report as api_report
+
+    install_look_inside_other_fakes(jev_choice_result=ChoiceAnswer(choice="Cost", confidence=0.9, probabilities={}))
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_reply_with_headlines)
+    did = _seed_cost_and_other(env)
+    _build_report(env, did)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("Claude is down")
+
+    monkeypatch.setattr(api_report, "build_findings", broken)
+
+    job = look_inside_other_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert job["result"]["report_updated"] is False
+    assert job["result"]["report_error"]
+    assert job["result"]["known_added"] == 3  # the themes did change
+    assert env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()["stale"] is True
 
 
 def test_look_inside_other_end_to_end_finds_real_new_themes_with_charts(env):

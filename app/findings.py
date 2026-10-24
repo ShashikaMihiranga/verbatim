@@ -1038,6 +1038,13 @@ def question_for(dataset: Dataset, column: str) -> str:
     return ((dataset.profile or {}).get("question") or {}).get("text") or column
 
 
+def themes_signature(themes: list[Theme]) -> list[list]:
+    """What the findings were written from: each theme's id, size and label. A report whose stored
+    signature differs from the live themes is stale - Look inside Other, for one, grows known themes and
+    adds new ones without deleting any, so checking for findings about deleted themes alone misses it."""
+    return sorted([t.id, t.size, t.label] for t in themes)
+
+
 def build_findings(
     dataset: Dataset,
     column: str,
@@ -1138,6 +1145,7 @@ def build_findings(
     report = Report(dataset_id=dataset.id, content={
         "column": column, "question": question, "blocks": blocks,
         "also_checked_nothing_notable": len(candidates) == 0,
+        "themes_signature": themes_signature(themes),
     })
     db_session.add(report)
     db_session.commit()

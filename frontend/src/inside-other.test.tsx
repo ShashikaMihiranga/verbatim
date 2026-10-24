@@ -79,10 +79,10 @@ describe('InsideOther', () => {
   it('done while the report is stale asks for a rebuild instead of "Everything is updated" (BUG-046)', () => {
     const doneJob = job({ status: 'done', step: 'Done', result: done })
     const fresh = renderToStaticMarkup(<InsideOther job={doneJob} onStart={vi.fn()} allThemes={themes} />)
-    expect(fresh).toContain('Done. Everything is updated above.')
+    expect(fresh).toContain('Done. The report below is updated.')
     const stale = renderToStaticMarkup(<InsideOther job={doneJob} onStart={vi.fn()} allThemes={themes} reportStale />)
     expect(stale).toContain('Done. Rebuild the report to update the findings.')
-    expect(stale).not.toContain('Everything is updated above')
+    expect(stale).not.toContain('The report below is updated')
   })
 
   it('failed: shows the real error and offers the button again', () => {

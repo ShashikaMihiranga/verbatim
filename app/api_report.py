@@ -59,6 +59,7 @@ from .findings import (
     build_report_data,
     other_breakdown,
     theme_nodes,
+    themes_signature,
 )
 from .findings_structured import (
     StructuredContext,
@@ -489,8 +490,11 @@ def _render_report(
             {"name": t.name, "share": t.share, "count": t.count, "sentiment": t.sentiment} for t in all_themes
         ],
         "theme_chart_variants": theme_chart_variants,
-        # True when any finding was written about a theme that no longer exists - the page offers a rebuild.
-        "stale": orphaned_findings > 0,
+        # True when the findings were written from different themes than the live ones: a finding about a
+        # theme that no longer exists, or (reports built since 2026-10-25) any change in the themes' ids,
+        # sizes or labels, e.g. after Look inside Other - the page offers a rebuild.
+        "stale": orphaned_findings > 0 or (
+            "themes_signature" in content and content["themes_signature"] != themes_signature(themes)),
         "explorations": explorations,
     }
 
@@ -531,25 +535,9 @@ def build_report(
     if blocking_job(db, ds.id, column, THEME_JOB_KINDS, THEME_JOB_MAX_AGE) is not None:
         raise HTTPException(409, "Themes are still being rebuilt for this column. Build the report when that finishes.")
 
-    themes = list(db.scalars(
-        select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
-    ).all())
-    answer_lengths = None
-    answer_texts = None
-    quote_theme_texts = None
-    answer_positions = None
-    structured = None
-    if themes:
-        clean_df, plan = _load_clean_df(ds, db)
-        answer_lengths = _answer_lengths_for(clean_df, column, themes)
-        answer_texts = _answer_texts_for(clean_df, column, themes)
-        quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes)
-        answer_positions = _answer_positions_for(db, ds.id, column)
-        # Built here (synchronously, alongside answer_lengths above) rather than re-queried inside `_work`'s
-        # own job-thread session: `StructuredContext` is plain data once built (no lingering ORM references),
-        # so it crosses into the closure below exactly like `answer_lengths` already does - one fewer
-        # DataFrame reload/DB round-trip in the background job for the same result.
-        structured = _structured_context_for(db, ds, clean_df, plan, themes)
+    # Built here (synchronously) rather than inside `_work`'s own job-thread session: the inputs are plain
+    # data once built (no lingering ORM references), so they cross into the closure below as-is.
+    inputs = _report_inputs(db, ds, column)
 
     # The only check left that can still fail synchronously: a full slot is knowable instantly, with no
     # thread started, so it stays an immediate 429 exactly like before.
@@ -569,11 +557,7 @@ def build_report(
             # boundary available before it - see docs/DECISIONS.md for why no separate "Writing headlines"
             # step is faked in between.
             step("Deciding what's worth telling")
-            report = build_findings(
-                job_ds, column, job_db, claude_client,
-                cleaning_report=cleaning_report, answer_lengths=answer_lengths, answer_texts=answer_texts,
-                quote_theme_texts=quote_theme_texts, answer_positions=answer_positions, structured=structured,
-            )
+            report = build_findings(job_ds, column, job_db, claude_client, cleaning_report=cleaning_report, **inputs)
             step("Drawing charts")
             # Rendered here too (and discarded) purely so a rendering bug fails the job with a plain
             # message instead of surfacing only later as a broken GET - `GET .../report` always re-renders
@@ -583,6 +567,39 @@ def build_report(
     start_job(job, _SLOTS, _work, _report_build_error)
 
     return {"job_id": job.id, "status": "running"}
+
+
+def _report_inputs(db: Session, ds: Dataset, column: str) -> dict[str, Any]:
+    """Everything `build_findings` needs besides the cleaning report, read from the column's current
+    themes. All None when there are no themes yet (`build_findings` then raises `NoThemesForColumn`)."""
+    themes = list(db.scalars(
+        select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)
+    ).all())
+    inputs: dict[str, Any] = dict(answer_lengths=None, answer_texts=None, quote_theme_texts=None,
+                                  answer_positions=None, structured=None)
+    if themes:
+        clean_df, plan = _load_clean_df(ds, db)
+        inputs.update(
+            answer_lengths=_answer_lengths_for(clean_df, column, themes),
+            answer_texts=_answer_texts_for(clean_df, column, themes),
+            quote_theme_texts=_quote_theme_texts_for(clean_df, column, themes),
+            answer_positions=_answer_positions_for(db, ds.id, column),
+            structured=_structured_context_for(db, ds, clean_df, plan, themes),
+        )
+    return inputs
+
+
+def refresh_report(db: Session, dataset_id: int, column: str, claude_client: ClaudeClient) -> bool:
+    """Rebuilds the column's report from its current themes, inside a job that already changed them
+    (Look inside Other). One Claude call, the same as the Rebuild report button. Returns False, doing
+    nothing, when the column has no report yet; raises whatever `build_findings` raises."""
+    ds = db.get(Dataset, dataset_id)
+    if ds is None or _latest_report_for_column(db, dataset_id, column) is None:
+        return False
+    report = build_findings(ds, column, db, claude_client, cleaning_report=_cleaning_report_for(ds),
+                            **_report_inputs(db, ds, column))
+    _render_report(db, ds, column, report)
+    return True
 
 
 def _parse_filter_date(value: str | None, param_name: str) -> date | None:

@@ -680,7 +680,7 @@ export default function Themes() {
         <>
           {report.stale && (
             <div className="report-stale" role="status">
-              <span>The themes changed after this report was built, so some findings describe themes that no longer exist.</span>
+              <span>The themes changed after this report was built, so its findings are out of date.</span>
               <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning}>
                 {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
               </button>

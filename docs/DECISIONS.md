@@ -3176,3 +3176,16 @@ upc, gtin, isbn, asin, barcode, names ending "Number") and applies to `segment` 
 skips code-valued segments under any name, in both segment loops of `build_structured_context`. Kept
 short years ("2024") and names like "Number of children" as real data. Dataset 1's heatmap moves from
 `ean` to `manufacturer`; its report changes only after a rebuild.
+
+## 2026-10-25 (BUG-053: Look inside Other updates the report)
+
+User reported that after Look inside the rest of the report kept its old findings. Look inside now ends
+by rebuilding the report's findings from the changed themes (only when the column already has a report).
+That adds one Claude headline call to each Look inside run - the same call Rebuild report makes - which
+the user's report asks for; the job deadline gets 120 s extra for it. A failed refresh never fails the run
+(themes are already committed): the result says `report_updated: false` and the report shows its Rebuild
+banner. Staleness is now detected from a `themes_signature` stored in `Report.content` (ids, sizes,
+labels), not only from findings about deleted themes; reports built before this change keep the old
+check until rebuilt. Banner text: "The themes changed after this report was built, so its findings are
+out of date." Inside Other's done line: "Done. The report below is updated."
+

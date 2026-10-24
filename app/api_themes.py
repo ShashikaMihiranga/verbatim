@@ -869,7 +869,7 @@ def look_inside_other(
     job = create_job(db, dataset_id_, column, "look_inside_other")
     # Sized to Other's own answer count, not the whole dataset's - this job's real work (re-embed,
     # re-cluster, classify) only ever touches the Other-bucket rows, never the full column.
-    deadline = _themes_deadline_for(len(other_refs))
+    deadline = _themes_deadline_for(len(other_refs)) + 120  # + the report refresh at the end
 
     def _work(step: Callable[[str], None]) -> None:
         step("Finding patterns in Other")
@@ -941,6 +941,19 @@ def look_inside_other(
                     )
                 ).all())
                 summary["charts"] = _build_other_result_charts(new_theme_rows)
+            # "Updating the report" means it: the findings are rebuilt from the changed themes (one Claude
+            # call, as Rebuild report). The theme changes above are already committed, so a failure here
+            # only leaves the report stale - it shows its Rebuild banner - and never fails the run.
+            if summary is not None:
+                from .api_report import _report_build_error, refresh_report  # deferred: api_report imports us
+
+                try:
+                    summary["report_updated"] = refresh_report(job_db, dataset_id_, column, claude_client)
+                except Exception as e:  # noqa: BLE001 - any failure is reported, the run itself succeeded
+                    job_db.rollback()
+                    log.warning("Look inside Other: report refresh failed", exc_info=True)
+                    summary["report_updated"] = False
+                    summary["report_error"] = _report_build_error(e) or "The report could not be updated."
             # Written in the SAME session/commit as the Theme-row changes above, not via jobs.py's own
             # `_set_step`/`_mark_done` (those only ever touch a still-"running" job, guarding against a
             # watchdog that already failed it out from under this thread - writing `result` here, before
