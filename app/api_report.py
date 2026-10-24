@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session
 from . import db as _db
 from .api_themes import _load_clean_df, get_claude_client
 from .api_upload import _own_dataset, current_user
-from .charts import TITLES, render_parts
+from .charts import TITLES, render_report_parts
 from .export import ExportBlock, build_report_pdf, build_report_pptx, render_report_png
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .db import get_db
@@ -113,15 +113,17 @@ def _answer_lengths_for(clean_df, column: str, themes: list[Theme]) -> list[int]
     return lengths
 
 
-def _answer_texts_for(clean_df, column: str, themes: list[Theme]) -> list[str]:
+def _answer_texts_for(clean_df, column: str, themes: list[Theme], filter_rows: set[int] | None = None) -> list[str]:
     """Real cleaned answer strings for the `top_phrases` block (chart-block stream, 2026-10-24) - same
     "a caller that already has the dataframe loaded can pass the real thing through" shape as
     `_answer_lengths_for` above, feeding `app.text_pipeline.phrases.build_phrase_data` via
     `build_report_data`'s `answer_texts` param. Not the masked/model-safe text: this never reaches a
     model (phrase extraction is pure code, see that module's own docstring), and the report's own
     "See answers" drill-down already shows raw verbatim text to the same viewer, so there is no extra
-    trust boundary to cross here that the rest of this app doesn't already cross."""
-    rows = sorted({r for t in themes for r in (t.answer_refs or [])})
+    trust boundary to cross here that the rest of this app doesn't already cross. `filter_rows` keeps
+    recurring phrases to the rows the report is currently filtered to."""
+    rows = sorted({r for t in themes for r in (t.answer_refs or [])
+                   if filter_rows is None or r in filter_rows})
     texts: list[str] = []
     for r in rows:
         try:
@@ -133,18 +135,23 @@ def _answer_texts_for(clean_df, column: str, themes: list[Theme]) -> list[str]:
     return texts
 
 
-def _quote_theme_texts_for(clean_df, column: str, themes: list[Theme]) -> list[tuple[str, list[str]]]:
+def _quote_theme_texts_for(
+    clean_df, column: str, themes: list[Theme], filter_rows: set[int] | None = None,
+) -> list[tuple[str, list[str]]]:
     """Real answer texts GROUPED BY theme, largest theme first, for the `quotes` block (chart-block
     stream, 2026-10-24) - unlike `_answer_texts_for`'s flattened list (phrase extraction aggregates across
     every answer regardless of theme), a quote needs its own theme attribution, and the merged "Other"
     bucket is deliberately excluded - a quote attributed to "Other" would misleadingly imply it represents
     one real idea when that bucket is a mix of unrelated small themes (same reasoning `app/charts.py`'s
-    `f_sentsun` highlight fallback already documents for a different block)."""
+    `f_sentsun` highlight fallback already documents for a different block). `filter_rows` keeps quotes to
+    the rows the report is currently filtered to, so a filtered report never quotes an excluded group."""
     real_themes = sorted((t for t in themes if t.label != OTHER_LABEL), key=lambda t: t.size, reverse=True)
     out: list[tuple[str, list[str]]] = []
     for t in real_themes:
         texts: list[str] = []
         for r in sorted(t.answer_refs or []):
+            if filter_rows is not None and r not in filter_rows:
+                continue
             try:
                 v = clean_df.at[r, column]
             except KeyError:
@@ -278,8 +285,8 @@ def _render_report(
     current_columns = {'score_correlation': structured.score_column_name,
                        'segment_skew': structured.segment_column_name, 'trend_shift': structured.trend_column_name}
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
-    answer_texts = _answer_texts_for(clean_df, column, themes)
-    quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes)
+    answer_texts = _answer_texts_for(clean_df, column, themes, filter_rows)
+    quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes, filter_rows)
     answer_positions = _answer_positions_for(db, ds.id, column)
     question = content.get("question") or column
     report_data = build_report_data(
@@ -322,6 +329,11 @@ def _render_report(
     blocks_out: list[dict[str, Any]] = []
     for b in blocks_content:
         chart_id = b["chart_id"]
+        # Always-on supplements are saved at build time from unfiltered data; a filter can leave them
+        # nothing to show, so drop them for this view rather than rendering an empty chart shell.
+        if (b["kind"] == "quotes" and not report_data.quotes.quotes) or \
+                (b["kind"] == "phrases" and not report_data.phrases.phrases):
+            continue
         fid = b.get("finding_id")
         finding_row = findings_by_id.get(fid) if b["kind"] == "finding" and fid is not None else None
 
@@ -357,7 +369,9 @@ def _render_report(
         # this fragment straight into the report page's DOM (never an iframe), so it inherits the page's own
         # already-loaded `--bg --surface --ink ...` tokens instead of carrying a second copy of them - see
         # docs/DECISIONS.md ("report page: fragments, not iframed documents").
-        chart_html, chart_width, chart_height = render_parts(chart_id, block_data)
+        chart_html, chart_width, chart_height = render_report_parts(
+            chart_id, block_data, block_data.selected_theme if block_data is not report_data else None,
+        )
         block: dict[str, Any] = {
             "kind": b["kind"],
             "chart_id": chart_id,

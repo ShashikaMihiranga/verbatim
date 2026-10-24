@@ -278,18 +278,30 @@ def theme_rows(data, selected=None, hover=None, mobile=False):
                          f'<span style="width:{40 if mobile else 44}px;text-align:right;color:var(--muted)">{sp:g}%</span></div>')
     return "".join(o)
 
+def _sunburst_panel(data, cap, selected, hover):
+    caption = f'<div style="font-size:14px;font-weight:500;color:var(--muted);margin:0 0 10px">{esc(cap)}</div>' if cap is not None else ""
+    return (caption +
+            f'<div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;display:flex;gap:24px;height:630px">'
+            f'<div style="flex:none">{sunburst(data, 640, 580, 380, 300, 245, 14, 12.5, selected, hover)}</div>'
+            f'<div style="flex:1;min-width:0">{theme_rows(data, selected, hover)}</div></div>')
+
 def f_sunburst(data: ReportData):
-    def panel(cap, selected, hover):
-        return (f'<div style="font-size:14px;font-weight:500;color:var(--muted);margin:0 0 10px">{esc(cap)}</div>'
-                f'<div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;display:flex;gap:24px;height:630px">'
-                f'<div style="flex:none">{sunburst(data, 640, 580, 380, 300, 245, 14, 12.5, selected, hover)}</div>'
-                f'<div style="flex:1;min-width:0">{theme_rows(data, selected, hover)}</div></div>')
+    # Design-gallery frame: deliberately shows two interaction states side by side. Report pages use
+    # sunburst_report below instead, which draws the one real state.
     body = (f'<div style="padding:56px 48px">{hdr("What are the themes?", data.question)}'
             f'<div style="height:24px"></div>'
-            + panel(f"Default, hover on {data.hover_theme}", None, data.hover_theme)
+            + _sunburst_panel(data, f"Default, hover on {data.hover_theme}", None, data.hover_theme)
             + '<div style="height:40px"></div>'
-            + panel(f"{data.selected_theme} selected, others dimmed", data.selected_theme, None) + "</div>")
+            + _sunburst_panel(data, f"{data.selected_theme} selected, others dimmed", data.selected_theme, None) + "</div>")
     return body, 1180, 1640
+
+def sunburst_report(data: ReportData, selected: str | None = None):
+    """One-panel sunburst for a real report: `selected` is outlined and the rest dimmed (a finding's own
+    theme), or nothing is dimmed when `selected` is None (the overview's theme tab)."""
+    cap = f"{selected} selected, others dimmed" if selected else None
+    body = (f'<div style="padding:56px 48px">{hdr("What are the themes?", data.question)}'
+            f'<div style="height:24px"></div>' + _sunburst_panel(data, cap, selected, None) + "</div>")
+    return body, 1180, 900 if cap else 870
 
 def f_sunburst_m(data: ReportData):
     ot = next((t for t in data.themes if t.color == "other"), None)
@@ -1903,6 +1915,13 @@ def render_parts(frame_id: str, data: ReportData | None = None):
         from .fixtures.ev_sample import EV
         data = EV
     return FRAMES[frame_id](data)
+
+def render_report_parts(frame_id: str, data: ReportData, selected: str | None = None):
+    """Like render_parts, for the real report page: gallery frames that draw several demo states side by
+    side get their single real state instead. Every other frame is unchanged."""
+    if frame_id == "sunburst":
+        return sunburst_report(data, selected)
+    return render_parts(frame_id, data)
 
 def render(frame_id: str, data: ReportData | None = None) -> str:
     body, w, h = render_parts(frame_id, data)

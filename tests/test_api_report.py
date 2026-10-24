@@ -931,3 +931,17 @@ def test_answer_positions_for_is_empty_without_a_column_row_or_stored_positions(
         s.add(Column(dataset_id=ds.id, name="Why", position=0, kind="open_text", stats={}, answer_positions=None))
         s.commit()
         assert _answer_positions_for(s, ds.id, "Why") == {}  # Column exists, but never got positions stored
+
+
+def test_quotes_and_phrase_texts_follow_the_active_filter():
+    # A filtered report must never quote, or count phrases from, rows the filter excluded.
+    from app.api_report import _answer_texts_for, _quote_theme_texts_for
+
+    df = pd.DataFrame({"Why": ["kept one", "excluded two", "kept three", "excluded four"]})
+    themes = [Theme(dataset_id=1, column_name="Why", label="Cost", size=4, sentiment=0.0,
+                    tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3])]
+    keep = {0, 2}
+
+    assert _answer_texts_for(df, "Why", themes, keep) == ["kept one", "kept three"]
+    assert _quote_theme_texts_for(df, "Why", themes, keep) == [("Cost", ["kept one", "kept three"])]
+    assert len(_answer_texts_for(df, "Why", themes)) == 4  # no filter: unchanged

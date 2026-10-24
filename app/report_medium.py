@@ -10,7 +10,7 @@ from collections import Counter
 import math
 
 from .chart_data import ReportData, ScoreBand, ScoreData
-from .charts import TITLES, render_parts
+from .charts import TITLES, render_report_parts
 from .charts_medium import group_mix_columns
 from .cleaning.suppression import min_group_size
 from .report_blocks import BY_SLUG
@@ -36,7 +36,7 @@ def view(chart_id: str, data: ReportData, label: str, note: str = '') -> dict:
                 f'<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px">{key}</div></div>')
         width, height = 390, 580 + 50 * math.ceil(len(data.themes) / 2)
     else:
-        html, width, height = render_parts(chart_id, data)
+        html, width, height = render_report_parts(chart_id, data)
     return {'chart_id': chart_id, 'chart_title': TITLES.get(chart_id, chart_id),
             'chart_label': label, 'chart_note': note, 'chart_html': html,
             'chart_width': width, 'chart_height': height}

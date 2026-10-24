@@ -2794,3 +2794,52 @@ STAGE5-WIRE-01`) and were deliberately left untouched, not staged, not committed
 
 Claimed/closed on the task board as `STAGE4-THEMEMIX-01`. `trend_small_multiples`/`trend_sparse` remain
 not started - blocked on `app/charts.py` until Codex's Stage 5 work clears that file.
+
+## 2026-10-24 (bug fixes after a review of Stages 3-4, plus a review of Codex's Stage 5)
+
+Claimed on the task board as `BUGFIX-REVIEW-01`, after Codex's `STAGE5-WIRE-01` (`60cbd34`) closed and
+released `app/charts.py`.
+
+**Fixed:**
+- **Sunburst finding chart drew two copies (Stage 3 bug, mine).** `f_sunburst` is a design-gallery frame
+  that shows two interaction states side by side ("Default, hover on X" + "X selected"), 1,640px tall.
+  Stage 3 started using it for real `long_tail` findings, and Stage 5's overview "Sunburst" tab uses it
+  too. New `app/charts.py:sunburst_report` draws the one real state (the finding's theme outlined, or
+  nothing dimmed for the overview tab); `render_report_parts` uses it for `sunburst` and is
+  `render_parts` for every other chart. Both report paths (`app/api_report.py`'s block loop,
+  `app/report_medium.py:view`) now call `render_report_parts`. The gallery frame and its golden file are
+  unchanged.
+- **Quotes and recurring phrases ignored report filters.** `_answer_texts_for`/`_quote_theme_texts_for`
+  read every theme row regardless of `filter_rows`, so a report filtered to one group still quoted the
+  others. Both now take `filter_rows` (GET path only; the build job never filters). Live: dataset 11
+  filtered to Division = Initmates, "true to size" drops from 127 answers to 8. A filtered view whose
+  quotes or phrases come out empty now drops that block instead of rendering an empty shell.
+  (Correction to my earlier review: I first described this as "a filter can empty these blocks". The
+  real bug was the opposite: they were never filtered at all.)
+- **Stray apostrophes in phrase chips** (`i'm '`, `' lbs`, from an earlier batch). The shared lexicon
+  tokenizer `[a-z']+` keeps a bare `'` from heights like 5'4" and splits curly apostrophes ("I’m" ->
+  "i", "m"). Fixed in `app/text_pipeline/phrases.py` only (`_phrase_tokens`: normalize curly
+  apostrophes, strip edge apostrophes, drop empty tokens; plus common contractions as stopwords), so
+  sentiment scores are unchanged. Not fixed, flagged: the same tokenizer also splits curly "don’t" in
+  `sentiment.py`, which likely weakens negation handling for those answers; changing it would shift every
+  stored sentiment score, so it needs its own decision.
+- **The "5 pre-existing failures" were a test-isolation bug, not flaky tests.** The developer's local
+  `.env` (ENV=dev, Clerk URLs) leaked into pytest through both `load_dotenv()` (app/main.py) and
+  pydantic-settings' `env_file` (app/config.py). `tests/conftest.py` now switches both off before any app
+  import. Full suite: **876 passed, 0 failed, with `.env` present.**
+
+**Tests added**: single-panel report sunburst vs. unchanged gallery frame; quote/phrase texts follow
+`filter_rows`; the apostrophe case (confirmed to FAIL against the previous `phrases.py` and pass now - the
+first version of this test passed on both, so it was rewritten to use the real "I'm 5'4, 125 lbs" shape).
+
+**Codex Stage 5 review (`60cbd34`)** - read `app/report_medium.py`, `app/charts_medium.py`, the
+`app/api_report.py`/`app/charts.py` diff and `docs/STAGE5_IMPLEMENTATION.md`. No correctness bugs
+found. Checked specifically: segment/score/trend findings really store the `"theme"` key
+`finding_views` reads; `ScoreBand(label, mix, sentiment, answers)` field order matches
+`segment_flow_data`; theme `answer_refs` are filter-intersected, so `comparison_groups`/
+`complete_numeric_grid` respect filters; variants are dropped when a filter changes the source column.
+Live on dataset 11: segment findings offer `groupMix`, the sunburst finding offers `icicle`, the
+numeric grid appears as an exploration, and no Sankey is offered (correct - dataset 11 has only 2 real
+themes; theme_flow needs 3). Two small notes, not bugs: the overview "Icicle" tab now uses the 390px
+compact layout on desktop too; and when a `trend_shift` finding's canonical chart is
+`themeMixOverTime` (Stage 4), the plain `trend` line is not offered as a variant.

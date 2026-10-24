@@ -29,7 +29,16 @@ STOPWORDS = frozenset({
     "i", "me", "my", "we", "us", "our", "you", "your", "he", "him", "his", "she", "her", "they", "them",
     "their", "do", "does", "did", "have", "has", "had", "so", "than", "then", "there", "here",
     "s", "t", "re", "ve", "ll", "d", "m",
+    "am", "i'm", "i've", "i'd", "i'll", "it's", "that's", "there's", "you're", "we're", "they're",
 })
+
+
+def _phrase_tokens(text: str) -> list[str]:
+    # The shared lexicon tokenizer keeps a bare "'" as a word (heights like 5'4") and splits curly
+    # apostrophes ("I’m" -> "i", "m"); both leaked into phrase chips. Fixed here, not in _tokenize, so
+    # sentiment scores stay exactly as they are.
+    text = text.replace("’", "'").replace("‘", "'")
+    return [w.strip("'") for w in _tokenize(text) if w.strip("'")]
 
 MIN_PHRASE_WORDS, MAX_PHRASE_WORDS = 2, 4
 
@@ -50,7 +59,7 @@ def build_phrase_data(answer_texts: list[str]) -> PhraseData | None:
     for text in answer_texts:
         if not isinstance(text, str) or not text.strip():
             continue
-        words = _tokenize(text)
+        words = _phrase_tokens(text)
         seen_in_this_answer: set[str] = set()
         for n in range(MIN_PHRASE_WORDS, MAX_PHRASE_WORDS + 1):
             for i in range(len(words) - n + 1):

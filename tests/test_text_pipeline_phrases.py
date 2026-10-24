@@ -70,3 +70,22 @@ def test_non_string_and_blank_entries_are_skipped_not_crashed_on():
 def test_min_phrase_answers_floor_is_small_not_the_30_answer_suppression_floor():
     # Deliberately NOT app.cleaning.suppression.min_group_size()'s 30 - see the module's own docstring.
     assert MIN_PHRASE_ANSWERS < 30
+
+
+def test_heights_and_curly_apostrophes_never_become_phrase_fragments():
+    # Found live on dataset 11: chips like "i'm '" and "' lbs" came from heights (5'4") leaving a bare
+    # "'" token, and curly apostrophes splitting "I’m" into "i" + "m".
+    texts = [
+        "I'm 5'4, 125 lbs and it runs true to size",
+        "I'm 5'2, 130 lbs, true to size for me",
+        "I’m 5’6, 135 lbs - true to size",
+        "I'm 5'7, 140 lbs, ordered my usual",
+    ]
+    data = build_phrase_data(texts)
+    assert data is not None
+    shown = [p.text for p in data.phrases]
+    assert "true to size" in shown
+    for t in shown:
+        words = t.split()
+        assert "'" not in words and not t.startswith("'") and not t.endswith("'"), shown
+        assert words[0] not in {"i'm", "i", "m", "am"}, shown

@@ -684,3 +684,23 @@ def test_heatmap_first_column_is_not_a_bare_pixel_width():
     first_col = m.group(1).split(" ")[0]
     assert first_col.startswith("minmax(") or first_col.startswith("clamp("), \
         f"heatmap's first column {first_col!r} is a bare fixed width"
+
+
+def test_report_sunburst_is_one_panel_not_the_gallery_two_state_demo():
+    # The gallery frame shows "Default, hover on X" and "X selected" side by side; a real report finding
+    # must show only its own state (found live: a long_tail finding rendered both, 1,640px tall).
+    from app.charts import render_parts, render_report_parts
+    from app.fixtures.ev_sample import EV
+
+    gallery_html, _, gallery_h = render_parts("sunburst", EV)
+    assert "Default, hover on" in gallery_html and gallery_h == 1640  # gallery unchanged
+
+    finding_html, _, finding_h = render_report_parts("sunburst", EV, "Other")
+    assert "Default, hover on" not in finding_html
+    assert finding_html.count("Other selected, others dimmed") == 1
+    assert finding_h < gallery_h
+
+    overview_html, _, _ = render_report_parts("sunburst", EV)
+    assert "Default, hover on" not in overview_html and "others dimmed" not in overview_html
+
+    assert render_report_parts("treemap", EV) == render_parts("treemap", EV)  # every other chart unchanged
