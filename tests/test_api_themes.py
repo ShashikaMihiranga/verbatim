@@ -18,11 +18,13 @@ from sqlalchemy.pool import NullPool
 import app.db as db_module
 from app.api_themes import (
     _SLOTS,
+    MAX_ANSWER_POSITIONS,
     MIN_OTHER_NEW_THEME_SIZE,
     _apply_other_classification,
     _apply_theme_split,
     _cluster_centroid,
     _project_centroids_2d,
+    _sample_answer_positions,
     _themes_deadline_for,
     get_claude_client,
     get_embedding_client,
@@ -749,6 +751,51 @@ def test_project_centroids_2d_returns_all_none_when_fewer_than_two_real_centroid
     assert _project_centroids_2d([[1.0, 0.0]]) == [None]
     assert _project_centroids_2d([None, None]) == [None, None]
     assert _project_centroids_2d([]) == []
+
+
+# ==================================================================== _sample_answer_positions
+# (chart-block stream, 2026-10-24, batch 4: answer_map)
+
+def test_sample_answer_positions_is_empty_when_embedded_is_none_or_too_small():
+    import numpy as np
+    from app.text_pipeline import EmbeddedAnswers
+
+    assert _sample_answer_positions(None) == {}
+    one_row = EmbeddedAnswers(row_indexes=[0], vectors=np.array([[1.0, 2.0]]), position_by_row={0: 0})
+    assert _sample_answer_positions(one_row) == {}
+
+
+def test_sample_answer_positions_keys_by_real_row_index_and_scales_to_0_1():
+    import numpy as np
+    from app.text_pipeline import EmbeddedAnswers
+
+    embedded = EmbeddedAnswers(
+        row_indexes=[10, 20, 30], vectors=np.array([[1.0, 0.0], [3.0, 0.0], [2.0, 5.0]]),
+        position_by_row={10: 0, 20: 1, 30: 2},
+    )
+    positions = _sample_answer_positions(embedded)
+    assert set(positions) == {10, 20, 30}  # keyed by the real row index, not the array position
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    assert min(xs) == pytest.approx(0.0) and max(xs) == pytest.approx(1.0)
+    assert min(ys) == pytest.approx(0.0) and max(ys) == pytest.approx(1.0)
+
+
+def test_sample_answer_positions_is_reproducible_for_the_same_seed_and_bounded_by_the_cap():
+    import numpy as np
+    from app.text_pipeline import EmbeddedAnswers
+
+    n = MAX_ANSWER_POSITIONS + 50
+    rows = list(range(n))
+    rng = np.random.default_rng(0)
+    embedded = EmbeddedAnswers(
+        row_indexes=rows, vectors=rng.normal(size=(n, 4)), position_by_row={r: i for i, r in enumerate(rows)},
+    )
+    first = _sample_answer_positions(embedded, seed=42)
+    second = _sample_answer_positions(embedded, seed=42)
+    assert first == second  # same seed -> same sample, same positions
+    assert len(first) == MAX_ANSWER_POSITIONS  # never stores more than the cap
+    assert _sample_answer_positions(embedded, seed=1) != first  # a different seed samples differently
 
 
 def test_watchdog_marks_a_truly_stuck_job_failed_without_stopping_the_real_thread(env, monkeypatch):

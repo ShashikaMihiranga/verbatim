@@ -458,6 +458,7 @@ def build_report_data(
     answer_lengths: list[int] | None = None,
     answer_texts: list[str] | None = None,
     quote_theme_texts: list[tuple[str, list[str]]] | None = None,
+    answer_positions: dict[int, tuple[float, float]] | None = None,
     structured: StructuredContext | None = None,
     filter_rows: set[int] | None = None,
 ) -> ReportData:
@@ -553,7 +554,7 @@ def build_report_data(
         group_trend=structured.group_trend if structured and structured.group_trend else GroupTrendData(group_column="", labels=[], series=[], note=""),
         binned_grid=structured.binned_grid if structured and structured.binned_grid else BinnedGridData(row_name="", col_name="", row_labels=[], col_labels=[], cells=[]),
         cooccurrence=[],
-        answer_map=MapData(seed=0, tip_text="", tip_note=""),
+        answer_map=_build_answer_map(nodes, answer_positions, getattr(dataset, "id", None) or 0, quote_theme_texts),
         frequency=structured.frequency if structured and structured.frequency else FreqData(question="", answered=0, items=[], highlight="", footnote=""),
         category_avg=structured.category_avg if structured and structured.category_avg else CategoryAvgData(category_name="", number_name="", overall_avg=0.0, items=[]),
         phrases=(build_phrase_data(answer_texts) if answer_texts else None) or PhraseData(phrases=[], highlight=""),
@@ -682,6 +683,32 @@ def _build_context(
         kind_options=["reasons", "improvements", "experiences", "facts", "opinions", "anything else"],
         kind_hover=kind, framing=framing, length=length, columns_note=columns_note,
     )
+
+
+def _build_answer_map(
+    nodes: list[ThemeNode], answer_positions: dict[int, tuple[float, float]] | None, seed: int,
+    quote_theme_texts: list[tuple[str, list[str]]] | None,
+) -> MapData:
+    """`answer_map` (chart-block stream, 2026-10-24, batch 4): groups the real sampled positions
+    (`app.api_themes._sample_answer_positions`, stored on `Column.answer_positions`) by which REAL theme
+    each sampled row belongs to - "Other" excluded, same reasoning `quotes`' own theme grouping already
+    documents (a point inside "Other" would misleadingly imply it belongs to one real idea). `tip_text`/
+    `tip_note` reuse whichever real text `quote_theme_texts` already picked out (no new per-row text
+    plumbing needed for one cosmetic tooltip example) - honest placeholders when neither is available."""
+    points_by_theme: dict[str, list[tuple[float, float]]] = {}
+    if answer_positions:
+        for node in nodes:
+            if node.color == "other":
+                continue
+            pts = [answer_positions[r] for r in node.answer_refs if r in answer_positions]
+            if pts:
+                points_by_theme[node.name] = pts
+    tip_text, tip_note = "", ""
+    if quote_theme_texts:
+        name, texts = quote_theme_texts[0]
+        if texts:
+            tip_text, tip_note = texts[0], name
+    return MapData(seed=seed, tip_text=tip_text, tip_note=tip_note, points_by_theme=points_by_theme)
 
 
 # ==================================================================== 2. candidate_findings
@@ -948,6 +975,7 @@ def build_findings(
     answer_lengths: list[int] | None = None,
     answer_texts: list[str] | None = None,
     quote_theme_texts: list[tuple[str, list[str]]] | None = None,
+    answer_positions: dict[int, tuple[float, float]] | None = None,
     min_group_size: int | None = None,
     structured: StructuredContext | None = None,
 ) -> Report:
@@ -988,7 +1016,8 @@ def build_findings(
     sentences = write_headline(candidates, claude_client, question)
     report_data = build_report_data(
         dataset, themes, cleaning_report, question, answer_lengths=answer_lengths,
-        answer_texts=answer_texts, quote_theme_texts=quote_theme_texts, structured=structured,
+        answer_texts=answer_texts, quote_theme_texts=quote_theme_texts,
+        answer_positions=answer_positions, structured=structured,
     )
 
     # Replace prior findings/report for this dataset + column - see the column-correlation note above.

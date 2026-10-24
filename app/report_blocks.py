@@ -327,8 +327,12 @@ BLOCKS: list[Block] = [
         "b31", "answer_map", "2", "Answer map", "map",
         "Charging answers form two separate clusters.",
         "More than 500 answers.",
-        # MapData is always placeholder (seed=0, no real tip text) - no 2D answer-embedding pipeline exists.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 4): app/api_themes.py's _sample_answer_positions
+        # now stores a bounded real per-answer 2D sample on Column.answer_positions (reused embeddings,
+        # no new embedding call), threaded into ReportData.answer_map.points_by_theme by
+        # findings.py's _build_answer_map. A dataset built before this landed has no stored positions
+        # (an honest gap, not a backfilled guess) - needs() checks real data, not just that themes exist.
+        lambda data: bool(data.answer_map.points_by_theme),
     ),
     Block(
         "b32", "ranked_list", "2", "Ranked list", "freq",

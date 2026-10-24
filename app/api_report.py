@@ -155,6 +155,18 @@ def _quote_theme_texts_for(clean_df, column: str, themes: list[Theme]) -> list[t
     return out
 
 
+def _answer_positions_for(db: Session, dataset_id: int, column: str) -> dict[int, tuple[float, float]]:
+    """Real sampled per-answer positions for the `answer_map` block (chart-block stream, 2026-10-24,
+    batch 4) - `Column.answer_positions` (set once at theme-build time,
+    `app.api_themes._sample_answer_positions`), JSON-decoded back from `{"row": [x, y]}` string keys to a
+    real `dict[int, tuple[float, float]]`. `{}` when no Column row exists yet, or no positions were ever
+    stored for it (every column built before this stream, or a dataset too small to sample)."""
+    col_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
+    if col_row is None or not col_row.answer_positions:
+        return {}
+    return {int(r): (xy[0], xy[1]) for r, xy in col_row.answer_positions.items()}
+
+
 def _structured_context_for(
     db: Session, ds: Dataset, clean_df, plan, themes: list[Theme], filter_rows: set[int] | None = None,
 ) -> StructuredContext:
@@ -263,11 +275,12 @@ def _render_report(
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
     answer_texts = _answer_texts_for(clean_df, column, themes)
     quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes)
+    answer_positions = _answer_positions_for(db, ds.id, column)
     question = content.get("question") or column
     report_data = build_report_data(
         ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths,
-        answer_texts=answer_texts, quote_theme_texts=quote_theme_texts, structured=structured,
-        filter_rows=filter_rows,
+        answer_texts=answer_texts, quote_theme_texts=quote_theme_texts, answer_positions=answer_positions,
+        structured=structured, filter_rows=filter_rows,
     )
     breakdown, all_themes = other_breakdown(themes, report_data.answered, filter_rows=filter_rows)
 
@@ -444,12 +457,14 @@ def build_report(
     answer_lengths = None
     answer_texts = None
     quote_theme_texts = None
+    answer_positions = None
     structured = None
     if themes:
         clean_df, plan = _load_clean_df(ds, db)
         answer_lengths = _answer_lengths_for(clean_df, column, themes)
         answer_texts = _answer_texts_for(clean_df, column, themes)
         quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes)
+        answer_positions = _answer_positions_for(db, ds.id, column)
         # Built here (synchronously, alongside answer_lengths above) rather than re-queried inside `_work`'s
         # own job-thread session: `StructuredContext` is plain data once built (no lingering ORM references),
         # so it crosses into the closure below exactly like `answer_lengths` already does - one fewer
@@ -477,7 +492,7 @@ def build_report(
             report = build_findings(
                 job_ds, column, job_db, claude_client,
                 cleaning_report=cleaning_report, answer_lengths=answer_lengths, answer_texts=answer_texts,
-                quote_theme_texts=quote_theme_texts, structured=structured,
+                quote_theme_texts=quote_theme_texts, answer_positions=answer_positions, structured=structured,
             )
             step("Drawing charts")
             # Rendered here too (and discarded) purely so a rendering bug fails the job with a plain

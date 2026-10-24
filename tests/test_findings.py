@@ -736,3 +736,48 @@ def test_build_findings_raises_without_stored_themes(session):
     session.commit()
     with pytest.raises(NoThemesForColumn):
         build_findings(ds, "Why", session, FakeClaudeClient("unused"))
+
+
+# ==================================================================== _build_answer_map (chart-block
+# stream, 2026-10-24, batch 4: answer_map)
+
+def test_build_answer_map_groups_real_positions_by_real_theme_excluding_other():
+    from app.findings import _build_answer_map
+
+    nodes = theme_nodes([
+        make_theme(1, "Cost", 50, 0.1, answer_refs=[0, 1, 2]),
+        make_theme(2, "Other", 10, 0.0, answer_refs=[3, 4]),
+    ], total_answered=60)
+    positions = {0: (0.1, 0.2), 1: (0.3, 0.4), 3: (0.9, 0.9)}  # row 2 never sampled; row 3 is in "Other"
+
+    out = _build_answer_map(nodes, positions, seed=7, quote_theme_texts=None)
+
+    assert set(out.points_by_theme) == {"Cost"}  # "Other" excluded even though it has a sampled row
+    assert out.points_by_theme["Cost"] == [(0.1, 0.2), (0.3, 0.4)]
+    assert out.seed == 7
+
+
+def test_build_answer_map_is_empty_without_stored_positions():
+    from app.findings import _build_answer_map
+
+    nodes = theme_nodes([make_theme(1, "Cost", 50, 0.1, answer_refs=[0, 1])], total_answered=50)
+    out = _build_answer_map(nodes, None, seed=0, quote_theme_texts=None)
+    assert out.points_by_theme == {}
+
+
+def test_build_answer_map_tooltip_reuses_the_first_real_quote():
+    from app.findings import _build_answer_map
+
+    nodes = theme_nodes([make_theme(1, "Cost", 50, 0.1, answer_refs=[0])], total_answered=50)
+    out = _build_answer_map(nodes, {0: (0.5, 0.5)}, seed=0, quote_theme_texts=[("Cost", ["Too expensive"])])
+    assert out.tip_text == "Too expensive"
+    assert out.tip_note == "Cost"
+
+
+def test_build_report_data_threads_real_answer_positions_into_answer_map():
+    themes = [make_theme(1, "Cost", 50, 0.1, answer_refs=[0, 1])]
+    data = build_report_data(
+        Dataset(project_id=1, filename="x.csv", file_hash="1" * 64, row_count=50, profile={}),
+        themes, cleaning_report={}, question=QUESTION, answer_positions={0: (0.2, 0.3), 1: (0.4, 0.5)},
+    )
+    assert data.answer_map.points_by_theme == {"Cost": [(0.2, 0.3), (0.4, 0.5)]}

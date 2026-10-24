@@ -1477,19 +1477,34 @@ def f_arc(data: ReportData):
 def f_map(data: ReportData):
     rnd = random.Random(data.answer_map.seed)
     bub = bub_of(data)
+    has_real_points = bool(data.answer_map.points_by_theme)
     W, Hh = 1084, 620
     px0, pw, py0, ph = 60, 960, 40, 520
-    o = [f'<svg width="{W}" height="{Hh}" viewBox="0 0 {W} {Hh}" role="img" aria-label="Map of answers: each dot is about 50 answers, placed near answers with similar wording">']
+    # Honest, not just cosmetic: with real positions, one dot IS one real sampled answer - "about 50
+    # answers" (the old synthetic-density ratio, share*9.5 dots standing in for the real count) would be
+    # a wrong claim about real data.
+    alt = ("Map of answers: each dot is one real sampled answer, placed by real wording similarity" if has_real_points
+           else "Map of answers: each dot is about 50 answers, placed near answers with similar wording")
+    o = [f'<svg width="{W}" height="{Hh}" viewBox="0 0 {W} {Hh}" role="img" aria-label="{esc(alt)}">']
     sel = data.selected_theme
     labels = ""
     tip = ""
+    real_points = data.answer_map.points_by_theme
     for name, share, sent, cnt, col in rows(data):
         g = f'<g style="opacity:{1 if name == sel else DIM}">'
-        n = round(share * 9.5)
-        if name not in bub:
+        if name in real_points:
+            # Real sampled per-answer positions (chart-block stream, 2026-10-24, batch 4) - plotted
+            # directly, never jittered: a reader seeing "two separate clusters" here is seeing a real
+            # shape in the data, not a density illustration (see the synthetic branch below, still used
+            # when no real positions exist, e.g. every report built before this stream).
+            pts = [(px0 + x * pw, py0 + y * ph) for x, y in real_points[name]]
+            cxy = (px0 + bub[name][0] * pw, py0 + bub[name][1] * ph) if name in bub else None
+        elif name not in bub:
+            n = round(share * 9.5)
             pts = [(px0 + rnd.random() * pw, py0 + rnd.random() * ph) for _ in range(n)]
             cxy = None
         else:
+            n = round(share * 9.5)
             cx0, cy0 = px0 + bub[name][0] * pw, py0 + bub[name][1] * ph
             sg = 24 + 5 * math.sqrt(share)
             pts = [(rnd.gauss(cx0, sg), rnd.gauss(cy0, sg * 0.85)) for _ in range(n)]
@@ -1510,7 +1525,8 @@ def f_map(data: ReportData):
     o.append(labels)
     o.append(tip)
     o.append("</svg>")
-    return frame("What does the whole pool of answers look like?", "Each dot is about 50 answers, placed near answers with similar wording. " + data.selected_theme + " is selected.", "".join(o), 820)
+    density_note = "Each dot is one real sampled answer." if has_real_points else "Each dot is about 50 answers."
+    return frame("What does the whole pool of answers look like?", f"{density_note} " + data.selected_theme + " is selected.", "".join(o), 820)
 
 
 # ---------- group_split_bars, compare_dots, slope_change (chart-block stream, 2026-10-24 - new ----------

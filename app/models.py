@@ -47,6 +47,14 @@ class Column(Base):
     # text | number | category | date | id | ignore
     kind: Mapped[str] = mapped_column(String(32))
     stats: Mapped[dict | None] = mapped_column(JSON)
+    # A bounded SAMPLE of real per-answer 0..1 positions for the answer_map block (chart-block stream,
+    # 2026-10-24, batch 4), {"row_index_as_str": [x, y]} - a dict, not a 2D array, because only a subset
+    # of rows is ever sampled (see app/api_themes.py's own comment on why) and a dict keeps each point
+    # attached to its real row index rather than an implicit position. Kept on `Column`, not `Theme`: a
+    # position describes the ANSWER's own semantic location, independent of which theme it currently
+    # belongs to (unlike `Theme.map_x/map_y`, which is a property of the theme's own cluster). `None`
+    # (the default, and every column built before this stream) means no real positions exist yet.
+    answer_positions: Mapped[dict | None] = mapped_column(JSON)
 
 
 class Theme(Base):

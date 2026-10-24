@@ -169,6 +169,12 @@ class MapData:
     seed: int  # random seed for dot scatter (keeps the map stable between renders)
     tip_text: str  # example answer shown in the map tooltip
     tip_note: str  # small line under the tooltip text
+    # Real per-answer 0..1 positions (chart-block stream, 2026-10-24, batch 4: answer_map), keyed by theme
+    # name, a SAMPLE (not every answer - see app/api_themes.py's own comment on why a bounded sample is
+    # enough to show real cluster shape/separation honestly) of real embedding-derived points. Empty dict
+    # (the default) means no real positions exist yet - f_map falls back to its original synthetic
+    # density-cloud-around-the-theme's-real-centre rendering in that case, same as it always has.
+    points_by_theme: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
 
 
 @dataclass

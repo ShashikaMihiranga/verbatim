@@ -24,12 +24,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 import app.db as db_module
-from app.api_report import _SLOTS
+from app.api_report import _SLOTS, _answer_positions_for
 from app.api_themes import get_claude_client
 from app.api_upload import current_user
 from app.db import Base, get_db
 from app.main import app
-from app.models import Finding, Report, Theme
+from app.models import Column, Dataset, Finding, Report, Theme
 from app.text_pipeline.labeling import FakeClaudeClient
 from tests.job_test_support import BlockingClient, wait_for_job
 
@@ -840,3 +840,33 @@ def test_export_404_for_another_users_dataset(env):
     as_user(uid2)
     r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "png"})
     assert r.status_code == 404
+
+
+# ==================================================================== _answer_positions_for (chart-block
+# stream, 2026-10-24, batch 4: answer_map)
+
+def test_answer_positions_for_decodes_stored_json_keys_back_to_int_rows(env):
+    with env.Session() as s:
+        ds = Dataset(project_id=1, filename="x.csv", file_hash="2" * 64, row_count=10, profile={})
+        s.add(ds)
+        s.flush()
+        s.add(Column(
+            dataset_id=ds.id, name="Why", position=0, kind="open_text", stats={},
+            answer_positions={"0": [0.1, 0.2], "5": [0.9, 0.8]},
+        ))
+        s.commit()
+
+        positions = _answer_positions_for(s, ds.id, "Why")
+        assert positions == {0: (0.1, 0.2), 5: (0.9, 0.8)}  # string JSON keys -> real int row indices
+
+
+def test_answer_positions_for_is_empty_without_a_column_row_or_stored_positions(env):
+    with env.Session() as s:
+        ds = Dataset(project_id=1, filename="x.csv", file_hash="3" * 64, row_count=10, profile={})
+        s.add(ds)
+        s.flush()
+        assert _answer_positions_for(s, ds.id, "Missing") == {}  # no Column row for this name at all
+
+        s.add(Column(dataset_id=ds.id, name="Why", position=0, kind="open_text", stats={}, answer_positions=None))
+        s.commit()
+        assert _answer_positions_for(s, ds.id, "Why") == {}  # Column exists, but never got positions stored

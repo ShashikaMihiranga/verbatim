@@ -260,6 +260,46 @@ def _cluster_centroid(cluster: Cluster, embedded: "EmbeddedAnswers | None") -> l
     return list(np.asarray(embedded.vectors)[idxs].mean(axis=0))
 
 
+def _pca_normalize_01(vectors: np.ndarray) -> np.ndarray:
+    """Shared PCA-then-min-max-scale core behind `_project_centroids_2d` (per-theme) and
+    `_sample_answer_positions` (per-answer, `answer_map` block) - pure local sklearn PCA, no network cost.
+    Returns an (n, 2) array with both columns scaled to 0..1 over exactly the rows given (never a wider or
+    narrower range - every caller already decides what set of vectors belongs in one shared scale before
+    calling this)."""
+    xy = PCA(n_components=2).fit_transform(vectors)
+    x_lo, x_hi = xy[:, 0].min(), xy[:, 0].max()
+    y_lo, y_hi = xy[:, 1].min(), xy[:, 1].max()
+    x_span = (x_hi - x_lo) or 1.0
+    y_span = (y_hi - y_lo) or 1.0
+    xy[:, 0] = (xy[:, 0] - x_lo) / x_span
+    xy[:, 1] = (xy[:, 1] - y_lo) / y_span
+    return xy
+
+
+# Cap on how many real answers get a stored position (chart-block stream, 2026-10-24, batch 4:
+# answer_map) - a representative SAMPLE is enough to show a dataset's real cluster shape/separation
+# honestly (the whole point of this block, "Charging answers form two separate clusters"); storing every
+# row of a 40,000-row dataset would bloat `Column.answer_positions` and the report API response for no
+# visual benefit (a dot map this size is already dense well before 3,000 points).
+MAX_ANSWER_POSITIONS = 3000
+
+
+def _sample_answer_positions(embedded: "EmbeddedAnswers | None", seed: int = 0) -> dict[int, tuple[float, float]]:
+    """Real 2D positions for a bounded, reproducible (same `seed` - the dataset's own id, see the call
+    site) sample of real answers, from the SAME embedding vectors already computed for clustering - no
+    new embedding call. `{}` when there is nothing to sample (fewer than 2 embedded rows can't form a
+    meaningful spread, same reasoning `_project_centroids_2d` already documents for themes)."""
+    if embedded is None or len(embedded.row_indexes) < 2:
+        return {}
+    rng = np.random.default_rng(seed)
+    if len(embedded.row_indexes) <= MAX_ANSWER_POSITIONS:
+        sample_idx = np.arange(len(embedded.row_indexes))
+    else:
+        sample_idx = rng.choice(len(embedded.row_indexes), size=MAX_ANSWER_POSITIONS, replace=False)
+    xy = _pca_normalize_01(np.asarray(embedded.vectors)[sample_idx])
+    return {embedded.row_indexes[i]: (float(x), float(y)) for i, (x, y) in zip(sample_idx, xy)}
+
+
 def _project_centroids_2d(centroids: list[list[float] | None]) -> list[tuple[float, float] | None]:
     """2D positions for the theme-similarity map (chart-block stream, 2026-10-24, batch 3 -
     `theme_similarity` block) from each real theme's own (post-merge) centroid - see `_cluster_centroid`
@@ -281,13 +321,9 @@ def _project_centroids_2d(centroids: list[list[float] | None]) -> list[tuple[flo
     if len(real) < 2:
         return out
     idxs, vectors = zip(*real)
-    xy = PCA(n_components=2).fit_transform(np.array(vectors))
-    x_lo, x_hi = xy[:, 0].min(), xy[:, 0].max()
-    y_lo, y_hi = xy[:, 1].min(), xy[:, 1].max()
-    x_span = (x_hi - x_lo) or 1.0
-    y_span = (y_hi - y_lo) or 1.0
+    xy = _pca_normalize_01(np.array(vectors))
     for i, (x, y) in zip(idxs, xy):
-        out[i] = (float((x - x_lo) / x_span), float((y - y_lo) / y_span))
+        out[i] = (float(x), float(y))
     return out
 
 
@@ -714,6 +750,14 @@ def build_themes(
             scores = score_column(clean_df, plan, column)
         with _db.SessionLocal() as job_db:
             _write_theme_rows(job_db, dataset_id_, column, result, labels, scores, sub_clusters, sub_labels, embedded)
+            # chart-block stream, 2026-10-24, batch 4 (answer_map): a real per-answer position sample,
+            # stored on this dataset+column's own Column row - independent of theme assignment (see
+            # Column.answer_positions' own docstring for why it lives here, not on Theme).
+            positions = _sample_answer_positions(embedded, seed=dataset_id_)
+            col_row = job_db.scalar(select(Column).where(Column.dataset_id == dataset_id_, Column.name == column))
+            if col_row is not None:
+                col_row.answer_positions = {str(r): list(xy) for r, xy in positions.items()}
+                job_db.commit()
 
     start_job(
         job, _SLOTS, _work, _theme_build_error,

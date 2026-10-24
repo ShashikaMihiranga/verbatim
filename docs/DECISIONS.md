@@ -2583,3 +2583,52 @@ matching the standing "push only on explicit confirmation" convention all sessio
 - Agent-usage counter and weekly session monitor are still next, per the user's own stated order - not
   started; worth asking, when picking the next one up, whether it similarly belongs in the terminal rather
   than a new web page.
+
+## 2026-10-24 (chart-block stream, batch 4: `answer_map` finished - 15 of 46 blocks done)
+
+Resumes the "Session handoff" entry above - that entry's own "Next steps to finish `answer_map`" list is
+now complete, in order:
+
+1. Wired `answer_positions` through `build_findings`'s own `build_report_data(...)` call
+   (`app/findings.py`) - the exact line execution had stopped on.
+2. `app/report_blocks.py`'s `b31`/`answer_map` block: `needs()` changed from the permanent `lambda data:
+   False` placeholder to `lambda data: bool(data.answer_map.points_by_theme)` - real data, not a fixed gap.
+3. Ran the full backend suite and fixed two real pieces of fallout, both caused by this batch's own
+   `dataset.id` read inside `build_report_data` (added before this session, never exercised by a test
+   until now): (a) every `tests/test_findings.py` test using a bare `SimpleNamespace(row_count=...)` dataset
+   double crashed with `AttributeError: 'SimpleNamespace' object has no attribute 'id'` -
+   `_build_answer_map`'s seed read changed from `dataset.id if dataset.id else 0` to
+   `getattr(dataset, "id", None) or 0`, tolerating a test double without inventing a fake id on the real
+   `Dataset` model (which always has one); (b) `tests/golden/map.html` was stale against the batch's own
+   already-intentional caption fix (the synthetic-fallback caption dropped "placed near answers with similar
+   wording" days earlier in this same batch) - regenerated, not a logic change.
+4. Unit tests added for all 4 new functions, following every earlier batch's own pattern:
+   `tests/test_api_themes.py` (`_sample_answer_positions`: empty on `None`/too-few rows, keys by real row
+   index and scales 0..1, reproducible per seed and bounded by `MAX_ANSWER_POSITIONS`), `tests/test_findings.py`
+   (`_build_answer_map`: groups by real theme excluding "Other", empty without stored positions, tooltip
+   reuses the first real quote; plus a `build_report_data` integration test proving `answer_positions` really
+   reaches `ReportData.answer_map`), `tests/test_api_report.py` (`_answer_positions_for`: decodes stored JSON
+   string keys back to real int rows, empty with no `Column` row or no stored positions).
+5. Live-verified against dataset 11 (`clothing_reviews_survey_LITE_2000.csv`, column `Review_Text`):
+   rebuilt themes through the real running backend (`POST .../themes/build`), confirmed
+   `Column.answer_positions` held exactly 2000 real 0..1-scaled positions, confirmed `build_report_data`
+   grouped them into `ReportData.answer_map.points_by_theme` by real theme ("Fit and sizing": 1609 points,
+   "Overall satisfaction and compliments": 77), and confirmed `charts.f_map`'s rendered SVG carries the real,
+   not synthetic, aria-label ("each dot is one real sampled answer, placed by real wording similarity").
+   **Caught mid-verification**: the first rebuild attempt showed 0 stored positions - not a code bug, but a
+   stale long-running `uvicorn` process from earlier in the day that had the OLD `app/api_themes.py` loaded
+   in memory (no `--reload` flag) and never saw this stream's on-disk changes. Restarting the dev server
+   (not editing any code) fixed it; flagged here so a future session doesn't re-diagnose the same thing.
+6. This entry.
+7. Not committed in this entry - see the commit this same file change ships with.
+
+**15 of 46 blocks now done** (14 from batches 1-3 + `answer_map`). Claimed and closed on the shared task
+board as `CHART-BATCH4-ANSWER-MAP` (`docs/COLLABORATION.md` workflow) before and after this work, per the
+user's own request to use the board going forward.
+
+**Remaining (per the plan's own "Remaining after answer_map" list, unchanged)**: `region_map` (a dot map,
+one circle per country at its real lat/long centroid - needs a new "country" column-kind + a lat/long
+lookup table + a new renderer), `trend_grid`, `trend_aggregated`, `trend_errorbars`, `trend_sparse`
+(smaller trend variants needing finer per-period data `TrendData` doesn't carry yet). User has explicitly
+asked to hold off starting these until Codex is available to help build them in parallel - the scoring/
+selection engine (deferred Stage 2) stays last either way, per the existing reordering decision.
