@@ -20,7 +20,7 @@ only when its acceptance criteria and tests pass.**
 
 | Phase | Task ID | What | Status |
 |---|---|---|---|
-| 0 | (user) | Restore 34919df frontend files, release `UI-REPORT-07` | [ ] waiting on the user |
+| 0 | (user) | Restore 34919df frontend files, release `UI-REPORT-07` | [x] done by the user |
 | bug | `RACE-GUARD-01` | Report build and theme rebuild can't overlap | [x] done, `182c891` |
 | doc | `REPORT-UI-DOC` | This document | [x] done |
 | 1 | `REPORT-UI-1` | Backend data for Inside Other, live progress, honest step names, treemap Other labels | [ ] |
@@ -28,7 +28,7 @@ only when its acceptance criteria and tests pass.**
 | 3 | `REPORT-UI-3` | Page order and text trim; overview without tabs | [ ] |
 | 4 | `REPORT-UI-4` | Visual / interaction / accessibility gate at 1280, 888 and 390px | [ ] |
 | 5 | `REPORT-UI-5` | Follow-ups (audit finding variants; catch-all new theme), user approval needed | [ ] |
-| – | – | Add a pointer to this doc from `docs/UI_FIXES.md` (that file belongs to `UI-REPORT-07` until Phase 0) | [ ] |
+| – | – | Add a pointer to this doc from `docs/UI_FIXES.md` | [x] done |
 
 ## Why this work exists
 
@@ -268,7 +268,7 @@ git checkout HEAD -- frontend/src/ThemeChart.tsx frontend/src/FindingChartTabs.t
 python3 tools/taskboard.py release UI-REPORT-07 --agent user --message "Restored 34919df; report UI handed to Claude (REPORT-UI-REWORK)"
 ```
 
-- [ ] `git status` shows none of those files modified, and the board shows `UI-REPORT-07` released.
+- [x] `git status` shows none of those files modified, and the board shows `UI-REPORT-07` released.
 
 ### Phase 1 — `REPORT-UI-1`: backend data
 
@@ -401,3 +401,5 @@ cd frontend && npm run lint                           # 6 existing warnings, no 
 - 2026-10-24 — Document created (`REPORT-UI-DOC`). The bug fix (`RACE-GUARD-01`, `182c891`) landed before
   it. Phase 0 is waiting on the user. The pointer from `docs/UI_FIXES.md` waits for Phase 0, because that
   file is in `UI-REPORT-07`'s scope.
+- 2026-10-24 — Phase 0 done by the user: the five files restored to `34919df`, `UI-REPORT-07` released.
+  Pointer added to `docs/UI_FIXES.md`.

@@ -1,5 +1,8 @@
 # Report UI fixes — shared Claude / Codex backlog
 
+> **Superseded for new work (2026-10-24):** the report UI is being reworked to the Other-Flow design. Follow
+> `docs/REPORT_UI_REWORK.md` (decisions, phases, checklist). UI-REPORT-07 was released and its files restored to `34919df`.
+
 Created 2026-10-24 from the user's screenshots of `/report?dataset=11` at an 888px viewport.
 This is a separate UI workstream. Tasks were initially Ready/unassigned; Codex subsequently claimed
 and implemented UI-REPORT-01 through UI-REPORT-05. Live status and ownership are on the shared task board, under `UI-REPORT-*`.
