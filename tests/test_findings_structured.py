@@ -26,7 +26,9 @@ from app.findings_structured import (
     band_dates,
     band_quartiles,
     band_score,
+    build_category_avg_data,
     build_frequency_data,
+    build_group_trend_data,
     build_numeric_data,
     build_score_data,
     build_segment_data,
@@ -477,6 +479,47 @@ def test_build_frequency_data_caps_to_max_items():
     assert len(data.items) == 8
 
 
+# -------------------------------------------------------------------- build_category_avg_data (chart-block
+# stream, 2026-10-24, batch 2: vs_average)
+
+def test_build_category_avg_data_ranks_categories_by_their_own_real_average():
+    cat = {i: v for i, v in enumerate(["Engineer"] * 4 + ["Teacher"] * 4)}
+    num = {0: 90000, 1: 92000, 2: 94000, 3: 96000, 4: 40000, 5: 42000, 6: 44000, 7: 46000}
+    data = build_category_avg_data("Job", "Income", cat, num, floor=2)
+    assert data is not None
+    assert [i.label for i in data.items] == ["Engineer", "Teacher"]  # highest average first
+    assert data.items[0].avg == 93000.0
+    assert data.overall_avg == pytest.approx((90000 + 92000 + 94000 + 96000 + 40000 + 42000 + 44000 + 46000) / 8)
+
+
+def test_build_category_avg_data_only_counts_rows_with_both_values():
+    cat = {0: "Engineer", 1: "Engineer", 2: "Teacher"}  # row 2 has no matching number value
+    num = {0: 90000, 1: 92000, 3: 999999}  # row 3 has no matching category value
+    data = build_category_avg_data("Job", "Income", cat, num, floor=1)
+    assert data is None  # only "Engineer" has any row with both values - 1 category can't be ranked
+    cat2 = {0: "Engineer", 1: "Teacher"}
+    num2 = {0: 90000, 1: 40000}
+    data2 = build_category_avg_data("Job", "Income", cat2, num2, floor=1)
+    assert data2.overall_avg == 65000.0  # only rows 0,1 count - never a stray unmatched value
+
+
+def test_build_category_avg_data_drops_categories_below_the_floor():
+    cat = {i: "Common" for i in range(10)}
+    cat.update({i: "AlsoCommon" for i in range(10, 16)})
+    cat.update({16: "Rare", 17: "Rare"})
+    num = {i: 100.0 for i in range(18)}
+    data = build_category_avg_data("Job", "Income", cat, num, floor=5)
+    labels = {i.label for i in data.items}
+    assert "Rare" not in labels
+    assert labels == {"Common", "AlsoCommon"}
+
+
+def test_build_category_avg_data_returns_none_when_fewer_than_two_categories_survive():
+    cat = {i: "OnlyOne" for i in range(10)}
+    num = {i: 100.0 for i in range(10)}
+    assert build_category_avg_data("Job", "Income", cat, num, floor=2) is None
+
+
 # -------------------------------------------------------------------- build_trend_data
 
 def _period_row_ids(period_sizes: dict[str, int]) -> dict[str, list[int]]:
@@ -549,6 +592,63 @@ def test_build_trend_data_returns_none_when_a_period_is_too_small():
     raw_by_row = {r: float(r) for r in range(89)}
     data = build_trend_data("Date", raw_by_row, nodes, date_bands, "note", floor=30)
     assert data is None  # only P1 and P2 survive - below the "at least 3" floor
+
+
+# -------------------------------------------------------------------- build_group_trend_data (chart-block
+# stream, 2026-10-24, batch 2: trend_groups/trend_styled)
+
+def test_build_group_trend_data_real_sentiment_per_group_per_period():
+    themes = [make_theme("Negative theme", 150, -0.6, list(range(150))), make_theme("Positive theme", 150, 0.6, list(range(150, 300)))]
+    nodes = theme_nodes(themes, total_answered=300)
+    # Biz rows all land in the negative theme, Cons rows all in the positive theme - every period.
+    segment_raw = {r: ("Biz" if r < 150 else "Cons") for r in range(300)}
+    period_by_row = {r: ["P1", "P2", "P3"][r % 3] for r in range(300)}
+    data = build_group_trend_data("Type", segment_raw, period_by_row, ["P1", "P2", "P3"], "note", nodes, group_floor=10)
+    assert data is not None
+    by_group = {s.group: s for s in data.series}
+    assert all(v == pytest.approx(-0.6) for v in by_group["Biz"].values)
+    assert all(v == pytest.approx(0.6) for v in by_group["Cons"].values)
+    assert data.labels == ["P1", "P2", "P3"]
+
+
+def test_build_group_trend_data_drops_a_period_missing_from_any_surviving_group():
+    themes = [make_theme("A", 220, 0.0, list(range(220)))]
+    nodes = theme_nodes(themes, total_answered=220)
+    segment_raw = {r: ("Biz" if r < 110 else "Cons") for r in range(220)}
+    # Biz only ever appears in P1/P2; Cons appears in P1/P2/P3 - P3 must be dropped (Biz has no data there).
+    period_by_row = {}
+    for r in range(110):
+        period_by_row[r] = "P1" if r < 60 else "P2"
+    for r in range(110, 220):
+        period_by_row[r] = ["P1", "P2", "P3"][(r - 110) % 3]
+    data = build_group_trend_data("Type", segment_raw, period_by_row, ["P1", "P2", "P3"], "note", nodes, group_floor=10)
+    assert data is None  # only P1/P2 survive for both groups - below the "at least 3 periods" floor
+
+
+def test_build_group_trend_data_drops_groups_below_the_floor_and_caps_to_max_groups():
+    themes = [make_theme("A", 300, 0.0, list(range(300)))]
+    nodes = theme_nodes(themes, total_answered=300)
+    segment_raw = {}
+    for i, g in enumerate(["Big1", "Big2", "Big3", "Tiny"]):
+        n = 5 if g == "Tiny" else 95
+        for j in range(n):
+            segment_raw[len(segment_raw)] = g
+    period_by_row = {r: ["P1", "P2", "P3"][r % 3] for r in range(len(segment_raw))}
+    data = build_group_trend_data(
+        "Type", segment_raw, period_by_row, ["P1", "P2", "P3"], "note", nodes, group_floor=10, max_groups=2,
+    )
+    assert data is not None
+    groups = {s.group for s in data.series}
+    assert "Tiny" not in groups  # below group_floor=10
+    assert len(groups) == 2  # capped to max_groups=2 even though 3 real groups survived the floor
+
+
+def test_build_group_trend_data_returns_none_when_fewer_than_two_groups_survive():
+    themes = [make_theme("A", 100, 0.0, list(range(100)))]
+    nodes = theme_nodes(themes, total_answered=100)
+    segment_raw = {r: "OnlyGroup" for r in range(100)}
+    period_by_row = {r: ["P1", "P2", "P3"][r % 3] for r in range(100)}
+    assert build_group_trend_data("Type", segment_raw, period_by_row, ["P1", "P2", "P3"], "note", nodes, group_floor=10) is None
 
 
 # -------------------------------------------------------------------- pick_structured_columns

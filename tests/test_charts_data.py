@@ -6,9 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.chart_data import (
-    ContextData, CoPair, FreqData, FreqItem, MapData, OverviewData, Phrase, PhraseData, QualityData, Quote,
-    QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode,
-    ToneSplit, TrendData, TrendSeries,
+    CategoryAvg, CategoryAvgData, ContextData, CoPair, FreqData, FreqItem, GroupTrendData, GroupTrendSeries,
+    MapData, OverviewData, Phrase, PhraseData, QualityData, Quote, QuoteData, ReportData, ScoreBand,
+    ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
 )
 from app.charts import (
     FRAMES, _icicle_rotated_label, _prefers_icicle, _too_narrow_for, _treemap_areas, f_overview, f_treemap,
@@ -68,9 +68,13 @@ def small_report() -> ReportData:
                             highlight=(0, 0), highlight_text="North mentions Zebra crossing often."),
         trend=TrendData(["W1", "W2", "W3"], [TrendSeries("Zebra crossing", "t1", [55, 60, 65]), TrendSeries("Yak shaving", "t2", [35, 30, 25])],
                         [-0.1, -0.05, 0.0], 1, "Weekly."),
+        group_trend=GroupTrendData("Region", ["W1", "W2", "W3"],
+                                    [GroupTrendSeries("North", "t1", [-0.2, -0.1, 0.0]), GroupTrendSeries("South", "t2", [0.1, 0.1, 0.1])],
+                                    "Weekly."),
         cooccurrence=[CoPair("Zebra crossing", "Yak shaving", 120)],
         answer_map=MapData(1, "Zebras like stripes", "Zebra crossing, negative"),
         frequency=FreqData("Pet?", 900, [FreqItem("Zebra", 50, 2), FreqItem("Yak", 30)], "Zebra", "Two answers dominate."),
+        category_avg=CategoryAvgData("Pet?", "Age", 32.0, [CategoryAvg("Zebra", 41.0, 450), CategoryAvg("Yak", 24.0, 270)]),
         phrases=PhraseData([Phrase("zebra stripes", 80, -0.2), Phrase("yak wool", 40, 0.1)], "zebra stripes"),
         quotes=QuoteData([Quote("Stripes are confusing", "Zebra crossing", "negative"), Quote("Yaks are fun", "Yak shaving", "positive")], 0),
         quality=QualityData([("1", 10), ("2-3", 40), ("4+", 20)], "2-3", "Typical length 3 words", ["a", "b", "c"]),
@@ -88,6 +92,8 @@ def test_custom_data_renders_its_own_names():
         "slopeChange": ["Zebra crossing", "Yak shaving", "W1", "W3"], "phrases": ["zebra stripes"],
         "toneByNumber": ["Low", "High", "Mood"], "themeMixOverTime": ["Zebra crossing", "Yak shaving", "W1"],
         "quotes": ["Stripes are confusing", "Zebra crossing"], "freq": ["Zebra", "Pet?"],
+        "vsAverage": ["Zebra", "Yak", "Pet?"],
+        "trendGroups": ["North", "South", "W1"], "trendStyled": ["North", "South", "W1"],
     }.items():
         html = render(frame_id, data)
         for n in needles:

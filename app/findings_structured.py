@@ -38,15 +38,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .chart_data import (
-    FreqData, FreqItem, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries,
+    CategoryAvg, CategoryAvgData, FreqData, FreqItem, GroupTrendData, GroupTrendSeries, ScoreBand,
+    ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries,
 )
 from .models import Column, Theme
 
 __all__ = [
     "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
     "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
-    "build_frequency_data", "pick_structured_columns", "build_structured_context", "resolve_filter_rows",
-    "segment_skew_candidates", "score_correlation_candidates", "trend_shift_candidates",
+    "build_frequency_data", "build_category_avg_data", "build_group_trend_data", "pick_structured_columns",
+    "build_structured_context", "resolve_filter_rows", "segment_skew_candidates",
+    "score_correlation_candidates", "trend_shift_candidates",
 ]
 
 
@@ -392,6 +394,8 @@ class StructuredContext:
     trend_column_name: str = ""
     frequency: FreqData | None = None
     frequency_column_name: str = ""
+    category_avg: CategoryAvgData | None = None
+    group_trend: GroupTrendData | None = None
 
     # Raw (pre-band/pre-cap), per-row values behind whichever candidate column won each role, stashed here
     # purely so `resolve_filter_rows` (below) can turn a filter request into a row-index set without
@@ -651,6 +655,57 @@ def build_frequency_data(
     return FreqData(question=column, answered=answered, items=items, highlight=top_label, footnote=footnote)
 
 
+# -------------------------------------------------------------------- build_category_avg_data (chart-block
+# stream, 2026-10-24, batch 2: vs_average - a number column's average, split by a short_text category)
+
+def build_category_avg_data(
+    category_col: str, number_col: str,
+    category_raw: dict[int, str], number_raw: dict[int, float],
+    floor: int, max_categories: int = 8,
+) -> "CategoryAvgData | None":
+    """Reuses `_merge_key`'s case/plural grouping (same as `build_frequency_data` - these two commonly
+    share the SAME short_text column, so a category should merge the same way in both blocks). Only rows
+    with BOTH a real category value and a real number value count toward a category's average or the
+    overall average - a row missing either tells us nothing about this specific pairing, even if it has
+    one of the two values. Ranked by average descending (the design's own example: "Software engineers
+    and managers earn well above average" - the point is the ordering, not alphabetical category order).
+
+    Returns `None` when fewer than 2 categories survive the floor, or no row has both values at all - the
+    same "a valid empty result, not an error" contract every other `build_*_data` function here follows.
+    """
+    rows = set(category_raw) & set(number_raw)
+    if not rows:
+        return None
+    overall_avg = sum(number_raw[r] for r in rows) / len(rows)
+
+    groups: dict[str, dict[str, list[float]]] = {}  # merge key -> {display form -> [values]}
+    for r in rows:
+        v = category_raw[r]
+        if not isinstance(v, str) or not v.strip():
+            continue
+        key = _merge_key(v)
+        forms = groups.setdefault(key, {})
+        forms.setdefault(v.strip(), []).append(number_raw[r])
+
+    def _total_n(forms: dict[str, list[float]]) -> int:
+        return sum(len(vs) for vs in forms.values())
+
+    ranked = sorted(
+        ((key, forms) for key, forms in groups.items() if _total_n(forms) >= floor),
+        key=lambda kf: sum(v for vs in kf[1].values() for v in vs) / _total_n(kf[1]), reverse=True,
+    )
+    if len(ranked) < 2:
+        return None
+
+    items = []
+    for _, forms in ranked[:max_categories]:
+        label = max(forms, key=lambda f: len(forms[f]))  # most-common original casing/form
+        all_values = [v for vs in forms.values() for v in vs]
+        items.append(CategoryAvg(label=label, avg=round(sum(all_values) / len(all_values), 2), n=len(all_values)))
+
+    return CategoryAvgData(category_name=category_col, number_name=number_col, overall_avg=round(overall_avg, 2), items=items)
+
+
 # -------------------------------------------------------------------- build_trend_data
 
 def build_trend_data(
@@ -713,6 +768,70 @@ def build_trend_data(
         labels=surviving_periods, series=series, sentiment=sentiment,
         hover_index=len(surviving_periods) - 1, note=date_note,
     )
+
+
+# -------------------------------------------------------------------- build_group_trend_data (chart-block
+# stream, 2026-10-24, batch 2: trend_groups/trend_styled - a genuinely new per-GROUP-per-PERIOD cross-tab,
+# not a relabeled build_trend_data)
+
+def build_group_trend_data(
+    group_col: str, segment_raw: dict[int, str],
+    period_by_row: dict[int, str], periods: list[str], date_note: str,
+    nodes: list["ThemeNode"], group_floor: int = 100, max_groups: int = 5,
+) -> "GroupTrendData | None":
+    """Per-GROUP sentiment over time, via the SAME count-weighted-average-of-`Theme.sentiment`
+    approximation `build_trend_data` already uses (no true per-row sentiment is ever persisted - see that
+    function's own docstring and this module's top-level note) - here weighted per (group, period) cell
+    instead of per period across all rows.
+
+    A candidate GROUP needs `group_floor` (default 100 - SPEC's own segment/heatmap floor, reused here
+    rather than inventing a third one) answers total to be considered at all; only the `max_groups`
+    largest survive. A PERIOD is kept only if every surviving group has at least one real answer in it -
+    a period where some group has zero data would force either an invented value or a misleading flat
+    line, so it is dropped instead, the same "a period with too little data just isn't shown" discipline
+    `build_trend_data`'s own 30-answer-per-period floor already follows.
+
+    Returns `None` when fewer than 2 groups survive, or fewer than 3 periods survive the per-group
+    completeness check."""
+    row_sentiment: dict[int, float] = {}
+    for node in nodes:
+        for r in node.answer_refs:
+            row_sentiment[r] = node.sentiment
+
+    group_totals: dict[str, int] = {}
+    for g in segment_raw.values():
+        group_totals[g] = group_totals.get(g, 0) + 1
+    surviving_groups = sorted(
+        (g for g, n in group_totals.items() if n >= group_floor), key=lambda g: group_totals[g], reverse=True,
+    )[:max_groups]
+    if len(surviving_groups) < 2:
+        return None
+
+    cells: dict[tuple[str, str], list[float]] = {}
+    for r, g in segment_raw.items():
+        if g not in surviving_groups:
+            continue
+        p = period_by_row.get(r)
+        if p is None or p not in periods:
+            continue
+        s = row_sentiment.get(r)
+        if s is None:
+            continue
+        cells.setdefault((g, p), []).append(s)
+
+    surviving_periods = [p for p in periods if all((g, p) in cells for g in surviving_groups)]
+    if len(surviving_periods) < 3:
+        return None
+
+    colors = ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]
+    series = [
+        GroupTrendSeries(
+            group=g, color=colors[i % len(colors)],
+            values=[round(sum(cells[(g, p)]) / len(cells[(g, p)]), 3) for p in surviving_periods],
+        )
+        for i, g in enumerate(surviving_groups)
+    ]
+    return GroupTrendData(group_column=group_col, labels=surviving_periods, series=series, note=date_note)
 
 
 # -------------------------------------------------------------------- pick_structured_columns
@@ -923,6 +1042,80 @@ def build_structured_context(
         if freq_data is not None:
             context.frequency = freq_data
             context.frequency_column_name = freq_col
+            break
+
+    # chart-block stream, 2026-10-24, batch 2: vs_average. Independent of whichever short_text/numeric
+    # candidate already won the frequency/score roles above - this is a genuinely different question (one
+    # column's average BY another column's categories), so the same two columns can serve double duty.
+    for cat_col in columns.get("short_text", []):
+        raw_cat: dict[int, str] = {}
+        for r in rows:
+            try:
+                v = clean_df.at[r, cat_col]
+            except KeyError:
+                continue
+            if isinstance(v, str) and v.strip():
+                raw_cat[r] = v
+        found = False
+        for num_col in columns.get("numeric", []):
+            raw_num: dict[int, float] = {}
+            for r in rows:
+                try:
+                    v = clean_df.at[r, num_col]
+                except KeyError:
+                    continue
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isnan(fv):
+                    continue
+                raw_num[r] = fv
+            avg_data = build_category_avg_data(cat_col, num_col, raw_cat, raw_num, floor)
+            if avg_data is not None:
+                context.category_avg = avg_data
+                found = True
+                break
+        if found:
+            break
+
+    # chart-block stream, 2026-10-24, batch 2: trend_groups/trend_styled. Independent of whichever
+    # segment/date candidate already won the segment/trend roles above (same "two columns can serve
+    # double duty" reasoning as vs_average/category_avg).
+    for seg_col in columns.get("segment", []):
+        raw_grp: dict[int, str] = {}
+        for r in rows:
+            try:
+                v = clean_df.at[r, seg_col]
+            except KeyError:
+                continue
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                continue
+            raw_grp[r] = v
+        found = False
+        for date_col in columns.get("date", []):
+            parsed_by_row: dict[int, date] = {}
+            for r in rows:
+                try:
+                    v = clean_df.at[r, date_col]
+                except KeyError:
+                    continue
+                ts = pd.Timestamp(v) if isinstance(v, date) else pd.to_datetime(v, errors="coerce")
+                if ts is None or pd.isna(ts):
+                    continue
+                parsed_by_row[r] = ts.date()
+            try:
+                date_bands, date_note = band_dates(list(parsed_by_row.values()))
+            except ValueError:
+                continue
+            period_by_row = apply_bands({r: float(d.toordinal()) for r, d in parsed_by_row.items()}, date_bands)
+            periods = [b.label for b in date_bands]
+            gt_data = build_group_trend_data(seg_col, raw_grp, period_by_row, periods, date_note, nodes)
+            if gt_data is not None:
+                context.group_trend = gt_data
+                found = True
+                break
+        if found:
             break
 
     return context

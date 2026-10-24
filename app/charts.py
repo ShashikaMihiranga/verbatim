@@ -1699,6 +1699,113 @@ def f_theme_mix_over_time(data: ReportData):
     return body, 1180, 120 + rh * len(tr.labels)
 
 
+# ---------- trend_groups / trend_styled (chart-block stream, 2026-10-24, batch 2 - a NEW cross-tab: -----
+# GroupTrendData, per-GROUP sentiment over time, not per-theme share like f_trend above)
+
+def _trend_group_lines(data: ReportData, styled: bool):
+    """Shared geometry for `f_trend_groups`/`f_trend_styled` - `styled` adds a distinct dash pattern AND
+    marker shape per group (not colour alone), so the same chart stays readable in greyscale, print, or
+    for a colour-blind reader - the design's own stated reason for `trend_styled` existing as a second
+    block at all, not a cosmetic variant nobody asked for."""
+    gt = data.group_trend
+    W, H = 1084, 520
+    x0, x1 = 160, W - 60
+    top, bottom = 50, H - 60
+    NP = len(gt.labels)
+    dx = (x1 - x0) / max(1, NP - 1)
+
+    if not gt.series:
+        # Same empty-sequence guard f_phrases/f_freq needed - no group_trend candidate survived for most
+        # reports (needs both a real segment column and a real date column at once), and this renderer is
+        # gallery-only until Stage 2 wires real chart-selection logic anyway.
+        return '<div style="color:var(--muted)">No group and date column pairing produced a real trend for this report.</div>', W, 100
+
+    all_values = [v for s in gt.series for v in s.values]
+    lo, hi = min(all_values), max(all_values)
+    pad = max(0.02, (hi - lo) * 0.15)
+    lo, hi = lo - pad, hi + pad
+    v_span = max(0.01, hi - lo)
+
+    def X(i): return x0 + dx * i
+    def Y(v): return bottom - (v - lo) / v_span * (bottom - top)
+
+    DASH = ["none", "6 4", "2 3", "10 3 2 3", "1 4"]
+    MARK = ["circle", "square", "diamond", "triangle", "circle"]
+
+    def marker(shape, cx, cy, col):
+        if shape == "square":
+            return f'<rect x="{cx - 5:.1f}" y="{cy - 5:.1f}" width="10" height="10" style="fill:{col}"/>'
+        if shape == "diamond":
+            return f'<rect x="{cx - 4.5:.1f}" y="{cy - 4.5:.1f}" width="9" height="9" transform="rotate(45 {cx:.1f} {cy:.1f})" style="fill:{col}"/>'
+        if shape == "triangle":
+            return f'<path d="M{cx:.1f} {cy - 6:.1f} L{cx + 6:.1f} {cy + 5:.1f} L{cx - 6:.1f} {cy + 5:.1f} Z" style="fill:{col}"/>'
+        return f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4.5" style="fill:{col}"/>'
+
+    o = [f'<svg width="100%" height="100%" viewBox="0 0 {W} {H}" preserveAspectRatio="none" style="display:block" '
+         f'role="img" aria-label="Average sentiment per {esc(gt.group_column)} group, over time">']
+    for g in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        if lo <= g <= hi:
+            o.append(f'<line x1="{x0}" y1="{Y(g):.1f}" x2="{x1}" y2="{Y(g):.1f}" style="stroke:var(--line);stroke-width:1"/>')
+    labels = [chart_label(x0, top - 24, W, H, "Average sentiment, by group", 15, 600)]
+    for i, s in enumerate(gt.series):
+        col = f"var(--{s.color})"
+        dash = f';stroke-dasharray:{DASH[i % len(DASH)]}' if styled and DASH[i % len(DASH)] != "none" else ""
+        pts = " ".join(f"{X(i_):.1f},{Y(v):.1f}" for i_, v in enumerate(s.values))
+        o.append(f'<polyline points="{pts}" style="fill:none;stroke:{col};stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round{dash}"/>')
+        for i_, v in enumerate(s.values):
+            if styled:
+                o.append(marker(MARK[i % len(MARK)], X(i_), Y(v), col))
+        labels.append(chart_label(x1 + 14, Y(s.values[-1]), W, H, f"{s.group} {s.values[-1]:+.2f}", 14, 600, col))
+    for i, lab in enumerate(gt.labels):
+        labels.append(chart_label(X(i), bottom + 24, W, H, lab, 13, 400, "var(--muted)", "middle"))
+    o.append("</svg>")
+    chart = f'<div style="position:relative;width:100%;height:{H}px">{"".join(o)}{"".join(labels)}</div>'
+    return chart, W, H
+
+
+def f_trend_groups(data: ReportData):
+    chart, w, h = _trend_group_lines(data, styled=False)
+    body = f'<div style="padding:56px 48px">{hdr("Over time, by group", data.group_trend.note)}<div style="height:24px"></div>{chart}</div>'
+    return body, 1180, h + 160
+
+
+def f_trend_styled(data: ReportData):
+    chart, w, h = _trend_group_lines(data, styled=True)
+    sub = f"{data.group_trend.note} Dash and marker, not colour alone, tell each group's line apart."
+    body = f'<div style="padding:56px 48px">{hdr("Over time, by dash and marker", sub)}<div style="height:24px"></div>{chart}</div>'
+    return body, 1180, h + 160
+
+
+# ---------- vs_average (chart-block stream, 2026-10-24, batch 2 - a NEW data shape: CategoryAvgData) ----
+def f_vs_average(data: ReportData):
+    """One bar per category, length = that category's own average of the number column, with a dashed
+    reference line at the real overall average - "Software engineers and managers earn well above
+    average" as a real, already-computed ranking, not an invented one. Same diverge-from-a-reference-line
+    language `f_tone_by_number` above already uses, just against a real numeric average instead of 0."""
+    ca = data.category_avg
+    rh = 56
+    mx = max((i.avg for i in ca.items), default=1) or 1
+    AXIS_W = 760
+    ref_pct = min(100.0, ca.overall_avg / mx * 100)
+    rows_html = ""
+    for i in ca.items:
+        pct = min(100.0, i.avg / mx * 100)
+        above = i.avg >= ca.overall_avg
+        col = "var(--pos)" if above else "var(--neg)"
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:16px;height:{rh}px;border-top:1px solid var(--line)">'
+            f'<div style="flex:0 0 clamp(140px,20%,220px);font-size:15px;font-weight:500">{esc(i.label)}</div>'
+            f'<div style="position:relative;width:{AXIS_W}px;height:20px">'
+            f'<div style="position:absolute;left:{ref_pct:.1f}%;top:-4px;bottom:-4px;width:0;border-left:1px dashed var(--muted)"></div>'
+            f'<div style="width:{pct:.1f}%;height:100%;border-radius:3px;background:{col}"></div></div>'
+            f'<div style="width:96px;text-align:right;font-size:14px;font-weight:600">{i.avg:,.0f}</div>'
+            f'<div style="width:64px;text-align:right;font-size:13px;color:var(--muted)">{fmt(i.n)}</div></div>'
+        )
+    sub = f"{ca.category_name}. {ca.number_name}, dashed line is the real overall average ({ca.overall_avg:,.0f})."
+    body = f'<div style="padding:56px 48px">{hdr("Compared with average", sub)}<div style="height:24px"></div>{rows_html}</div>'
+    return body, 1180, 120 + rh * len(ca.items)
+
+
 # ---------- registry and standalone rendering ----------
 FRAMES = {
     "overview": f_overview, "sunburst": f_sunburst, "treemap": f_treemap, "icicle": f_icicle,
@@ -1708,7 +1815,8 @@ FRAMES = {
     "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m, "othergrowth": f_other_growth,
     "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
     "phrases": f_phrases, "toneByNumber": f_tone_by_number, "themeMixOverTime": f_theme_mix_over_time,
-    "quotes": f_quotes, "freq": f_freq,
+    "quotes": f_quotes, "freq": f_freq, "vsAverage": f_vs_average,
+    "trendGroups": f_trend_groups, "trendStyled": f_trend_styled,
 }
 
 # Human-readable title per frame id, for the chart list API.
@@ -1723,6 +1831,8 @@ TITLES = {
     "slopeChange": "First against last", "phrases": "Which phrases recur?",
     "toneByNumber": "Tone by number band", "themeMixOverTime": "Theme mix over time",
     "quotes": "What does it sound like?", "freq": "What did people say most?",
+    "vsAverage": "Compared with average", "trendGroups": "Over time, by group",
+    "trendStyled": "Over time, by dash and marker",
 }
 
 def render_parts(frame_id: str, data: ReportData | None = None):

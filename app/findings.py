@@ -45,8 +45,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .chart_data import (
-    ContextData, FreqData, MapData, OtherBreakdown, OverviewData, PhraseData, QualityData, QuoteData,
-    ReportData, ScoreData, SegmentData, SubTheme, ThemeNode, ThemeSummary, ToneSplit, TrendData,
+    CategoryAvgData, ContextData, FreqData, GroupTrendData, MapData, OtherBreakdown, OverviewData,
+    PhraseData, QualityData, QuoteData, ReportData, ScoreData, SegmentData, SubTheme, ThemeNode,
+    ThemeSummary, ToneSplit, TrendData,
 )
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .findings_structured import (
@@ -492,6 +493,8 @@ def build_report_data(
     `app.text_pipeline.quotes.build_quote_data`. `frequency` is real whenever `structured` resolved a real
     `short_text` candidate column (`app.findings_structured.build_frequency_data`, a short-answer
     column's own frequency table - distinct from the main open-ended column's theme clustering).
+    `category_avg` is real whenever `structured` resolved a real short_text-category-by-number-average
+    pairing (`app.findings_structured.build_category_avg_data`, chart-block stream batch 2).
 
     `filter_rows` (Filters feature, SPEC.md section 5) restricts `themes`/`score`/`segment`/`trend` to the
     given row-index set; `total_rows`/`quality`/`answer_lengths` stay dataset-wide regardless (they
@@ -541,9 +544,11 @@ def build_report_data(
         score=score,
         segment=segment,
         trend=trend,
+        group_trend=structured.group_trend if structured and structured.group_trend else GroupTrendData(group_column="", labels=[], series=[], note=""),
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=structured.frequency if structured and structured.frequency else FreqData(question="", answered=0, items=[], highlight="", footnote=""),
+        category_avg=structured.category_avg if structured and structured.category_avg else CategoryAvgData(category_name="", number_name="", overall_avg=0.0, items=[]),
         phrases=(build_phrase_data(answer_texts) if answer_texts else None) or PhraseData(phrases=[], highlight=""),
         quotes=(build_quote_data(quote_theme_texts) if quote_theme_texts else None) or QuoteData(quotes=[], highlight_index=0),
         quality=quality,

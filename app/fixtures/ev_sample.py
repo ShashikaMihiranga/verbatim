@@ -5,9 +5,9 @@ This is the data the 20 design charts were drawn from. render() defaults to it.
 import random
 
 from ..chart_data import (
-    ContextData, CoPair, FreqData, FreqItem, MapData, OverviewData, Phrase, PhraseData, QualityData,
-    Quote, QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow,
-    SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
+    CategoryAvg, CategoryAvgData, ContextData, CoPair, FreqData, FreqItem, GroupTrendData, GroupTrendSeries,
+    MapData, OverviewData, Phrase, PhraseData, QualityData, Quote, QuoteData, ReportData, ScoreBand,
+    ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
 )
 
 
@@ -88,6 +88,16 @@ EV = ReportData(
         hover_index=8,
         note="Monthly, January to December.",
     ),
+    group_trend=GroupTrendData(
+        group_column="Customer type",
+        labels=["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+        series=[
+            GroupTrendSeries("Business", "t1", _series(-0.05, -0.28, 0.02, 21)),
+            GroupTrendSeries("Consumer", "t2", _series(-0.12, -0.10, 0.02, 23)),
+            GroupTrendSeries("Fleet", "t3", _series(-0.08, -0.09, 0.02, 29)),
+        ],
+        note="Monthly, January to December.",
+    ),
     cooccurrence=[CoPair(_MEK[a], _MEK[b], c) for a, b, c in
                   [(0, 1, 1900), (1, 2, 1600), (0, 2, 1100), (0, 4, 800), (2, 4, 700), (0, 5, 400), (1, 5, 350), (1, 3, 300), (4, 6, 200), (3, 5, 150)]],
     answer_map=MapData(42, "No driveway so can't install a home charger", "Charging, negative"),
@@ -99,6 +109,13 @@ EV = ReportData(
                FreqItem("Electrician", 1.9), FreqItem("Retired", 1.8)],
         highlight="Nurse",
         footnote="1,461 different answers after merging spelling and plural variants. The ten most common cover 39% of answers, and 41% of the distinct answers were given only once.",
+    ),
+    category_avg=CategoryAvgData(
+        category_name="What is your occupation?", number_name="Household income", overall_avg=58200,
+        items=[CategoryAvg("Software engineer", 94500, 2304), CategoryAvg("Manager", 81200, 1391),
+               CategoryAvg("Accountant", 72600, 1919), CategoryAvg("Electrician", 61300, 912),
+               CategoryAvg("Teacher", 49800, 4463), CategoryAvg("Sales assistant", 38400, 1583),
+               CategoryAvg("Retail worker", 33700, 1295), CategoryAvg("Student", 19200, 1008)],
     ),
     phrases=PhraseData(
         phrases=[Phrase("worried", 4909, -0.25), Phrase("home charger", 3638, -0.16), Phrase("not enough", 3068, -0.02),

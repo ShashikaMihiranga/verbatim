@@ -46,8 +46,8 @@ from sqlalchemy.orm import Session
 from . import db as _db
 from .api_upload import _dataset_role, _own_dataset, current_user
 from .chart_data import (
-    ContextData, FreqData, MapData, OverviewData, PhraseData, QualityData, QuoteData, ReportData,
-    ScoreData, SegmentData, TrendData,
+    CategoryAvgData, ContextData, FreqData, GroupTrendData, MapData, OverviewData, PhraseData, QualityData,
+    QuoteData, ReportData, ScoreData, SegmentData, TrendData,
 )
 from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
@@ -515,9 +515,11 @@ def _build_other_result_charts(theme_rows: list[Theme]) -> dict[str, dict]:
         score=ScoreData(name="", bands=[]),
         segment=SegmentData(name="", groups=[], rows=[]),
         trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
+        group_trend=GroupTrendData(group_column="", labels=[], series=[], note=""),
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),
+        category_avg=CategoryAvgData(category_name="", number_name="", overall_avg=0.0, items=[]),
         phrases=PhraseData(phrases=[], highlight=""),
         quotes=QuoteData(quotes=[], highlight_index=0),
         quality=QualityData(bins=[], typical_bin="", typical_note="", notes=[]),
@@ -1118,9 +1120,11 @@ def themes_chart(
         score=ScoreData(name="", bands=[]),
         segment=SegmentData(name="", groups=[], rows=[]),
         trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
+        group_trend=GroupTrendData(group_column="", labels=[], series=[], note=""),
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),
+        category_avg=CategoryAvgData(category_name="", number_name="", overall_avg=0.0, items=[]),
         phrases=PhraseData(phrases=[], highlight=""),
         quotes=QuoteData(quotes=[], highlight_index=0),
         quality=QualityData(bins=[], typical_bin="", typical_note="", notes=[]),

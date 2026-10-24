@@ -116,6 +116,26 @@ class TrendData:
 
 
 @dataclass
+class GroupTrendSeries:
+    group: str  # segment group label, e.g. "Business"
+    color: str  # theme-style colour token ("t1".."t7"), assigned by rank - groups have no colour of their own
+    values: list[float]  # average sentiment per period, -1..1
+
+
+@dataclass
+class GroupTrendData:
+    """`trend_groups`/`trend_styled` (docs/DECISIONS.md, 2026-10-24 chart-block stream, batch 2):
+    "Business customers are getting more negative while the others hold steady" - one SENTIMENT line per
+    segment GROUP over time, not one SHARE line per theme (`TrendData` above). A deliberately separate
+    shape, not a relabeled `TrendData`: the two axes (what a line represents, what its value means) are
+    both different, and groups need an assigned colour `ThemeNode` already carries for themes."""
+    group_column: str  # the segment column's own name, e.g. "Customer type"
+    labels: list[str]  # period labels, same bands TrendData.labels would use for the same date column
+    series: list[GroupTrendSeries]
+    note: str  # subtitle, e.g. "Monthly, January to December."
+
+
+@dataclass
 class CoPair:
     a: str  # theme name
     b: str  # theme name
@@ -143,6 +163,26 @@ class FreqData:
     items: list[FreqItem]  # most common answers, descending
     highlight: str  # label of the highlighted row
     footnote: str  # summary sentence under the list
+
+
+@dataclass
+class CategoryAvg:
+    label: str  # category label, e.g. "Software engineer"
+    avg: float  # that category's own average of the number column
+    n: int  # answers in this category
+
+
+@dataclass
+class CategoryAvgData:
+    """A number column's average, split by a short-text category column - the `vs_average` block
+    (docs/DECISIONS.md, 2026-10-24 chart-block stream): "Software engineers and managers earn well above
+    average." Distinct from `ScoreData`: that is a NUMBER column banded into ranges, cross-tabbed against
+    THEMES; this is a CATEGORY column's groups, each compared against the number column's own overall
+    average - the two axes are swapped, so it is its own shape, not a relabeled ScoreData."""
+    category_name: str  # the short-text column's own name, e.g. "Job title"
+    number_name: str  # the number column's own name, e.g. "Income"
+    overall_avg: float  # the number column's real average across every answered row, not just these categories
+    items: list[CategoryAvg]  # categories, largest-average first
 
 
 @dataclass
@@ -208,9 +248,11 @@ class ReportData:
     score: ScoreData
     segment: SegmentData
     trend: TrendData
+    group_trend: GroupTrendData
     cooccurrence: list[CoPair]  # theme pairs mentioned in the same answer
     answer_map: MapData
     frequency: FreqData
+    category_avg: CategoryAvgData
     phrases: PhraseData
     quotes: QuoteData
     quality: QualityData

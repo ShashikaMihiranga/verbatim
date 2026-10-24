@@ -170,11 +170,15 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.score.bands) and len(_real_themes(data)) >= 3,
     ),
     Block(
-        "b13", "vs_average", "4", "Compared with average", None,
+        "b13", "vs_average", "4", "Compared with average", "vsAverage",
         "Software engineers and managers earn well above average.",
         "A number column plus short-text categories.",
-        # Same missing short-answer-column pipeline as b04/ranked_answers.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 2): app/findings_structured.py's new
+        # build_category_avg_data cross-tabs a short_text category column against a numeric column's real
+        # average - a genuinely new data shape (CategoryAvgData), not a relabeled ScoreData (that is a
+        # number BANDED and cross-tabbed against THEMES; this is a CATEGORY column's groups each compared
+        # to the number column's own average - the axes are swapped).
+        lambda data: bool(data.category_avg.items),
     ),
     Block(
         "b14", "tone_by_number", "4", "Tone by number band", "toneByNumber",
@@ -229,12 +233,15 @@ BLOCKS: list[Block] = [
         lambda data: False,
     ),
     Block(
-        "b20", "trend_groups", "5", "Over time, by group", None,
+        "b20", "trend_groups", "5", "Over time, by group", "trendGroups",
         "Business customers are getting more negative while the others hold steady.",
         "A date column and a group column with 2 to 5 groups of 100 or more answers each.",
-        # TrendData has per-THEME series, not per-GROUP series - this needs a trend-by-segment cross-tab
-        # this app does not build yet.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 2): app/findings_structured.py's new
+        # build_group_trend_data - a genuinely new per-GROUP-per-PERIOD sentiment cross-tab, via the same
+        # row-to-theme-sentiment approximation build_trend_data already uses, just weighted per (group,
+        # period) cell instead of per period across all rows. A period is kept only if every surviving
+        # group has real data in it (never an invented or flat-zero value for a missing cell).
+        lambda data: bool(data.group_trend.series),
     ),
     Block(
         "b21", "trend_band", "5", "Over time, with its range", "trend",
@@ -245,11 +252,12 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.trend.labels) and len(data.trend.labels) >= 3,
     ),
     Block(
-        "b22", "trend_styled", "5", "Over time, by dash and marker", None,
+        "b22", "trend_styled", "5", "Over time, by dash and marker", "trendStyled",
         "The same group lines, told apart by dash and marker, so they still read in greyscale.",
         "As Over time by group, for print, PDF export or colour-blind readers.",
-        # A print/accessibility variant of trend_groups (b20) - same missing per-group trend data.
-        lambda data: False,
+        # Real: a print/accessibility variant of trend_groups (b20) - same real group_trend data, a
+        # different renderer (f_trend_styled adds a distinct dash pattern + marker shape per group).
+        lambda data: bool(data.group_trend.series),
     ),
     Block(
         "b23", "trend_small_multiples", "5", "Over time, one panel per theme", None,
@@ -319,10 +327,15 @@ BLOCKS: list[Block] = [
         lambda data: False,
     ),
     Block(
-        "b32", "ranked_list", "2", "Ranked list", None,
+        "b32", "ranked_list", "2", "Ranked list", "freq",
         "The most common answers, after merging spelling variants.",
         "Short factual answers.",
-        lambda data: False,  # same missing frequency pipeline as b04
+        # Real (chart-block stream, 2026-10-24, batch 2): the exact same real frequency pipeline as
+        # ranked_answers (b04) - the design's own two entries are the same underlying capability at two
+        # registry positions (sample-report chart vs. chart-board), not two different data shapes. Reusing
+        # chart_id="freq" is the honest fit, not a placeholder shortcut; a genuinely different "plain list,
+        # no bars" visual would be pure styling, not a new data question.
+        lambda data: bool(data.frequency.items),
     ),
     Block(
         "b33", "tone_split", "3", "Tone split by theme", "diverge",

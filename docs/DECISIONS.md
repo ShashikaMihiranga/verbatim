@@ -2368,3 +2368,61 @@ colours (confirming the tone-word fix actually works against real text, not just
 auto-discovered a real `short_text` column ("Agency") nobody pointed it at and produced a genuinely
 sensible ranked list (VA 16.3%, DHS 11.6%, TREASURY 10.5%, ...) - all three rendered and screenshotted
 together from one real `build_report_data` call.
+
+## 2026-10-24 (Chart-block stream batch 2: ranked_list, vs_average, trend_groups, trend_styled)
+
+16 remaining -> **12 done**, 12 remaining -> **8 remaining** (co_mentions permanently excluded and
+see_more Stage-2-blocked still not counted either way).
+
+**`ranked_list`** reuses `ranked_answers`' exact same `freq` chart/data - the design's own two registry
+entries (a sample-report chart vs. a chart-board position) are one underlying capability, not two data
+shapes; building a second "plain list, no bars" renderer for the same numbers would have been pure
+styling, not a new question answered.
+
+**`vs_average`**: a genuinely new data shape, not a relabeled existing one. New `CategoryAvg`/
+`CategoryAvgData` (`app/chart_data.py`) - a number column's real average, split by a short_text column's
+categories (swapped axes from `ScoreData`, which bands a number and cross-tabs it against THEMES). New
+`build_category_avg_data` (`app/findings_structured.py`, reuses `_merge_key` so a category merges the
+same way here as in `ranked_answers`'s frequency table when they share a column) - only rows with BOTH a
+real category and a real number value count toward any average, real or overall; `build_structured_context`
+tries every short_text × numeric candidate pair independently of whichever columns already won the
+frequency/score roles (same "two columns can serve double duty" reasoning already used for category_avg's
+own column). New `f_vs_average` renderer - bars diverging from a real dashed reference line at the true
+overall average, green above / red below.
+
+**`trend_groups`/`trend_styled`**: the biggest item in this batch - a genuinely new per-GROUP-per-PERIOD
+cross-tab ("Business customers are getting more negative while the others hold steady"), not themes-by-
+period like `TrendData`. New `GroupTrendSeries`/`GroupTrendData` (`app/chart_data.py`) and
+`build_group_trend_data` (`app/findings_structured.py`) - reuses the SAME count-weighted-average-of-
+`Theme.sentiment` approximation `build_trend_data` already uses (no true per-row sentiment is ever
+persisted anywhere in this app), just weighted per (group, period) cell instead of per period across all
+rows. A period is kept only if EVERY surviving group has real data in it - a period where one group has
+zero rows would otherwise force an invented or misleadingly-flat value, so it is dropped instead, the
+same discipline `build_trend_data`'s own per-period floor already follows. `trend_styled` renders the
+exact same `group_trend` data with a distinct dash pattern AND marker shape per group (not colour alone)
+for greyscale/print/colour-blind readers - the design's own stated reason that block exists separately.
+
+**A real crash caught by direct testing before this ever reached a live render**: `_trend_group_lines`
+called `chart_label(x, y, text, size, weight, color)` - missing the required `W, H` positional args
+`chart_label`'s own signature puts right after `x, y`. Every other `chart_label` call site in this file
+already gets this right; these two did not, and would have thrown `TypeError: unsupported operand type(s)
+for /: 'int' and 'str'` the instant either chart rendered with real series. Fixed before any golden file
+or live screenshot was taken.
+
+**Tests**: `tests/test_findings_structured.py` - 4 new `build_category_avg_data` tests (ranks correctly,
+only counts rows with both values, floor, none-result) and 4 new `build_group_trend_data` tests (real
+per-cell sentiment, drops a period missing from any group, floor + max_groups cap, none-result).
+`tests/test_report_blocks.py` - `test_batch_2_blocks_are_real`, both slugs trimmed from the "stays False"
+list. `tests/test_charts_data.py` - 4 new golden files, `test_frame_count` bumped to 32, 4 new needle-text
+cases. Full backend suite: 826 passed (same 5 pre-existing failures). Frontend: `tsc --noEmit` clean
+(untouched - none of these charts are selectable in a real report yet).
+
+**Live-verified** against `app/fixtures/ev_sample.py`'s EV demo data (not dataset 12 this time - that
+dataset has no numeric+segment+date column combination to exercise `vs_average`/`trend_groups` with;
+confirmed via `build_structured_context`, honestly returns `None` for both there, exactly as designed):
+`trend_groups` showed Business declining from -0.05 to -0.28 while Consumer/Fleet held flat around -0.10,
+matching the block's own stated example almost exactly; `trend_styled` showed the same 3 lines with
+genuinely distinct dash patterns and marker shapes (diamond/square/circle); `vs_average` showed Software
+engineer/Manager/Accountant/Electrician above a real dashed average line in green, Teacher/Sales
+assistant/Retail worker/Student below it in red - "Software engineers and managers earn well above
+average" confirmed directly.
