@@ -19,6 +19,14 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Open
 
+- [ ] **BUG-040 — A Look inside run where every answer failed reports "Done. No new themes found"**
+  - Found: 2026-10-25, user's real run on dataset 11 (job 47, 13:43 UTC). All 314 answers failed:
+    `Jev returned HTTP 402` (payment required: the Jev account looks out of credit).
+  - Cause: `classify_other_answers` logs "EVERY row failed - likely a systemic/auth problem" but the job still
+    finishes as done, so the page says "Other went from 15.7% to 15.7%" with only a small warning line.
+  - Fix: proposed - when every row fails, fail the job with the real error ("Jev returned HTTP 402…"), so
+    the page shows it and offers Look inside again. **Check with the user**; the Jev credit itself is the
+    user's to top up.
 - [ ] **BUG-031 — Dataset 12's report still shows findings for deleted themes**
   - Found: 2026-10-24, Claude, dataset 12 report. Leftover from BUG-022, which stops it happening again.
   - Cause: the report was built while a theme rebuild was running (BUG-022).

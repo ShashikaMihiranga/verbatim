@@ -3116,3 +3116,10 @@ User request: one checklist where every bug found is logged. `docs/BUGS.md` hold
 2026-10-24 (BUG-004 to BUG-030 fixed, each with its commit and test; BUG-031 to BUG-039 open, with the ones
 that need the user's decision or a paid call marked). Rule for Claude and Codex: log a bug there as soon as
 it is found, even if it is fixed in the same session; tick it only when the fix is committed and tested.
+
+## 2026-10-25 (Inside Other: Other strip centred)
+
+User request: the Other strip at the top of the Inside Other flow moves from the top right (where the
+design puts it, over the treemap's Other block) to the middle of the flow, so the ribbons fan out to both
+sides and the panel looks balanced. `insideOtherGeometry.ts`: `OX = (W - OW) / 2`; test checks the centre
+and that every ribbon starts on Other's edge.

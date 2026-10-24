@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import InsideOther from './InsideOther'
 import InsideOtherFlow from './InsideOtherFlow'
-import { flowRibbons } from './insideOtherGeometry'
+import { flowRibbons, OW, OX, W } from './insideOtherGeometry'
 import { insideOtherModel } from './insideOtherModel'
 import type { Job, LookInsideOtherResult } from './jobsApi'
 import type { ReportThemeSummary } from './reportApi'
@@ -77,6 +77,15 @@ describe('InsideOtherFlow', () => {
     expect(cost.w).toBeGreaterThanOrEqual(3.6)
     expect(parking.w).toBeGreaterThan(cost.w) // 122 answers vs 52
     expect(ribbons[3].w).toBeGreaterThan(parking.w) // Still in Other takes the rest
+  })
+
+  it('Other sits in the middle of the flow, and every ribbon starts on its bottom edge', () => {
+    expect(OX + OW / 2).toBeCloseTo(W / 2)
+    const ribbons = flowRibbons(insideOtherModel(job({ status: 'done', step: 'Done', result: done }), themes))
+    for (const r of ribbons) {
+      expect(r.sa).toBeGreaterThanOrEqual(OX)
+      expect(r.sb).toBeLessThanOrEqual(OX + OW)
+    }
   })
 
   it('idle draws only the Still in Other ribbon', () => {

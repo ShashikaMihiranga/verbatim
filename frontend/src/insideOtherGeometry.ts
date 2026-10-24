@@ -5,8 +5,10 @@ import type { InsideOtherModel, Leaf } from './insideOtherModel'
 export const W = 1328
 export const TOP = 30 // Other strip sits above the ribbons
 export const LY = 290 // leaf line
-export const OX = 1068.7 // Other's left edge (right-hand column, as in the design's treemap)
 export const OW = 259.3
+// Other's left edge: centred over the flow, so ribbons fan out to both sides (user decision 2026-10-25;
+// the design put it top right, over the treemap's Other block).
+export const OX = (W - OW) / 2
 const USABLE = OW - 24
 const MIN_W = 3.6
 const KNOWN_X = (i: number) => 60 + 66 * i
