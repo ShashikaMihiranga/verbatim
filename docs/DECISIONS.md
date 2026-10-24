@@ -3148,3 +3148,23 @@ User asked to fix every open bug, using subagents. Four subagents worked in sepa
 Still open: BUG-031 (Rebuild report on dataset 12 - a paid call; Claude's attempt was blocked by the
 permission check) and BUG-034 (exact per-answer score-group sentiment needs paid calls or a stored column -
 user decision). Per-bug detail in `docs/BUGS.md`.
+
+## 2026-10-25 (BUG-050: region findings need a significance test)
+
+The user asked to research how others handle false subgroup findings before changing anything, then said
+"go" to the plan. Practice found: survey crosstab tools (SPSS column proportions, Alchemer, Sawtooth)
+leave out rows with no group and flag a cell only when a proportions test says the gap is unlikely to be
+chance; text-comparison work (Monroe et al. 2008, "Fightin' Words") shows raw ratios surface rare,
+meaningless items; visual-analysis research (CHI 2018) found most unchecked "insights" from many
+comparisons were false, and Benjamini-Hochberg is the usual correction for automated tools.
+
+Decided (user confirmed the three numbers): a segment cell is a finding only if its theme's row differs
+across groups (chi-square), the cell differs from the rest of its column (two-proportion z; Fisher's exact
+when an expected count is under 5), that p survives Benjamini-Hochberg at 5% across the whole heatmap, and
+the effect is reportable: ratio >= 1.5x either way, gap >= 2 points, >= 10 answers in or expected in the
+cell. One finding per theme (BUG-042), the most certain cell. Solid/Tentative rules unchanged. The
+rounding guard from BUG-041 is gone: rows now carry real counts. scipy (already installed via
+scikit-learn) is pinned in requirements.txt. Follow-ups logged: BUG-051 (barcode column used as groups),
+BUG-052 (findings about "Other" - user decision); score-band and trend findings still use bare thresholds
+and should get the same treatment later.
+

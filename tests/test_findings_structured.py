@@ -38,6 +38,7 @@ from app.findings_structured import (
     pick_structured_columns,
     resolve_filter_rows,
     score_correlation_candidates,
+    segment_cell_tests,
     segment_skew_candidates,
     theme_answer_rows,
     trend_shift_candidates,
@@ -386,11 +387,13 @@ def test_build_segment_data_hand_computable_values_overall_and_highlight():
     assert by_theme["B"].values == [30.0, 40.0]
     assert by_theme["Other"].values == [40.0, 20.0]
 
-    # Ratios (value / overall): A/B G1 = 40/33.3 = 1.201 (score 1.201), A/B G2 = 30/33.3 = 0.901 (score
-    # 1.110), Other G2 = 40/33.3 = 1.201 (score 1.201), Other G1 = 20/33.3 = 0.601 (score 1.665, the max) -
-    # so Other/G1 is the most extreme cell, even though its raw ratio is < 1.
-    assert data.highlight == (2, 1)  # row 2 = "Other", group 1 = "G1"
-    assert data.highlight_text == "G1 mentions Other 0.6 times as often as the average respondent."
+    assert by_theme["A"].counts == [3, 2]  # real counts travel with the row (BUG-050)
+    assert by_theme["Other"].counts == [4, 1]
+
+    # Other/G1 is 0.6x overall, but 1 answer out of 5 is no evidence of anything: no cell passes the
+    # significance test, so the chart gets no hover claim at all (BUG-050).
+    assert data.highlight is None
+    assert data.highlight_text == ""
 
 
 def test_build_segment_data_drops_groups_below_heatmap_floor():
@@ -452,9 +455,8 @@ def test_build_segment_data_overall_ignores_rows_with_no_group_bug_041():
     assert row.overall == 0.2  # 5 / 3000 grouped rows, not 135 / 4000
     # 0.1 vs 0.2 is a rounding artefact of 0.1/0.2 vs 0.167, not a 2x skew - and the theme is spread evenly.
     assert segment_skew_candidates(data, themes, floor=30) == []
-    # The chart's hover highlight still picks the most extreme cell, but on the true unrounded ratio
-    # (0.1% / 0.167% = 0.6x), not the old 0.1 / 3.4 = 0.0x.
-    assert data.highlight_text == "R3 mentions Privacy 0.6 times as often as the average respondent."
+    # No hover claim either: 1 vs 2 answers per region is noise (BUG-050).
+    assert data.highlight is None
 
 
 def test_build_segment_data_real_skew_survives_ungrouped_rows_and_one_finding_per_theme():
@@ -1191,62 +1193,115 @@ def test_build_report_data_structured_none_is_byte_identical_to_omitting_it():
 
 # ---------------------------------------------------------------- segment_skew_candidates
 
-def test_segment_skew_candidates_at_gate_and_just_below_gate():
-    themes = [make_theme("A", 40, 0.0, list(range(40)))]
-    at_gate = SegmentData(
-        name="Segment", groups=[SegmentGroup("G1", 100)],
-        # 60.2 vs 40.0: even with both moved 0.05 towards each other (rounding), 60.15/40.05 > 1.5
-        rows=[SegmentRow(theme="A", overall=40.0, values=[60.2])],
-    )
-    candidates = segment_skew_candidates(at_gate, themes, floor=30)
-    assert len(candidates) == 1
+def _segment(counts_by_theme: dict[str, list[int]], sizes: list[int]) -> SegmentData:
+    """A heatmap built straight from counts, the way `build_segment_data` fills it."""
+    total = sum(sizes)
+    rows = [
+        SegmentRow(theme=name, overall=round(100 * sum(c) / total, 1),
+                   values=[round(100 * x / n, 1) for x, n in zip(c, sizes)], counts=list(c))
+        for name, c in counts_by_theme.items()
+    ]
+    return SegmentData(name="Region", groups=[SegmentGroup(f"G{i + 1}", n) for i, n in enumerate(sizes)], rows=rows)
+
+
+def _themes_for(segment: SegmentData) -> list:
+    return [make_theme(r.theme, max(sum(r.counts), 1), 0.0, list(range(max(sum(r.counts), 1))))
+            for r in segment.rows]
+
+
+def test_segment_skew_real_skew_passes_with_counts_and_corrected_p():
+    segment = _segment({"A": [300, 100, 200]}, [1000, 1000, 1000])  # 30% / 10% / 20%, overall 20%
+    candidates = segment_skew_candidates(segment, _themes_for(segment), floor=30)
+    assert len(candidates) == 1  # G1 (1.5x) and G2 (0.5x) both pass; one finding per theme (BUG-042)
     c = candidates[0]
-    assert c.kind == "segment_skew"
-    assert c.theme_name == "A" and c.count == 100
-    assert c.numbers == {
-        "column": "Segment", "group": "G1", "theme": "A",
-        "group_share_pct": 60.2, "overall_share_pct": 40.0, "ratio": 1.505, "group_n": 100,
-    }
-
-    just_below = SegmentData(
-        name="Segment", groups=[SegmentGroup("G1", 100)],
-        rows=[SegmentRow(theme="A", overall=40.0, values=[60.1])],  # 60.05/40.05 just under 1.5
-    )
-    assert segment_skew_candidates(just_below, themes, floor=30) == []
+    assert c.kind == "segment_skew" and c.theme_name == "A" and c.count == 1000
+    assert c.numbers["group"] in {"G1", "G2"}
+    assert c.numbers["overall_share_pct"] == 20.0
+    assert c.numbers["cell_count"] in {300, 100}
+    assert c.numbers["p_adjusted"] < 0.001
+    assert c.score == pytest.approx(10.0)
 
 
-def test_segment_skew_candidates_gate_fires_in_the_below_one_direction_too():
-    themes = [make_theme("A", 40, 0.0, list(range(40)))]
+def test_segment_skew_significant_but_ratio_too_small_is_not_a_finding():
+    segment = _segment({"A": [280, 200]}, [1000, 1000])  # 28% vs 20%: real (p < 0.001) but only 1.17x
+    cells = segment_cell_tests(segment)
+    assert all(c.q < 0.05 for c in cells)
+    assert not any(c.passes for c in cells)
+    assert segment_skew_candidates(segment, _themes_for(segment), floor=30) == []
+
+
+def test_segment_skew_rare_theme_needs_a_two_point_gap():
+    segment = _segment({"A": [300, 100]}, [20000, 20000])  # 1.5% vs 0.5%: 1.5x and real, gap only 0.5 points
+    assert all(c.q < 0.05 for c in segment_cell_tests(segment))
+    assert segment_skew_candidates(segment, _themes_for(segment), floor=30) == []
+
+
+def test_segment_skew_needs_ten_answers_in_or_expected_in_the_cell():
+    # G1 has 8 of 100 (8%), G2 none of 1000: huge ratio, but 8 answers and under 1 expected is too thin.
+    segment = _segment({"A": [8, 0]}, [100, 1000])
+    assert segment_skew_candidates(segment, _themes_for(segment), floor=30) == []
+    # The same skew at ten times the size passes.
+    bigger = _segment({"A": [80, 0]}, [1000, 10000])
+    assert len(segment_skew_candidates(bigger, _themes_for(bigger), floor=30)) == 1
+
+
+def test_segment_skew_below_one_direction_and_zero_rows():
+    segment = _segment({"Empty": [0, 0, 0], "B": [100, 400, 400]}, [1000, 1000, 1000])  # B: 10% vs 40%
+    candidates = segment_skew_candidates(segment, _themes_for(segment), floor=30)
+    assert [c.theme_name for c in candidates] == ["B"]  # an all-zero row is skipped, never a ZeroDivision
+    assert segment.highlight is None  # hand-built here; build_segment_data is what sets it
+    assert candidates[0].numbers["group"] == "G1"
+    assert candidates[0].numbers["ratio"] == pytest.approx(10 / 30, abs=1e-3)
+
+
+def test_segment_skew_hand_made_rows_without_counts_still_work():
+    """Fixtures and older hand-built heatmaps have no `counts`; they are estimated from shares x group n."""
     segment = SegmentData(
-        name="Segment", groups=[SegmentGroup("G1", 100)],
-        rows=[SegmentRow(theme="A", overall=60.0, values=[39.8])],  # 39.85/59.95 just under 1/1.5
+        name="Segment", groups=[SegmentGroup("G1", 1000), SegmentGroup("G2", 1000)],
+        rows=[SegmentRow(theme="A", overall=20.0, values=[30.0, 10.0])],
     )
-    candidates = segment_skew_candidates(segment, themes, floor=30)
-    assert len(candidates) == 1
-    assert candidates[0].numbers["ratio"] == pytest.approx(39.8 / 60, abs=1e-3)
+    candidates = segment_skew_candidates(segment, [make_theme("A", 400, 0.0, list(range(400)))], floor=30)
+    assert len(candidates) == 1 and candidates[0].numbers["cell_count"] in {300, 100}
 
-    at_rounding_edge = SegmentData(
-        name="Segment", groups=[SegmentGroup("G1", 100)],
-        rows=[SegmentRow(theme="A", overall=60.0, values=[40.0])],  # 2/3 rounded, but 40.05/59.95 is not
+
+def test_segment_cells_use_fisher_when_expected_counts_are_small():
+    from scipy.stats import fisher_exact
+    from app.findings_structured import _two_proportion_p
+
+    assert _two_proportion_p(3, 200, 0, 800) == pytest.approx(fisher_exact([[3, 197], [0, 800]]).pvalue)
+
+
+def test_segment_skew_chance_only_heatmap_gives_no_findings_after_correction():
+    """7 themes x 20 regions with NO real difference (every region draws from the same shares). Without the
+    correction some cells look "significant" and plenty clear a bare 1.5x ratio; with it, none survive."""
+    import numpy as np
+
+    rng = np.random.default_rng(2026)
+    sizes = [150] * 20
+    shares = [0.20, 0.12, 0.08, 0.05, 0.04, 0.03, 0.02]
+    segment = _segment(
+        {f"T{i}": [int(x) for x in rng.binomial(sizes, s)] for i, s in enumerate(shares)}, sizes,
     )
-    assert segment_skew_candidates(at_rounding_edge, themes, floor=30) == []
+    cells = segment_cell_tests(segment)
+    assert len(cells) == 140
+    assert sum(c.p < 0.05 for c in cells) > 0  # chance alone produces "significant" cells...
+    assert sum(c.ratio >= 1.5 or c.ratio <= 1 / 1.5 for c in cells) > 10  # ...and many naive 1.5x skews
+    assert not any(c.passes for c in cells)  # ...none of which survive
+    assert segment_skew_candidates(segment, _themes_for(segment), floor=30) == []
 
 
-def test_segment_skew_candidates_skips_zero_overall_rows_and_one_candidate_per_theme():
-    themes = [make_theme("A", 0, 0.0, []), make_theme("B", 100, 0.0, list(range(100)))]
-    segment = SegmentData(
-        name="Segment", groups=[SegmentGroup("G1", 100), SegmentGroup("G2", 100)],
-        rows=[
-            SegmentRow(theme="A", overall=0.0, values=[90.0, 10.0]),  # overall 0 - skipped, never a ZeroDivision
-            SegmentRow(theme="B", overall=50.0, values=[80.0, 20.0]),  # G1 ratio 1.6 (gate), G2 ratio 0.4 (gate)
-        ],
-    )
-    candidates = segment_skew_candidates(segment, themes, floor=30)
-    # BUG-042: at most one per theme. Both of B's cells gap 30 points; the tie goes to the more extreme
-    # ratio (G2's 0.4, i.e. 2.5x, beats G1's 1.6x).
-    assert len(candidates) == 1
-    assert candidates[0].theme_name == "B" and candidates[0].numbers["group"] == "G2"
+def test_segment_skew_dataset_12_shape_gives_no_findings():
+    """BUG-041/050 at real scale: 24,961 answers with a Region across 12 regions; the theme has only 39 of
+    them, spread at random. No region is unusual, whatever the per-region ratios look like."""
+    import numpy as np
 
+    rng = np.random.default_rng(12)
+    sizes = [2080] * 12
+    sizes[0] += 24961 - sum(sizes)
+    region = rng.choice(12, size=39, p=[n / 24961 for n in sizes])
+    counts = [int((region == g).sum()) for g in range(12)]
+    segment = _segment({"Privacy": counts}, sizes)
+    assert segment_skew_candidates(segment, _themes_for(segment), floor=30) == []
 
 
 def test_label_confidence_segment_skew_thresholds():
@@ -1482,3 +1537,10 @@ def test_candidate_findings_all_five_kinds_qualify_and_new_kinds_are_not_crowded
             assert c.numbers["ratio"] >= 1.5 or c.numbers["ratio"] <= 1 / 1.5
         if c.kind == "trend_shift":
             assert abs(c.numbers["change_pct"]) >= 6.0
+
+
+def test_ratio_phrase_says_never_for_a_zero_share():
+    from app.findings_structured import _ratio_phrase
+
+    assert _ratio_phrase("Cost", "North", 0.0) == "North never mentions Cost."
+    assert _ratio_phrase("Cost", "North", 0.5) == "North mentions Cost about half as often as the average respondent."

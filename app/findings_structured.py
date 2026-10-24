@@ -49,7 +49,7 @@ __all__ = [
     "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
     "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
     "build_frequency_data", "build_category_avg_data", "build_group_trend_data", "build_binned_grid_data",
-    "pick_structured_columns", "build_structured_context", "resolve_filter_rows", "segment_skew_candidates",
+    "pick_structured_columns", "build_structured_context", "resolve_filter_rows", "segment_skew_candidates", "segment_cell_tests",
     "score_correlation_candidates", "trend_shift_candidates",
 ]
 
@@ -508,6 +508,8 @@ def _ratio_phrase(theme_name: str, group_label: str, ratio: float) -> str:
     `SegmentData.highlight_text` verbatim for the ratio > 1 case. Below 1, a clean "half as often" reads
     better than a decimal for ratios near 0.5; anything else below 1 just states the decimal ratio rather
     than reaching for a fraction word that would not fit every value cleanly."""
+    if ratio == 0:
+        return f"{group_label} never mentions {theme_name}."
     if 0.45 <= ratio <= 0.55:
         return f"{group_label} mentions {theme_name} about half as often as the average respondent."
     return f"{group_label} mentions {theme_name} {ratio:.1f} times as often as the average respondent."
@@ -539,11 +541,9 @@ def build_segment_data(
     rows in groups dropped by `heatmap_group_floor` are all excluded from the baseline, because none of them
     appear in any cell: the baseline is then exactly the size-weighted average of the cells shown, so a
     theme spread evenly across the shown groups always has a ratio of 1.
-    `highlight` is the single (row, group) cell with the largest deviation from that row's overall share,
-    scored as `max(ratio, 1/ratio)` where `ratio = cell_share / overall` on the UNROUNDED shares (rounding
-    to 0.1 points first would turn 0.16% vs 0.1%/0.2% into a fake 2x skew); a cell whose share is exactly 0
-    is treated as the most extreme possible deviation, since "never mentioned in this group at all" is
-    itself a strong signal; rows whose overall share is 0 are skipped entirely to avoid dividing by zero.
+    Each row also carries its real per-group `counts`, so the cell tests below work on exact numbers, not
+    on the 0.1-point-rounded shares. `highlight` is the passing cell (see `segment_cell_tests`) with the
+    lowest corrected p-value, or None when no cell passes (BUG-050).
     """
     group_totals: dict[str, int] = {}
     for v in raw_by_row.values():
@@ -569,41 +569,139 @@ def build_segment_data(
 
     grouped_total = sum(group_totals[g] for g in surviving_groups)
     rows: list[SegmentRow] = []
-    exact: list[tuple[float, list[float]]] = []  # unrounded (overall, cell shares) per row, for highlight
     for node in picked_nodes:
         cell_shares = [100 * counts[node.name][g] / group_totals[g] for g in surviving_groups]
         overall = 100 * sum(counts[node.name].values()) / grouped_total
-        exact.append((overall, cell_shares))
         rows.append(SegmentRow(
             theme=node.name, overall=round(overall, 1), values=[round(v, 1) for v in cell_shares],
+            counts=[counts[node.name][g] for g in surviving_groups],
         ))
 
-    best: tuple[int, int] | None = None
-    best_score = -1.0
-    best_ratio = 0.0
-    for ri, (overall, cell_shares) in enumerate(exact):
-        if overall == 0:
-            continue
-        for gi, v in enumerate(cell_shares):
-            ratio = v / overall
-            score = float("inf") if ratio == 0 else max(ratio, 1 / ratio)
-            if score > best_score:
-                best_score = score
-                best = (ri, gi)
-                best_ratio = ratio
-
-    highlight_text = ""
-    if best is not None:
-        ri, gi = best
-        highlight_text = _ratio_phrase(rows[ri].theme, surviving_groups[gi], best_ratio)
-
-    return SegmentData(
+    data = SegmentData(
         name=column,
         groups=[SegmentGroup(label=g, n=group_totals[g]) for g in surviving_groups],
         rows=rows,
-        highlight=best,
-        highlight_text=highlight_text,
     )
+    # The hover highlight is the strongest cell that passes the same test a finding must pass (BUG-050);
+    # a heatmap with no real skew gets no highlight rather than a "0.6 times as often" claim about noise.
+    passing = [c for c in segment_cell_tests(data) if c.passes]
+    if passing:
+        best = min(passing, key=lambda c: (c.q, -c.gap_pp))
+        data.highlight = (best.row, best.group)
+        data.highlight_text = _ratio_phrase(rows[best.row].theme, surviving_groups[best.group], best.ratio)
+    return data
+
+
+# -------------------------------------------------------------------- segment cell tests (BUG-050)
+#
+# Survey crosstab tools (SPSS column proportions, Alchemer, Sawtooth) only flag a heatmap cell when the
+# gap is unlikely to be chance, and automated-insight work shows that testing every cell without a
+# correction surfaces false patterns (7 themes x 20 groups = 140 tests, ~7 "significant" at 5% by chance
+# alone). So a cell must pass all of these, decided 2026-10-25 (docs/DECISIONS.md):
+#   - its theme's row differs across groups at all (chi-square on the theme-vs-not x group table);
+#   - the cell differs from the REST of its column - every other shown group pooled - by a two-proportion
+#     z-test, or Fisher's exact test when an expected count is under 5;
+#   - that p-value survives Benjamini-Hochberg at 5% across every cell of the heatmap;
+#   - the effect is big enough to report: ratio to the row's overall share >= SEGMENT_SKEW_RATIO_MIN either
+#     way, a gap of >= SEGMENT_SKEW_GAP_MIN points, and >= SEGMENT_CELL_COUNT_MIN answers in the cell or
+#     expected in it ("almost never mentioned in X" only means something if many mentions were expected).
+
+SEGMENT_SKEW_RATIO_MIN = 1.5  # group-vs-overall share ratio (either direction) to raise a segment-skew candidate at all
+SEGMENT_SKEW_RATIO_SOLID = 2.0  # ratio needed (with the group-size floor below) to call it "Solid"
+SEGMENT_SKEW_GAP_MIN = 2.0  # percentage points between the group's share and the overall share
+SEGMENT_CELL_COUNT_MIN = 10  # answers in the cell, or expected in it, whichever is larger
+SEGMENT_FDR = 0.05  # Benjamini-Hochberg false discovery rate across every cell of one heatmap
+_SMALL_EXPECTED = 5  # below this expected count a 2x2 uses Fisher's exact test instead of the z-test
+
+
+@dataclass
+class SegmentCellTest:
+    row: int  # index into SegmentData.rows
+    group: int  # index into SegmentData.groups
+    count: int  # theme answers in this group
+    expected: float  # answers expected in this group if the theme were spread evenly
+    share_pct: float  # unrounded share of the group's answers
+    overall_pct: float  # unrounded share of all answers in the shown groups
+    ratio: float  # share_pct / overall_pct
+    gap_pp: float  # abs(share_pct - overall_pct)
+    p: float  # cell vs the rest of its column, two-sided
+    q: float  # p after Benjamini-Hochberg across the heatmap
+    row_p: float  # chi-square p for the theme's whole row
+    passes: bool  # every rule in the block comment above
+
+
+def _row_counts(row: SegmentRow, groups: list[SegmentGroup]) -> list[int]:
+    """Real counts when `build_segment_data` made the row; otherwise (fixtures, hand-made tests) the best
+    estimate the rounded shares allow."""
+    if row.counts is not None:
+        return list(row.counts)
+    return [round(v * g.n / 100) for v, g in zip(row.values, groups)]
+
+
+def _two_proportion_p(x1: int, n1: int, x2: int, n2: int) -> float:
+    """Two-sided p for "share x1/n1 differs from x2/n2": pooled z-test, or Fisher's exact test when any
+    expected count in the 2x2 is under `_SMALL_EXPECTED` (the z approximation is poor there)."""
+    from scipy.stats import fisher_exact, norm
+
+    n = n1 + n2
+    k = x1 + x2
+    expected = [n1 * k / n, n1 * (n - k) / n, n2 * k / n, n2 * (n - k) / n]
+    if min(expected) < _SMALL_EXPECTED:
+        return float(fisher_exact([[x1, n1 - x1], [x2, n2 - x2]]).pvalue)
+    pooled = k / n
+    se = math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2))
+    if se == 0:
+        return 1.0
+    z = (x1 / n1 - x2 / n2) / se
+    return float(2 * norm.sf(abs(z)))
+
+
+def _row_chi_square_p(counts: list[int], sizes: list[int]) -> float:
+    from scipy.stats import chi2_contingency
+
+    table = [counts, [n - c for c, n in zip(counts, sizes)]]
+    if sum(table[0]) == 0 or sum(table[1]) == 0:
+        return 1.0
+    return float(chi2_contingency(table, correction=False).pvalue)
+
+
+def segment_cell_tests(segment: SegmentData) -> list[SegmentCellTest]:
+    """Every (row, group) cell of the heatmap with its test results - see the block comment above. Rows
+    with no answers in the shown groups are skipped, and a heatmap with fewer than 2 groups has nothing to
+    compare against, so it returns []."""
+    from scipy.stats import false_discovery_control
+
+    groups = segment.groups
+    if len(groups) < 2:
+        return []
+    sizes = [g.n for g in groups]
+    total = sum(sizes)
+    cells: list[SegmentCellTest] = []
+    for ri, row in enumerate(segment.rows):
+        counts = _row_counts(row, groups)
+        k = sum(counts)
+        if k == 0 or total == 0:
+            continue
+        overall = 100 * k / total
+        row_p = _row_chi_square_p(counts, sizes)
+        for gi, (c, n) in enumerate(zip(counts, sizes)):
+            share = 100 * c / n
+            cells.append(SegmentCellTest(
+                row=ri, group=gi, count=c, expected=n * k / total, share_pct=share, overall_pct=overall,
+                ratio=share / overall, gap_pp=abs(share - overall),
+                p=_two_proportion_p(c, n, k - c, total - n), q=1.0, row_p=row_p, passes=False,
+            ))
+    if not cells:
+        return []
+    for cell, q in zip(cells, false_discovery_control([c.p for c in cells], method="bh")):
+        cell.q = float(q)
+        cell.passes = (
+            cell.q < SEGMENT_FDR and cell.row_p < SEGMENT_FDR
+            and (cell.ratio >= SEGMENT_SKEW_RATIO_MIN or cell.ratio <= 1 / SEGMENT_SKEW_RATIO_MIN)
+            and cell.gap_pp >= SEGMENT_SKEW_GAP_MIN
+            and max(cell.count, cell.expected) >= SEGMENT_CELL_COUNT_MIN
+        )
+    return cells
 
 
 # -------------------------------------------------------------------- build_frequency_data (chart-block
@@ -1334,10 +1432,6 @@ def resolve_filter_rows(
 # restructuring of either module needed, and `python -c "import app.findings"` /
 # `python -c "import app.findings_structured"` both still work standalone.
 
-SEGMENT_SKEW_RATIO_MIN = 1.5  # group-vs-overall share ratio (either direction) to raise a segment-skew candidate at all
-SEGMENT_SKEW_RATIO_SOLID = 2.0  # ratio needed (with the group-size floor below) to call it "Solid"
-_SEGMENT_SHARE_ROUNDING = 0.05  # half the 0.1-point step SegmentRow shares are rounded to (BUG-041)
-
 SCORE_SPREAD_MIN = 8.0  # percentage-point spread across score bands to raise a score-correlation candidate at all
 SCORE_SPREAD_SOLID = 15.0  # spread needed (with the band-size floor below) to call it "Solid"
 
@@ -1346,66 +1440,46 @@ TREND_SHIFT_SOLID = 12.0  # change needed (with the theme-size floor below) to c
 
 
 def segment_skew_candidates(segment: SegmentData, themes: list["Theme"], floor: int) -> list["Candidate"]:
-    """Considers every surviving `(row, group)` heatmap cell whose group share diverges from that row's
-    theme's overall share by at least `SEGMENT_SKEW_RATIO_MIN`x in either direction - every cell, not just
-    `segment.highlight` (which is only the single most-extreme cell, kept for the chart's own hover UI) -
-    and returns at most one candidate per theme row (see below).
-    Rows whose `overall` is 0 are skipped (nothing to divide by). `group.n < floor` is a defensive check
-    only: every group in `segment.groups` already survived `build_segment_data`'s own stricter
-    `heatmap_group_floor`, so this should never actually trigger in practice.
-
-    `SegmentRow.overall`/`.values` are rounded to 0.1 points, so for a rare theme the rounding alone can
-    fake a skew (true 0.16% overall vs 0.14% in a group reads as 0.2% vs 0.1%, "half as often"). The gate
-    therefore uses the LEAST extreme ratio the unrounded shares could have (each value moved up to
-    `_SEGMENT_SHARE_ROUNDING` towards the other) - a skew is only raised if it survives any rounding.
-    `ratio` in `numbers` stays the plain rounded-value ratio the sentence quotes.
+    """One candidate per theme row with at least one cell passing `segment_cell_tests` (a real, corrected,
+    big-enough skew - BUG-050). `group.n < floor` is a defensive check only: every group in
+    `segment.groups` already survived `build_segment_data`'s own stricter `heatmap_group_floor`.
 
     At most one candidate per theme (BUG-042, 2026-10-25: dataset 12 got three near-identical findings for
-    one theme, same chart, only the highlighted region differing): the theme's strongest cell, by
-    `Candidate.score`, ties broken by the more extreme ratio.
+    one theme, same chart, only the highlighted region differing): the theme's most certain passing cell
+    (lowest corrected p-value), ties broken by the larger gap.
 
     `Candidate.score` is the group-vs-overall percentage-point gap (`abs(group_share - overall_share)`),
     a bare percentage point with no size-bonus multiplier - the same shape `dominant_theme`'s `score=margin`
-    already uses, not `tone_contrast`'s effect-times-bonus shape - see the module-section comment above."""
+    already uses, not `tone_contrast`'s effect-times-bonus shape - see the module-section comment above.
+    `numbers` quotes the rounded shares the heatmap shows, plus the cell count and corrected p-value."""
     from .findings import Candidate, theme_nodes  # deferred - see the module-section comment above
 
     total = sum(t.size for t in themes)
     nodes_by_name = {n.name: n for n in theme_nodes(themes, total)}
-    candidates: list[Candidate] = []
-    r = _SEGMENT_SHARE_ROUNDING
-
-    for row in segment.rows:
-        if row.overall == 0:
+    best_by_row: dict[int, SegmentCellTest] = {}
+    for cell in segment_cell_tests(segment):
+        if not cell.passes or segment.groups[cell.group].n < floor:  # floor: defensive - see docstring
             continue
+        best = best_by_row.get(cell.row)
+        if best is None or (cell.q, -cell.gap_pp) < (best.q, -best.gap_pp):
+            best_by_row[cell.row] = cell
+
+    candidates: list[Candidate] = []
+    for ri in sorted(best_by_row):
+        cell = best_by_row[ri]
+        row, group = segment.rows[ri], segment.groups[cell.group]
         node = nodes_by_name.get(row.theme)
         theme_id = node.theme_id if node is not None else None
-        best: tuple[float, float, Candidate] | None = None  # (score, extremity, candidate) for this theme
-        for gi, group in enumerate(segment.groups):
-            if group.n < floor:  # defensive - see docstring
-                continue
-            cell_value = row.values[gi]
-            ratio = cell_value / row.overall
-            if ratio >= 1:
-                gated = max(cell_value - r, 0.0) / (row.overall + r) >= SEGMENT_SKEW_RATIO_MIN
-            else:
-                gated = (cell_value + r) / max(row.overall - r, 1e-9) <= 1 / SEGMENT_SKEW_RATIO_MIN
-            if not gated:
-                continue
-            gap_pp = abs(cell_value - row.overall)
-            extremity = float("inf") if ratio == 0 else max(ratio, 1 / ratio)
-            if best is not None and (gap_pp, extremity) <= best[:2]:
-                continue
-            best = (gap_pp, extremity, Candidate(
-                kind="segment_skew", id=f"segment_skew:{theme_id}:{gi}", theme_id=theme_id,
-                theme_name=row.theme, count=group.n, score=gap_pp,
-                numbers={
-                    "column": segment.name, "group": group.label, "theme": row.theme,
-                    "group_share_pct": cell_value, "overall_share_pct": row.overall,
-                    "ratio": round(ratio, 3), "group_n": group.n,
-                },
-            ))
-        if best is not None:
-            candidates.append(best[2])
+        candidates.append(Candidate(
+            kind="segment_skew", id=f"segment_skew:{theme_id}:{cell.group}", theme_id=theme_id,
+            theme_name=row.theme, count=group.n, score=round(cell.gap_pp, 1),
+            numbers={
+                "column": segment.name, "group": group.label, "theme": row.theme,
+                "group_share_pct": row.values[cell.group], "overall_share_pct": row.overall,
+                "ratio": round(cell.ratio, 3), "group_n": group.n,
+                "cell_count": cell.count, "p_adjusted": round(cell.q, 4),
+            },
+        ))
     return candidates
 
 

@@ -19,6 +19,17 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Open
 
+- [ ] **BUG-052 — A region finding can be about "Other", the catch-all**
+  - Found: 2026-10-25, Claude, local check of the BUG-050 tests on dataset 11: "Other" is 41.7% in
+    Initmates vs 15.7% overall, a real (q < 0.001) but unhelpful finding - it says Initmates answers are
+    harder to theme, not what they talk about.
+  - Fix: **needs a user decision**: drop Other from segment findings, or keep it reworded ("harder to
+    group"). Not changed.
+- [ ] **BUG-051 — A barcode column ("ean") is used as the region/group column on dataset 1**
+  - Found: 2026-10-25, Claude, same local check. Dataset 1's heatmap groups are EAN values such as
+    "848719000000.0", so its findings read "in 848719000000.0". `looks_like_identifier` does not catch it.
+  - Fix: proposed - treat EAN/UPC/SKU/barcode-named or long-digit columns as identifiers when picking the
+    segment column. Not started.
 - [ ] **BUG-031 — Dataset 12's report still shows findings for deleted themes**
   - Found: 2026-10-24, Claude, dataset 12 report. Leftover from BUG-022, which stops it happening again.
   - Cause: the report was built while a theme rebuild was running (BUG-022).
@@ -30,6 +41,21 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
   - 2026-10-25: investigated. The pill is a count-weighted average of each theme's stored sentiment; per-answer sentiment is not stored (DECISIONS 2026-09-25). Exact values need Jev calls or a stored per-answer column. **User decision**; behaviour unchanged.
 
 ## Fixed
+
+- [x] **BUG-050 — Region/group findings have no significance test, so chance gaps can become findings**
+  - Found: 2026-10-25, Claude, review of the BUG-041/042 fix against survey-crosstab practice.
+  - Cause: `segment_skew_candidates` gated on a share ratio (1.5x) and a group-size floor only. It never
+    checked how many answers sat in the cell, never tested the gap against chance, and never corrected for
+    testing every theme x group cell (up to 140 per heatmap). `SegmentRow` kept only rounded shares.
+  - **Fixed:** (this commit). `SegmentRow.counts` carries real cell counts; `segment_cell_tests` tests each
+    cell against the rest of its column (two-proportion z, Fisher's exact when an expected count < 5),
+    gates on a per-theme chi-square, applies Benjamini-Hochberg at 5% across the heatmap, and requires
+    ratio >= 1.5x, gap >= 2 points and >= 10 answers in or expected in the cell. The hover highlight uses
+    the same test (none when nothing passes) and says "never mentions" for a zero share. Local check on
+    real data: dataset 12 0 findings (was 3), datasets 1, 2, 11 keep their real skews. Tests:
+    `test_segment_skew_*`, `test_segment_cells_use_fisher_when_expected_counts_are_small`,
+    `test_segment_skew_chance_only_heatmap_gives_no_findings_after_correction`,
+    `test_segment_skew_dataset_12_shape_gives_no_findings`.
 
 - [x] **BUG-049 — A heatmap opened scrolled sideways, with its theme-name column cut off**
   - Found: 2026-10-25, Claude, dataset 12 at 1568px: the first heatmap's scroll box was at its end

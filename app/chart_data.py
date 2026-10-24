@@ -88,6 +88,7 @@ class SegmentRow:
     theme: str  # theme name (should match a ThemeNode)
     overall: float  # theme's overall share, %
     values: list[float]  # theme share inside each group, in SegmentData.groups order
+    counts: Optional[list[int]] = None  # theme's answers inside each group (BUG-050); None for hand-made data
 
 
 @dataclass
