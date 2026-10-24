@@ -54,8 +54,8 @@ export default function QuestionContext({
         </p>
       )}
       {error && <p className="qc-error" role="alert">{error}</p>}
-      <p className="qc-meta">{ctx.answered_note} {ctx.columns_note}</p>
-      <p className="qc-meta">Framing and answer length are measured from the answers, so only the question type can be changed.</p>
+      {/* The columns note repeats the chips right below, so only the answered count stays. */}
+      <p className="qc-meta">{ctx.answered_note}</p>
     </div>
   )
 }

@@ -15,8 +15,10 @@
 .rp-section[id], #report-findings { scroll-margin-top: 24px; }
 .rp-summary { color: var(--muted); font-size: 16px; margin-top: 6px; }
 
-.rp-chips-label { margin-top: 24px; font-size: 13px; font-weight: 500; color: var(--muted); }
-.rp-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+/* Column chips and filters share one row (docs/REPORT_UI_REWORK.md, target page row 3). */
+.rp-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; margin-top: 24px; }
+.rp-toolbar .rp-filters { margin-top: 0; }
+.rp-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .rp-chip {
   display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px;
   background: var(--surface); border: 1px solid var(--line); font-size: 14px; font-weight: 500;
@@ -45,7 +47,7 @@
    one rhythm - a top divider and generous top margin - instead of a bordered/backgrounded card. */
 .rp-section { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
 
-/* Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2) - ThemeChartTabs.tsx. Reuses .rp-chip's own
+/* Chart-view switcher (FindingChartTabs.tsx, Jobs.tsx). Reuses .rp-chip's own
    pill shape/tokens (--surface/--line/32px-ish height) rather than inventing a second button style, same
    discipline as .rp-filter-select above; "active" swaps to --accent so the current tab reads clearly
    against the others without relying on colour alone (an underline would too, but the label text itself
@@ -116,43 +118,13 @@
 
 .rp-nothing { color: var(--muted); font-size: 16px; }
 
-/* "Other" exploration (docs/TODO.md, 2026-10-21 Phase 1). The two stat tiles mirror the overview chart's
-   own big-number tiles (54px/300-weight number, --muted label, one-line note) for visual consistency,
-   even though that chart is server-rendered SVG/HTML and this section is plain React - same design
-   language, two different rendering paths. */
-.rp-other-callout { font-size: 20px; font-weight: 400; line-height: 1.4; }
-.rp-other-note { color: var(--muted); font-size: 15px; margin-top: 4px; }
-.rp-other-stats { display: flex; gap: 0; margin-top: 28px; flex-wrap: wrap; }
-.rp-other-stat { flex: 1 1 220px; padding-right: 16px; }
-.rp-other-stat + .rp-other-stat { border-left: 1px solid var(--line); padding-left: 24px; }
-.rp-other-stat-n { font-size: 44px; font-weight: 300; line-height: 1.15; margin: 4px 0 6px; }
-.rp-other-stat-l { font-size: 14px; font-weight: 500; color: var(--muted); }
-.rp-other-stat-note { font-size: 14px; color: var(--muted); line-height: 1.4; margin-top: 4px; }
-
-.rp-other-toggle { margin-top: 24px; }
-
-.rp-other-list { margin-top: 20px; max-height: 560px; overflow-y: auto; }
-.rp-other-row {
-  display: flex; align-items: center; gap: 14px; padding: 10px 0; border-top: 1px solid var(--line);
-}
-.rp-other-row-name { flex: 0 0 clamp(140px, 22%, 240px); font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
-.rp-other-row-bar-wrap { flex: 1; min-width: 0; }
-.rp-other-row-bar { height: 18px; border-radius: 3px; min-width: 2px; }
-.rp-other-row-stats { flex: 0 0 auto; display: flex; gap: 10px; align-items: baseline; font-size: 14px; }
-.rp-other-row-share { font-weight: 600; min-width: 36px; text-align: right; }
-.rp-other-row-count { color: var(--muted); min-width: 48px; text-align: right; }
-
-@media (max-width: 640px) {
-  .rp-other-stat + .rp-other-stat { border-left: none; border-top: 1px solid var(--line); padding-left: 0; padding-top: 16px; margin-top: 16px; }
-  .rp-other-row-name { flex-basis: 110px; font-size: 14px; }
-}
-
 @media (max-width: 640px) {
   .rp-sentence { max-width: none; }
   .rp-head { flex-direction: column; align-items: flex-start; gap: 10px; }
   .rp-head-side { padding-top: 0; }
   .rp-section { margin-top: 36px; padding-top: 20px; }
   .rp-filters { flex-direction: column; align-items: stretch; }
+  .rp-toolbar { flex-direction: column; align-items: stretch; }
 }
 
 /* "Inside Other" (InsideOther.tsx), built to the Other-Flow design - docs/REPORT_UI_REWORK.md Phase 2.
@@ -171,7 +143,13 @@
 .io-cta:hover, .io-cta:focus-visible { background: var(--accent); color: var(--on-accent); }
 .io-status { display: flex; align-items: center; gap: 10px; min-height: 28px; margin: 12px 0 0; font-size: 17px; }
 .io-live-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; animation: io-blink 1s ease-in-out infinite; }
+.io-status:empty { min-height: 0; margin: 0; }
 .io-help { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.io-link {
+  margin-top: 14px; padding: 0; border: 0; background: none; font: inherit; font-size: 15px; font-weight: 500;
+  color: var(--accent); text-decoration: underline; text-underline-offset: 4px; cursor: pointer;
+}
+.io-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .io-warn { margin: 8px 0 0; font-size: 13px; color: var(--neg); }
 
 .io-flow { display: block; width: 100%; height: auto; margin-top: 12px; overflow: visible; }
@@ -273,8 +251,13 @@
 .rp-chart-compact { display: none; }
 .rp-responsive-chart { container-type: inline-size; }
 @container (max-width: 1000px) {
-  .rp-responsive-chart > .rp-chart-desktop { display: none; }
-  .rp-responsive-chart > .rp-chart-compact { display: block; }
+  .rp-responsive-chart:not(.rp-compact-on-phone) > .rp-chart-desktop { display: none; }
+  .rp-responsive-chart:not(.rp-compact-on-phone) > .rp-chart-compact { display: block; }
+}
+/* Fluid charts (the overview treemap) only need their compact layout at phone width. */
+@container (max-width: 640px) {
+  .rp-compact-on-phone > .rp-chart-desktop { display: none; }
+  .rp-compact-on-phone > .rp-chart-compact { display: block; }
 }
 .rp-method-note { color: var(--muted); font-size: 14px; line-height: 1.55; margin: 12px 0; max-width: 900px; }
 .rp-exploration > summary { color: var(--accent); cursor: pointer; font-size: 18px; font-weight: 500; }

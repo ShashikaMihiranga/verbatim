@@ -3085,3 +3085,27 @@ builds only `icicle` now (`_OTHER_RESULT_CHART_IDS`). On phones (under 640px) th
 hide and the columns stack; every number stays. Checked live on dataset 11 with a test Job row (running,
 then done), deleted afterwards; no console errors, no horizontal overflow. Backend 904, frontend 120, tsc
 clean, lint 6.
+
+## 2026-10-25 (REPORT-UI-3 done: page order, text trim, overview without tabs)
+
+Per `docs/REPORT_UI_REWORK.md` Phase 3. The overview's six-tab row is gone: the page shows the treemap
+("What are the themes?"), Inside Other directly under it, then the tone split ("Which themes sound negative
+or positive?") as its own section. Icicle, sunburst, sentiment sun and rank no longer appear in the overview
+(same data as the treemap or tone split); the icicle stays only as the treemap's phone layout.
+
+Decisions taken while building, all under the text-budget and one-question rules already agreed:
+- The report-only overview fragment drops its "How big, how clean, what's notable" header (it repeated the
+  question) and its five-number stats row (it sat between the treemap and Inside Other, and every number is
+  already on the page: summary line, answered line, "Can I trust this?"). Gallery frame and golden files
+  unchanged.
+- The context block keeps "N of M responses had an answer to analyse." and drops the columns note (repeats
+  the chips) and the "Framing and answer length are measured…" line.
+- `OtherExploration` is retired. Idle "Still in Other" now shows Other's real count and share from the
+  report. "See all N themes" sits under Still in Other and appears only when real themes are folded into
+  Other; otherwise the list would repeat the treemap.
+- Removed: the "Other is a catch-all…" note, the "Explore all themes" note, the "Columns used" label (chips
+  and filters now share one row) and the `.th-summary` line once a report exists. Outline link "Big
+  picture" is now "Themes".
+- Fix found live: the overview needs its compact layout only at phone width (`compactOnPhoneOnly`), not
+  under 1000px like the sunburst.
+Backend 905, frontend 116, tsc clean, lint 6. Checked live on dataset 11 at 1280px and phone width.

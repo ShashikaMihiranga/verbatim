@@ -5,19 +5,22 @@ import ThemeChart from './ThemeChart'
 
 type Fragment = Pick<ReportThemeChartVariant, 'chart_html' | 'chart_width' | 'chart_height' | 'chart_id'>
 
-export function ResponsiveChart({ fragment, compact, title, selectedTheme, onThemeSelect, finding = false }: {
+export function ResponsiveChart({ fragment, compact, title, selectedTheme, onThemeSelect, highlightOtherRunning, compactOnPhoneOnly = false, finding = false }: {
   fragment: Fragment
   compact?: Fragment
   title: string
   selectedTheme?: string | null
   onThemeSelect?: (name: string) => void
+  highlightOtherRunning?: boolean
+  compactOnPhoneOnly?: boolean // fluid charts: switch to `compact` only at phone width, not under 1000px
   finding?: boolean
 }) {
-  if (!compact) return <ThemeChart fragment={fragment} title={title} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} finding={finding} />
+  const shared = { selectedTheme, onThemeSelect, highlightOtherRunning, finding }
+  if (!compact) return <ThemeChart fragment={fragment} title={title} {...shared} />
   return (
-    <div className="rp-responsive-chart">
-      <div className="rp-chart-desktop"><ThemeChart fragment={fragment} title={title} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} finding={finding} /></div>
-      <div className="rp-chart-compact"><ThemeChart fragment={compact} title={`${title}, compact`} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} finding={finding} /></div>
+    <div className={compactOnPhoneOnly ? 'rp-responsive-chart rp-compact-on-phone' : 'rp-responsive-chart'}>
+      <div className="rp-chart-desktop"><ThemeChart fragment={fragment} title={title} {...shared} /></div>
+      <div className="rp-chart-compact"><ThemeChart fragment={compact} title={`${title}, compact`} {...shared} /></div>
     </div>
   )
 }

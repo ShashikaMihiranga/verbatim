@@ -54,14 +54,11 @@ function makeReport(overrides: Partial<ReportResponse> = {}): ReportResponse {
     // above - see report-filters.test.tsx for the richer case with real option values.
     filter_options: { segment: null, score_band: null, date_range: null },
     filters_applied: { segment: null, score_band: null, date_from: null, date_to: null },
-    // "Other" exploration (docs/TODO.md, 2026-10-21 Phase 1): the honest "nothing folded into Other"
-    // default, matching filter_options/columns_used above - see other-exploration.test.tsx for the
-    // richer case with a real breakdown.
+    // The honest "no Other breakdown" default - see the page-order test below and inside-other.test.tsx
+    // for the richer case.
     other_breakdown: null,
     all_themes: [],
-    // Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): the honest "no variants" default, same
-    // reasoning as other_breakdown/filter_options above - see themechart-tabs.test.tsx for the richer
-    // case with real icicle/sentsun/rank fragments.
+    // No overview variants - see the page-order test below and medium-charts.test.tsx for icicle/diverge.
     theme_chart_variants: {},
     ...overrides,
   }
@@ -162,5 +159,40 @@ describe('ReportView', () => {
   it('renders no filter bar when onFiltersChange is not provided (no-filter-state caller)', () => {
     const html = renderToStaticMarkup(<ReportView report={makeReport()} datasetId={1} />)
     expect(html).not.toContain('rp-filters')
+  })
+
+  it('page order: chips and filters, treemap, Inside Other, tone split, findings, quality', () => {
+    const fragment = (mark: string) => ({ chart_id: mark, chart_title: mark, chart_html: `<div>${mark}</div>`, chart_width: 1180, chart_height: 400 })
+    const html = renderToStaticMarkup(
+      <ReportView
+        report={makeReport({
+          other_breakdown: { noise_count: 314, noise_share: 15.7, hidden_real_count: 0, hidden_real_share: 0, hidden_real_theme_count: 0, total_real_theme_count: 2 },
+          theme_chart_variants: { diverge: fragment('TONE-MARK'), icicle: fragment('ICICLE-MARK') },
+        })}
+        datasetId={1} filters={{}} onFiltersChange={() => {}} onLookInsideOther={() => {}}
+      />,
+    )
+    const order = ['rp-toolbar', 'OVERVIEW-MARK', 'Inside Other', 'TONE-MARK', 'RELIABILITY-CHART-MARK', 'QUALITY-MARK']
+    const at = order.map((mark) => html.indexOf(mark))
+    expect(at.every((i) => i >= 0)).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+    expect(html).toContain('314') // idle Still in Other shows Other's real count
+    expect(html).not.toContain('See all') // nothing folded into Other, so the full list would repeat the treemap
+  })
+
+  it('removed text stays gone and the overview has no tab row', () => {
+    const html = renderToStaticMarkup(
+      <ReportView
+        report={makeReport({
+          other_breakdown: { noise_count: 3000, noise_share: 60, hidden_real_count: 500, hidden_real_share: 10, hidden_real_theme_count: 4, total_real_theme_count: 11 },
+          theme_chart_variants: { rank: { chart_id: 'rank', chart_title: 'Rank', chart_html: '<div>RANK-MARK</div>', chart_width: 1180, chart_height: 400 } },
+        })}
+        datasetId={1}
+      />,
+    )
+    for (const gone of [
+      'Other is a catch-all bucket', "aren't in the", 'distinct topic', 'Genuinely varied answers',
+      'These views show the broader context', 'The big picture', 'role="tablist"', 'RANK-MARK',
+    ]) expect(html).not.toContain(gone)
   })
 })

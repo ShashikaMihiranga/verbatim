@@ -1,9 +1,9 @@
-import { useMemo } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import InsideOtherFlow from './InsideOtherFlow'
 import { prefersReducedMotion } from './insideOtherGeometry'
 import { insideOtherModel, STEPS, type InsideOtherModel, type Leaf } from './insideOtherModel'
 import type { Job } from './jobsApi'
-import type { ReportThemeSummary } from './reportApi'
+import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
 import ThemeChart from './ThemeChart'
 
 // "Inside Other", built to the Other-Flow design (docs/REPORT_UI_REWORK.md, Phase 2): ribbons from Other
@@ -37,7 +37,7 @@ function Rows({ items, largest, value }: { items: Leaf[]; largest: number; value
   )
 }
 
-function Columns({ m }: { m: InsideOtherModel }) {
+function Columns({ m, allThemesToggle }: { m: InsideOtherModel; allThemesToggle?: ReactNode }) {
   const share = (l: Leaf) => (l.share !== null ? `${l.share}%` : fmt(l.count))
   const largestKnown = Math.max(0, ...m.known.map((l) => l.count))
   const largestNew = Math.max(0, ...m.newThemes.map((l) => l.count))
@@ -74,6 +74,7 @@ function Columns({ m }: { m: InsideOtherModel }) {
             <span className="io-row-bar" style={{ width: `${Math.min(100, (m.otherNowPct / m.otherBeforePct) * 100)}%`, background: 'var(--other)' }} />
           </span>
         ) : null}
+        {allThemesToggle}
       </section>
     </div>
   )
@@ -99,6 +100,32 @@ function Steps({ m }: { m: InsideOtherModel }) {
         )
       })}
     </ol>
+  )
+}
+
+// Same absolute cut-offs app/api_report.py uses to call the overall tone positive or negative.
+function sentimentColor(sentiment: number): string {
+  if (sentiment >= 0.05) return 'var(--pos)'
+  if (sentiment <= -0.05) return 'var(--neg)'
+  return 'var(--neu)'
+}
+
+// Every real theme, including the ones folded into Other because the treemap has seven colours.
+function AllThemes({ themes }: { themes: ReportThemeSummary[] }) {
+  const largest = Math.max(1, ...themes.map((t) => t.share))
+  return (
+    <section className="io-chart" aria-label="All themes">
+      <h4 className="io-chart-title">All {themes.length} themes</h4>
+      <ul className="io-gains">
+        {themes.map((t) => (
+          <li key={t.name} className="io-gain">
+            <span className="io-gain-name">{t.name}</span>
+            <span className="io-gain-track"><span style={{ width: `${(t.share / largest) * 100}%`, background: sentimentColor(t.sentiment) }} /></span>
+            <span className="io-gain-n"><strong>{t.share}%</strong> {fmt(t.count)} answers</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -176,14 +203,23 @@ function Results({ m }: { m: InsideOtherModel }) {
 }
 
 export default function InsideOther({
-  job, onStart, allThemes = [],
+  job, onStart, allThemes = [], breakdown = null,
 }: {
   job: Job | null
   onStart: () => void
   allThemes?: ReportThemeSummary[]
+  breakdown?: ReportOtherBreakdown | null
 }) {
-  const m = useMemo(() => insideOtherModel(job, allThemes), [job, allThemes])
+  const m = useMemo(() => insideOtherModel(job, allThemes, breakdown), [job, allThemes, breakdown])
   const reducedMotion = useMemo(() => prefersReducedMotion(), [])
+  const [showAll, setShowAll] = useState(false)
+  // The full list only adds something when real themes are folded into Other; otherwise it repeats the treemap.
+  const canShowAll = (breakdown?.hidden_real_theme_count ?? 0) > 0 && allThemes.length > 0
+  const toggle = canShowAll ? (
+    <button type="button" className="io-link" aria-expanded={showAll} onClick={() => setShowAll(!showAll)}>
+      {showAll ? 'Hide all themes' : `See all ${allThemes.length} themes`}
+    </button>
+  ) : null
   return (
     <section className="io" aria-labelledby="io-title">
       <div className="io-head">
@@ -203,7 +239,8 @@ export default function InsideOther({
         <p className="io-warn">{fmt(m.failedCount)} answer{m.failedCount === 1 ? '' : 's'} could not be checked and stayed in Other.</p>
       )}
       <InsideOtherFlow model={m} reducedMotion={reducedMotion} />
-      <Columns m={m} />
+      <Columns m={m} allThemesToggle={toggle} />
+      {canShowAll && showAll && <AllThemes themes={allThemes} />}
       {m.phase !== 'idle' && <Steps m={m} />}
       {m.phase === 'done' && m.banner && <Results m={m} />}
     </section>

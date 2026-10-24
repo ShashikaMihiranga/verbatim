@@ -3,7 +3,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import FindingChartTabs from './FindingChartTabs'
-import ThemeChartTabs from './ThemeChartTabs'
 import ReportView from './Report'
 import type { ReportBlock, ReportResponse, ReportThemeChartVariant } from './reportApi'
 
@@ -70,16 +69,23 @@ describe('Stage 5 finding charts', () => {
     expect(container.querySelector('.rp-chart-compact')?.textContent).toBe('ICICLE')
   })
 
-  it('pairs desktop hierarchy with the compact chart, and survives removal of both', () => {
-    const overview = { ...block, kind: 'overview' as const, chart_id: 'overview', ...fragment('OVERVIEW') }
-    const variants = { sunburst: { ...fragment('SUNBURST'), compact_chart_id: 'icicle' }, icicle: fragment('ICICLE') }
-    act(() => root.render(<ThemeChartTabs overview={overview} variants={variants} />))
-    click('Sunburst')
-    expect(container.querySelector('.rp-chart-desktop')?.textContent).toBe('SUNBURST')
-    expect(container.querySelector('.rp-chart-compact')?.textContent).toBe('ICICLE')
-    act(() => root.render(<ThemeChartTabs overview={overview} variants={{ rank: fragment('RANK') }} />))
-    expect(container.textContent).toContain('OVERVIEW')
-    expect(container.querySelector('.rp-chart-compact')).toBeNull()
+  it('overview: the treemap with the icicle as its phone layout, then the tone split, and no tab row', () => {
+    const report: ReportResponse = {
+      dataset_id: 1, column: 'Why', question: 'Why?', summary: '', also_checked_nothing_notable: false,
+      blocks: [{ ...block, kind: 'overview', ...fragment('OVERVIEW') }],
+      columns_used: [], filter_options: { segment: null, score_band: null, date_range: null },
+      filters_applied: { segment: null, score_band: null, date_from: null, date_to: null },
+      other_breakdown: null, all_themes: [],
+      theme_chart_variants: { icicle: fragment('ICICLE'), diverge: fragment('TONE'), rank: fragment('RANK'), sentsun: fragment('SUN') },
+    }
+    act(() => root.render(<ReportView report={report} datasetId={1} />))
+    const overview = container.querySelector('#report-overview')!
+    expect(overview.querySelector('.rp-chart-desktop')?.textContent).toBe('OVERVIEW')
+    expect(overview.querySelector('.rp-chart-compact')?.textContent).toBe('ICICLE')
+    expect(container.querySelector('#report-tone')?.textContent).toBe('TONE')
+    expect(container.querySelector('[role="tablist"]')).toBeNull()
+    expect(container.textContent).not.toContain('RANK')
+    expect(container.textContent).not.toContain('SUN')
   })
 
   it('shows numeric exploration below findings and above the quality footer', () => {

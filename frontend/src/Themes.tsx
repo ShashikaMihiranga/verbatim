@@ -568,9 +568,12 @@ export default function Themes() {
         <h1>Report</h1>
         <Progress />
       </div>
-      <div className="th-summary">
-        Themes for <b>{column}</b>. Every theme links back to real answers - use "See answers" on any card.
-      </div>
+      {/* Introduces the theme cards; the report has its own title and summary. */}
+      {!report && (
+        <div className="th-summary">
+          Themes for <b>{column}</b>. Every theme links back to real answers - use "See answers" on any card.
+        </div>
+      )}
 
       {error && <div className="err" role="alert">{error}</div>}
 

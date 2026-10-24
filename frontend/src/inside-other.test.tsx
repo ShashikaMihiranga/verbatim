@@ -91,3 +91,27 @@ describe('InsideOtherFlow', () => {
     expect(renderToStaticMarkup(<InsideOtherFlow model={m} reducedMotion />)).not.toContain('<animateMotion')
   })
 })
+
+describe('InsideOther with the report breakdown', () => {
+  const breakdown = { noise_count: 3000, noise_share: 60, hidden_real_count: 500, hidden_real_share: 10, hidden_real_theme_count: 4, total_real_theme_count: 7 }
+
+  it('idle: Still in Other shows the current count and share, and no empty status line text', () => {
+    const html = renderToStaticMarkup(<InsideOther job={null} onStart={vi.fn()} allThemes={themes} breakdown={breakdown} />)
+    expect(html).toContain('3,000')
+    expect(html).toContain('60% of all answers.')
+    expect(html).not.toContain('before this run')
+    expect(html).toContain('See all 3 themes') // themes are folded into Other, so the full list adds something
+  })
+
+  it('no See all link when nothing is folded into Other', () => {
+    const html = renderToStaticMarkup(
+      <InsideOther job={null} onStart={vi.fn()} allThemes={themes} breakdown={{ ...breakdown, hidden_real_theme_count: 0 }} />,
+    )
+    expect(html).not.toContain('See all')
+  })
+
+  it('running: the live count replaces the report count', () => {
+    const html = renderToStaticMarkup(<InsideOther job={job({ step: 'Naming new themes' })} onStart={vi.fn()} allThemes={themes} breakdown={breakdown} />)
+    expect(html).not.toContain('3,000')
+  })
+})

@@ -2,7 +2,7 @@
 // list, so the components only draw it (docs/REPORT_UI_REWORK.md, Phase 2). Live counts come from
 // `job.progress` while answers are matched; the finished picture comes from `job.result`.
 import type { Job, LookInsideOtherChart, LookInsideOtherResult } from './jobsApi'
-import type { ReportThemeSummary } from './reportApi'
+import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
 
 // Same labels the server sets in app/api_themes.py look_inside_other.
 export const STEPS = ['Finding patterns in Other', 'Naming new themes', 'Matching answers to themes', 'Updating the report'] as const
@@ -83,12 +83,18 @@ function isResult(r: Job['result']): r is LookInsideOtherResult {
   return r !== null && typeof r === 'object' && 'known_added' in r
 }
 
-export function insideOtherModel(job: Job | null, allThemes: ReportThemeSummary[]): InsideOtherModel {
+export function insideOtherModel(
+  job: Job | null,
+  allThemes: ReportThemeSummary[],
+  breakdown: ReportOtherBreakdown | null = null,
+): InsideOtherModel {
   const realThemes = allThemes.map((t) => t.name)
+  // Before a run (or after a failed one) everything in Other is still there: the report's own count.
   const base: InsideOtherModel = {
     phase: 'idle', status: '', stepIndex: -1, matchingProgress: 0,
     known: [], knownMore: 0, knownTotal: 0, newThemes: [], newMore: 0, newTotal: 0,
-    still: null, sourceTotal: null, answeredTotal: null, otherBeforePct: null, otherNowPct: null,
+    still: breakdown?.noise_count ?? null, sourceTotal: null, answeredTotal: null, otherBeforePct: null,
+    otherNowPct: breakdown?.noise_share ?? null,
     banner: null, failedCount: 0, error: null, charts: {},
   }
   if (!job) return base
@@ -100,7 +106,7 @@ export function insideOtherModel(job: Job | null, allThemes: ReportThemeSummary[
   if (job.status === 'running') {
     const stepIndex = Math.max(0, STEPS.indexOf(job.step as (typeof STEPS)[number]))
     const p = job.progress ?? null
-    const model: InsideOtherModel = { ...base, phase: 'running', stepIndex, status: `${STEPS[stepIndex]}...` }
+    const model: InsideOtherModel = { ...base, phase: 'running', stepIndex, status: `${STEPS[stepIndex]}...`, still: null, otherNowPct: null }
     if (!p || p.total <= 0) return model
     const known = leaves(fromRecord(p.known), MAX_KNOWN_LEAVES, (l) => knownColor(l, realThemes), null)
     const fresh = leaves(fromRecord(p.new), MAX_NEW_LEAVES, (_l, i) => newColor(i), null)
@@ -119,7 +125,7 @@ export function insideOtherModel(job: Job | null, allThemes: ReportThemeSummary[
 
   // done
   const r = isResult(job.result) ? job.result : null
-  if (!r) return { ...base, phase: 'done', stepIndex: STEPS.length, status: 'Done.' }
+  if (!r) return { ...base, phase: 'done', stepIndex: STEPS.length, status: 'Done.', still: null, otherNowPct: null }
   const answered = r.answered_total ?? null
   const known = leaves(r.known_gains ?? [], MAX_KNOWN_LEAVES, (l) => knownColor(l, realThemes), answered)
   const fresh = leaves(r.new_themes.map((t) => ({ label: t.label, count: t.count })), MAX_NEW_LEAVES, (_l, i) => newColor(i), answered)

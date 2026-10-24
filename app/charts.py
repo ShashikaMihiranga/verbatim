@@ -347,6 +347,11 @@ def f_overview(data: ReportData, report: bool = False):
     else:
         # `report=True` (render_report_parts): adds the Other block's pointer to Inside Other below it.
         chart = treemap_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H, other_hint=report)
+    if report:
+        # The report page has its own title, summary and context lines, so its overview is only the
+        # treemap under one question; every stat below is already printed elsewhere on that page.
+        head = hdr("What are the themes?", "Block area is share of answered. Sub-themes sit inside their theme.")
+        return f'<div style="padding:56px 48px">{head}<div style="height:24px"></div>{chart}</div>', 1180, OVERVIEW_TREEMAP_H + 200
     st = '<div style="display:flex;margin-top:36px">'
     for i, (l, n, note) in enumerate(stats):
         bd = "border-left:1px solid var(--line);padding-left:24px;" if i else ""

@@ -782,3 +782,15 @@ def test_report_overview_points_from_other_to_inside_other_and_says_when_it_is_d
         t.share = round(96.0 / len(others), 1)
     small = treemap_html(data, 1084, 580, other_hint=True)
     assert "Drawn smaller than its real share" not in small
+
+
+def test_report_overview_is_one_question_with_no_repeated_header_or_stats():
+    # docs/REPORT_UI_REWORK.md Phase 3: the page already prints the question, summary and stats.
+    from app.charts import render_parts, render_report_parts
+    data = _ev_copy()
+    report_html = render_report_parts("overview", data)[0]
+    assert "What are the themes?" in report_html
+    assert "Block area is share of answered. Sub-themes sit inside their theme." in report_html
+    for repeated in ("How big, how clean", "Responses", "Typical length", "Average sentiment", data.question):
+        assert repeated not in report_html
+    assert "How big, how clean" in render_parts("overview", data)[0]  # gallery frame unchanged

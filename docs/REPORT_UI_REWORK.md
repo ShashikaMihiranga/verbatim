@@ -25,7 +25,7 @@ only when its acceptance criteria and tests pass.**
 | doc | `REPORT-UI-DOC` | This document | [x] done |
 | 1 | `REPORT-UI-1` | Backend data for Inside Other, live progress, honest step names, treemap Other labels | [x] done |
 | 2 | `REPORT-UI-2` | Inside Other UI (flow, three columns, step rail, done state, charts) | [x] done |
-| 3 | `REPORT-UI-3` | Page order and text trim; overview without tabs | [ ] |
+| 3 | `REPORT-UI-3` | Page order and text trim; overview without tabs | [x] done |
 | 4 | `REPORT-UI-4` | Visual / interaction / accessibility gate at 1280, 888 and 390px | [ ] |
 | 5 | `REPORT-UI-5` | Follow-ups (audit finding variants; catch-all new theme), user approval needed | [ ] |
 | – | – | Add a pointer to this doc from `docs/UI_FIXES.md` | [x] done |
@@ -363,17 +363,53 @@ python3 tools/taskboard.py release UI-REPORT-07 --agent user --message "Restored
 
 ### Phase 3 — `REPORT-UI-3`: page order and text trim
 
+**Evaluation (2026-10-25, before building; dataset 11 at 1280px)**
+- Page today, top to bottom: `.th-summary` line; title + summary; the context sentence plus **two** meta
+  lines; "Columns used" label; chips; filters on their own row; outline nav; "The big picture" heading,
+  a **6-tab row**, then the overview fragment, which repeats the question under its own header ("How big,
+  how clean, what's notable / Review_Text") and ends in a **five-number stats row**; the "Other is a
+  catch-all…" note; Inside Other; "Explore all themes" (one shared view, "group mix", plus a note);
+  findings; quotes; phrases; quality.
+- The stats row sits between the treemap and Inside Other, so the Other block doesn't flow into the
+  ribbons as in the design. Every stat is already on the page: themes and tone in the summary line,
+  answered in the context meta line, typical length in "Can I trust this?".
+- The context's second meta half ("Rating, Division also cross-cut this report.") repeats the chips.
+- Idle Inside Other: an empty status row, and "Still in Other" shows "–" although the report knows Other's
+  count (`other_breakdown.noise_count`).
+- `OtherExploration` shows only when Other ≥ 30%; its list repeats the treemap unless real themes are
+  folded into Other (`hidden_real_theme_count > 0`).
+- `ThemeChart` takes its natural height, so the tone split (`diverge`) needs no server change.
+
+**Approach**
+- Server, report-only (`render_report_parts("overview")` → `f_overview(report=True)`): header becomes
+  "What are the themes?" / "Block area is share of answered. Sub-themes sit inside their theme." and the
+  stats row is dropped. Gallery frame and golden files unchanged.
+- `Report.tsx` order: title, summary → context → chips + filters in one row → outline → overview (treemap;
+  `ResponsiveChart` with the `icicle` variant as its phone layout) + `ThemeDetail` → Inside Other → tone
+  split (`theme_chart_variants.diverge`) → Explore all themes (no note) → findings → explorations →
+  quotes → phrases → quality.
+- Retire `ThemeChartTabs.tsx` and `OtherExploration.tsx` (and their tests; drop the `ThemeChartTabs`
+  cases in `medium-charts.test.tsx`). Delete their CSS.
+- `InsideOther` gets the breakdown: idle "Still in Other" shows Other's current count and share; "See all
+  N themes" (toggle, tone-coloured list) sits under Still in Other, only when themes are folded into Other.
+  The status line renders only when it has text.
+- `QuestionContext`: keep "N of M responses had an answer to analyse."; drop the columns note and the
+  framing line. `Themes.tsx`: the `.th-summary` line only shows before a report exists.
+- Outline nav: "Big picture" → "Themes".
+- Not changed: the server still builds the unused `sentsun`, `rank` and `sunburst` overview variants
+  (`report_medium.theme_views`); trimming them is a follow-up, not needed for the page.
+
 **Scope**
 - `frontend/src/Report.tsx`, `Themes.tsx` (summary line only), `QuestionContext.tsx`, `ThemeChartTabs.tsx`
   (replace or retire), `OtherExploration.tsx` (retire; its list moves into Inside Other), `report.css`
 - `report.test.tsx`, `report-ui.test.tsx`, `themechart-tabs.test.tsx`, `other-exploration.test.tsx`
 
 **Tasks**
-- [ ] Page order exactly as in the target table.
-- [ ] Overview: treemap, then tone split, no tab row. The icicle is used only as the treemap's phone
+- [x] Page order exactly as in the target table.
+- [x] Overview: treemap, then tone split, no tab row. The icicle is used only as the treemap's phone
       layout.
-- [ ] Remove every line in the text-to-remove table.
-- [ ] Spacing per the design system rules.
+- [x] Remove every line in the text-to-remove table.
+- [x] Spacing per the design system rules.
 
 **Acceptance and tests**
 - Page order test.
@@ -428,8 +464,8 @@ python3 tools/taskboard.py release UI-REPORT-07 --agent user --message "Restored
 ## Verification commands
 
 ```
-.venv/bin/python -m pytest -q                         # backend: all pass (904 after REPORT-UI-2)
-cd frontend && npm test -- --run                      # frontend: all pass (120 after REPORT-UI-2)
+.venv/bin/python -m pytest -q                         # backend: all pass (905 after REPORT-UI-3)
+cd frontend && npm test -- --run                      # frontend: all pass (116 after REPORT-UI-3)
 cd frontend && npx tsc --noEmit                       # clean
 cd frontend && npm run lint                           # 6 existing warnings, no new ones
 ```
@@ -468,3 +504,16 @@ cd frontend && npm run lint                           # 6 existing warnings, no 
   - Checked live on dataset 11 with a test `Job` row (running with progress 140/314, then done with a
     result); the row was deleted afterwards. A real run is still Phase 4 and needs the user's OK (paid).
   - "See all N themes" still lives in `OtherExploration`; Phase 3 moves it under Still in Other.
+- 2026-10-25 — Phase 3 (`REPORT-UI-3`) done, per the Phase 3 evaluation and approach above.
+  - Page order: title and summary, context sentence, chips and filters in one row, outline, "What are the
+    themes?" treemap, Inside Other, tone split, Explore all themes, findings, explorations, quotes, phrases,
+    quality.
+  - Deleted `ThemeChartTabs.tsx`, `OtherExploration.tsx` and their tests, plus their CSS.
+  - **Found while checking live:** `ResponsiveChart` swaps to the compact chart under a 1000px container
+    (right for the sunburst), and the page column is narrower than that, so the overview showed the icicle
+    on desktop. New `compactOnPhoneOnly` prop (`.rp-compact-on-phone`, 640px) for the fluid treemap.
+  - Phone (390px): the icicle (headed "Themes and sub-themes") replaces the treemap; no horizontal overflow.
+  - For Phase 4 to compare with the design: idle Inside Other draws one Still-in-Other ribbon on the right,
+    leaving the left of the flow empty.
+  - Not changed: dataset 11 has a stored question-type correction ("experiences" over the guess "anything
+    else"), so its page shows the "You changed this…" line.

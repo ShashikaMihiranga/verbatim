@@ -4,13 +4,11 @@ import type { Job } from './jobsApi'
 import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse, ReportThemeChartVariant } from './reportApi'
 import type { ThemeCard } from './themesApi'
 import InsideOther from './InsideOther'
-import OtherExploration from './OtherExploration'
 import QuestionContext from './QuestionContext'
 import { parseContextData } from './questionContextData'
 import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
-import ThemeChartTabs from './ThemeChartTabs'
-import FindingChartTabs from './FindingChartTabs'
+import FindingChartTabs, { ResponsiveChart } from './FindingChartTabs'
 import ThemeDetail from './ThemeDetail'
 import './themes.css'
 import './report.css'
@@ -141,6 +139,7 @@ export default function ReportView({
   const contextData = context ? parseContextData(context.chart_html) : null
   const quotes = report.blocks.find((b) => b.kind === 'quotes')
   const phrases = report.blocks.find((b) => b.kind === 'phrases')
+  const toneSplit = report.theme_chart_variants?.diverge
   const [selectedThemeName, setSelectedThemeName] = useState<string | null>(null)
   const selectedTheme = themes?.find((t) => t.label === selectedThemeName) ?? null
 
@@ -153,55 +152,60 @@ export default function ReportView({
         ? <QuestionContext datasetId={datasetId} column={report.column} block={context} data={contextData} />
         : <SupplementBlock block={context} />)}
 
-      <div className="rp-chips-label">Columns used</div>
-      <div className="rp-chips">
-        {report.columns_used.map((c) => (
-          <span className="rp-chip" key={c.name}>
-            {c.name}
-            <span className="rp-chip-note">{c.role}</span>
-          </span>
-        ))}
+      <div className="rp-toolbar">
+        <div className="rp-chips" aria-label="Columns used">
+          {report.columns_used.map((c) => (
+            <span className="rp-chip" key={c.name}>
+              {c.name}
+              <span className="rp-chip-note">{c.role}</span>
+            </span>
+          ))}
+        </div>
+        {onFiltersChange && (
+          <ReportFilters
+            options={report.filter_options}
+            value={filters ?? {}}
+            onChange={onFiltersChange}
+          />
+        )}
       </div>
 
-      {onFiltersChange && (
-        <ReportFilters
-          options={report.filter_options}
-          value={filters ?? {}}
-          onChange={onFiltersChange}
-        />
-      )}
-
       <nav className="rp-outline" aria-label="Report sections">
-        {overview && <a href="#report-overview">Big picture</a>}
+        {overview && <a href="#report-overview">Themes</a>}
         {findings.length > 0 && <a href="#report-findings">Findings ({findings.length})</a>}
         {quality && <a href="#report-quality">Data quality</a>}
       </nav>
 
+      {/* One question per chart (docs/REPORT_UI_REWORK.md): the treemap answers "what are the themes", Inside
+          Other opens its Other block, and the tone split answers "how does each theme sound". The icicle is
+          only the treemap's phone layout. */}
       {overview && (
         <Divider id="report-overview">
-          <h2 className="rp-section-title">The big picture</h2>
-          <ThemeChartTabs
-            overview={overview}
-            variants={report.theme_chart_variants}
-            onThemeSelect={setSelectedThemeName}
-            selectedTheme={selectedThemeName}
-            highlightOtherRunning={lookInsideOtherJob?.status === 'running'}
+          <ResponsiveChart
+            fragment={overview} compact={report.theme_chart_variants?.icicle} title={overview.chart_title}
+            onThemeSelect={setSelectedThemeName} selectedTheme={selectedThemeName}
+            highlightOtherRunning={lookInsideOtherJob?.status === 'running'} compactOnPhoneOnly
           />
           {selectedTheme && <ThemeDetail id={datasetId} theme={selectedTheme} />}
         </Divider>
       )}
 
-      <OtherExploration breakdown={report.other_breakdown} allThemes={report.all_themes} />
-      {report.other_breakdown && <p className="rp-method-note">Other is a catch-all bucket, not a single topic. Check its breakdown before interpreting differences between groups.</p>}
-
       {onLookInsideOther && (report.other_breakdown !== null || lookInsideOtherJob) && (
-        <InsideOther job={lookInsideOtherJob ?? null} onStart={onLookInsideOther} allThemes={report.all_themes} />
+        <InsideOther
+          job={lookInsideOtherJob ?? null} onStart={onLookInsideOther}
+          allThemes={report.all_themes} breakdown={report.other_breakdown}
+        />
+      )}
+
+      {toneSplit && (
+        <Divider id="report-tone">
+          <ThemeChart fragment={toneSplit} title={toneSplit.chart_title} selectedTheme={selectedThemeName} onThemeSelect={setSelectedThemeName} />
+        </Divider>
       )}
 
       {sharedViews.length > 0 && <Divider id="report-explore">
         <details className="rp-exploration">
           <summary>Explore all themes</summary>
-          <p className="rp-method-note">These views show the broader context under the current filters. Individual findings below keep their own focused evidence.</p>
           {sharedViews.map((view, index) => <details className="rp-context-view" key={`${view.chart_id}-${index}`}>
             <summary>{view.chart_label?.replace(/^All themes:\s*/, '') || view.chart_title}</summary>
             {view.chart_note && <p className="rp-method-note">{view.chart_note}</p>}
