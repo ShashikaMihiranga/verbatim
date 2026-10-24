@@ -2954,3 +2954,65 @@ or dangling theme id are marked and the report is flagged stale. Backend 898 pas
 Live: dataset 12's report now reads `stale: true` with the notice; clicking Rebuild writes fresh
 findings (a Claude call, left to the user). The `:8000` page serves the built `frontend/dist` (built
 21:39, before this change) - the notice appears there after `npm run build`, or on the `:5173` dev server.
+
+## 2026-10-24 (decisions before work: build-race bug, then report UI rework to the Other-Flow design)
+
+Recorded before any code, at the user's request. Plan: `.claude/plans/this-is-ai-based-deep-globe.md`.
+Hand-off doc and phase checklist (for Codex if Claude runs out of credit): `docs/REPORT_UI_REWORK.md`.
+
+**1. Bug and root cause.** On dataset 12 a report job (11:32:31-11:32:45 UTC) ran inside a themes job
+(11:30:59-11:35:07), so the report was built from themes that were then replaced: five findings point
+at deleted themes and render "no longer exists" text instead of charts. Causes: the report job slot
+(`app/api_report.py:86`) and the themes slot (`app/api_themes.py:102`) are independent and nothing checks
+for a running job of the other kind; and after a reload `frontend/src/Themes.tsx` (334-352) does not
+resume a running themes job when themes already exist, so Build report stays enabled mid-rebuild.
+
+**2. Fix chosen.** `blocking_job(db, dataset_id, column, kinds, max_age)` in `app/jobs.py`; 409 in both
+directions - a report build is refused while a themes / look_inside_other / split_theme job runs for the
+column, and those plus merge/rename are refused while a report job runs. Age caps (60 min theme kinds,
+15 min report) so a row left `running` by a crash or restart can never block forever (there is no startup
+sweep and report jobs have no watchdog). Frontend disables the build buttons while themes run and resumes
+a running themes job on load. Rebuilding dataset 12's report afterwards is the user's call (paid Claude call).
+
+**3. User decisions on the UI (2026-10-24):**
+- Ownership: the user restores Codex's committed 34919df frontend files (the working copies were an
+  accidental rollback) and releases `UI-REPORT-07`; Claude owns the report UI from here.
+- "Look inside Other" running state shows **real live counts** (not a simulated count-up).
+- **Arc dropped** (each answer belongs to one theme, so there is no co-occurrence to show), and with it
+  the design's "map how themes connect" step.
+- **No overview tab row.** Charts are laid out below the treemap, and only charts that show different
+  information are kept. In the user's words: "if is show the same data in the different chart that
+  doesn't make sense, each chart needs to show data that chart can show to get the better idea not the
+  every chart for same data".
+
+**4. One question per chart (overview).** Kept: treemap - "what are the themes, how big, what's inside
+them" (share + sub-themes); tone split (`diverge`) - "how does each theme sound". Removed from the
+overview: icicle and sunburst (same hierarchy as the treemap; icicle stays only as the treemap's phone
+layout), sentiment sun (same tone as the tone split), rank (share already in the treemap, tone in the tone
+split). Inside Other, when done: known-theme gains, new themes ranked and tone-coloured, sub-themes of new
+themes (only when they exist).
+
+**Text budget.** Per section at most one heading and one one-clause subtitle; no paragraphs; every value
+printed on the visual. Removed: the summary line above the report, the Other callout paragraphs and stat
+tiles (their numbers move into the Inside Other columns), "Other is a catch-all..." note, "Explore all
+themes" note, the question-context meta line.
+
+**Target page order.** Question title + one-line summary; question-context sentence; column chips +
+filters in one row; "What are the themes?" treemap (Other block: "Look inside ↓", "Drawn smaller than its
+real share" only when its area is capped); "Inside Other" directly under it (ribbons → three columns →
+step rail → done banner and charts); "How does each theme sound?" tone split; What stands out (each
+finding: sentence, badge, See answers, one chart); quotes; phrases; "Can I trust this?".
+
+**5. Step names now describe the real work.** Old names did not ("Checking known themes" actually embedded
+and re-clustered; "Grouping new themes into sub-themes" actually labelled). New: "Finding patterns in
+Other" → "Naming new themes" → "Matching answers to themes" (Jev, live progress) → "Updating the report".
+
+**6. Data contract.** Look-inside result gains `other_before_count`, `answered_total`, `known_gains:
+[{label, count}]`; new nullable `Job.progress` JSON (migration) holding `{done, total, known, new,
+still_other}` during the Jev matching step, returned by `job_dict`. Dropped from Inside Other:
+`othergrowth` (it was labelled "Sankey" but is a bar chart), `sentsun`, Arc.
+
+**7. Follow-ups, not done now.** Audit Codex's Stage 5 finding chart variants against one-question-per-
+chart. Dataset 12's look-inside put 5,833 of 6,041 new answers into one broad theme ("Office Layout and
+Facility Condition"): likely Jev classification against a broad merged label with no size or confidence
+cap (`app/text_pipeline/other_classify.py`, `merging.py`) - investigate only with the user's OK.
