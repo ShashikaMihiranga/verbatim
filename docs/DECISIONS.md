@@ -2687,3 +2687,61 @@ Claimed on the task board as `WIRE-CHARTS-01`. **Remaining from the original 22*
 group (`tone_split`, `theme_hierarchy`/`_compact`, `trend_groups`/`_styled`/`_mix_over_time`/`slope_change`,
 `group_split_bars`/`compare_dots`, `theme_flow`) and the "new finding kind" group (`binned_grid`,
 `vs_average`, `tone_by_number`) - not started, next batches.
+
+## 2026-10-24 (chart-block stream: Stage 3 - harden the 8 existing charts' skip-conditions)
+
+User asked to start Stage 3 of the plan (`.claude/plans/this-is-ai-based-deep-globe.md`), explicitly asking
+to investigate what already exists before building anything duplicate. Claimed on the task board as
+`STAGE3-HARDEN-01`.
+
+**Investigation findings (2 of 4 items already done, 2 genuinely missing)**:
+- **Heatmap's "every segment group ≥ 100" floor**: already real, both in the data layer
+  (`app/findings_structured.py`'s `heatmap_group_floor=100` in `build_segment_data`) AND in the registry
+  (`app/report_blocks.py`'s `group_heatmap` block's `needs()`). No new code - confirmed via
+  `tests/test_report_blocks.py::test_group_heatmap_needs_every_segment_group_at_the_floor`, already passing.
+- **Trend's "≥ 30 answers per period" floor**: same story - already real in `findings_structured.py`'s
+  `build_trend_data` (drops any period under 30 before `TrendData` is ever populated) and already reflected
+  honestly in the registry's `trend` block `needs()`. No new code - confirmed via existing
+  `BY_SLUG["trend"].needs()` tests. **Both of these were stale items on the plan's own checklist** - this
+  entry corrects that, rather than re-building something that already works.
+- **Sub-theme threshold (sunburst vs treemap) and tone-spread skip (sentsun vs diverge)**: genuinely missing
+  - `app/findings.py`'s `pick_chart` really did always return the SPEC table's fallback chart
+    (`treemap`/`sentsun`) regardless of real sub-theme count or real tone spread, exactly as the (now
+    outdated) code comments there said. Built for real this entry.
+
+**What got built**: `app/report_blocks.py`'s `_sub_theme_total`/`_max_tone_spread` helpers (previously
+private, used only by this registry's own `needs()` predicates) are now public (`sub_theme_total`/
+`max_tone_spread`) so `app/findings.py` can reuse the exact same computation rather than a second copy.
+`pick_chart(candidate, report_data=None)` gained a real `report_data` parameter: with it, `long_tail`
+findings swap from the table-default `treemap` to `sunburst` once real sub-themes reach
+`SUB_THEME_SUNBURST_MIN` (3, SPEC's own number), and `tone_contrast` findings swap from the table-default
+`sentsun` to `diverge` once real tone spread drops under `TONE_SPREAD_SENTSUN_MIN` (0.05, SPEC's own
+number) - `diverge`'s renderer (`f_diverge`) already existed from an earlier batch, unwired to any finding
+until now. `report_data` is optional (defaults to `None`, keeping each kind's table default) so a direct/
+legacy call site is unaffected. Both real call sites in `build_findings` now pass the real `report_data`
+(already computed before `pick_chart` is called there).
+
+**Real bug caught before shipping, not after**: `app/charts.py`'s `f_diverge` and `f_sunburst` both read
+`data.selected_theme` to highlight the one theme a specific finding is about - the EXACT same mechanism
+`f_sentsun` already has a dedicated, "confirmed live" bug fix for in `app/api_report.py` (two findings
+sharing one chart_id must not render the byte-identical, globally-same chart). That fix only checked
+`chart_id == "sentsun"` - introducing `diverge`/`sunburst` as new real finding chart ids without extending
+it would have silently reintroduced the identical bug for two new chart types. Fixed by widening the check
+to `chart_id in ("sentsun", "diverge", "sunburst")`.
+
+**Tests**: `tests/test_findings.py` - the old `pick_chart` test (which explicitly pinned "always treemap,
+sub-themes don't matter" as expected, current behavior) is now `test_pick_chart_mapping_with_no_report_data_uses_each_kinds_table_default`
+(the true legacy-call-site behavior), plus two new tests proving the real gates both ways (thin/rich
+sub-theme counts -> treemap/sunburst; narrow/wide tone spread -> diverge/sentsun), built against a real
+`build_report_data()` call rather than a hand-rolled fake.
+
+**Live-verified** against dataset 11's real report (`Review_Text` column, rebuilt through the real running
+backend): the long_tail finding ("roughly one in six reviews touches on miscellaneous topics") now renders
+`chart_id: "sunburst"` instead of `"treemap"` (this dataset's "Fit and sizing" theme has exactly 3 real
+sub-themes, reaching the threshold) - screenshot-confirmed the sunburst correctly shows "Other selected,
+others dimmed" in its own per-finding panel, proving the selected-theme fix carried over correctly. This
+dataset's tone spreads are all wide (0.64-0.77), so the sentsun-to-diverge swap wasn't exercised live here
+- covered instead by the two new direct unit tests above.
+
+Full backend suite green (849 passed, same 5 pre-existing unrelated auth/security failures as every prior
+entry, confirmed unrelated via `git stash` in the batch-4 entry). No frontend files touched this entry.

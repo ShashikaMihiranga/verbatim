@@ -60,6 +60,7 @@ from .findings_structured import (
     trend_shift_candidates,
 )
 from .models import Dataset, Finding, Report, Theme
+from .report_blocks import max_tone_spread, sub_theme_total
 from .text_pipeline import AnthropicClaudeClient, ClaudeClient
 from .text_pipeline import LabelingClaudeNotConfigured as FindingsClaudeNotConfigured
 from .text_pipeline.labeling import OTHER_LABEL
@@ -96,21 +97,26 @@ MAX_CANDIDATES = 5  # SPEC.md section 5: "keep the top 3 to 5" - this is a cap, 
 
 # ---------------------------------------------------------------- chart selection (SPEC.md section 4)
 
-# SPEC.md section 4's table: "Sunburst: Open-ended text and 2 or more themes... Skip when fewer than 3
-# sub-themes in total, use treemap." `pick_chart` below never selects sunburst/icicle for any finding kind
-# regardless of how many real sub-themes now exist (see module docstring) - not because sub-themes are
-# still unpopulated (they aren't, as of this stream), but because wiring that table row's own "3 or more
-# sub-themes in total" threshold check into `pick_chart` is separate, explicitly out-of-scope follow-up
-# work (see the plan's decision 11). Until that guard is added, treemap (this row's documented fallback)
-# is what this module actually uses - the table's own fallback rule, applied honestly rather than
-# rendering a sunburst with no outer ring. See docs/DECISIONS.md.
+# SPEC.md section 4's table, two rows with a real skip condition (chart-block stream, 2026-10-24,
+# Stage 3 - these were previously documented as "out-of-scope follow-up work", now wired for real):
+#   "Sunburst: ...Skip when fewer than 3 sub-themes in total, use treemap."
+#   "Sentiment sunburst or Marimekko: ...Skip when sentiment spread under 0.05" (fallback: Diverge, "Reasons
+#   with neutral or positive framing" - same priority tier, SPEC's own documented alternate for this case).
+# `pick_chart` below checks both real thresholds via `app.report_blocks.sub_theme_total`/`max_tone_spread`
+# against the finding's own `ReportData` - no `report_data` (legacy/direct calls) falls back to each kind's
+# table-documented default (treemap/sentsun), same as this module's behavior before this stage.
+SUB_THEME_SUNBURST_MIN = 3  # SPEC.md section 4's own "fewer than 3 sub-themes in total" wording
+TONE_SPREAD_SENTSUN_MIN = 0.05  # SPEC.md section 4's own "sentiment spread under 0.05" wording
+
 CHART_BY_KIND = {
-    "tone_contrast": "sentsun",  # table: "Sentiment sunburst or Marimekko", priority 4 - unaffected by the
-                                 # sub-theme gap (its own skip condition is about sentiment spread, not sub-themes)
+    "tone_contrast": "sentsun",  # table: "Sentiment sunburst or Marimekko", priority 4 - the TABLE-DEFAULT
+                                 # chart; pick_chart below swaps this for "diverge" when real tone spread is
+                                 # under TONE_SPREAD_SENTSUN_MIN (SPEC's own documented skip + fallback)
     "dominant_theme": "rank",  # table: "Rank", priority 3 - the richest single view we have for "this
                                # theme clearly leads" (shows share, count and sentiment tint together)
     "long_tail": "treemap",  # table: "Treemap", priority 2, replaces sunburst - block area makes an
-                             # oversized "Other" block legible at a glance
+                             # oversized "Other" block legible at a glance; pick_chart below swaps this for
+                             # "sunburst" when real sub-theme count reaches SUB_THEME_SUNBURST_MIN
     "segment_skew": "heatmap",  # table: "Heatmap", priority 5 - matches SPEC.md section 4's row exactly
     "score_correlation": "byScore",  # table's own analogue is "Sankey" (priority 5), explicitly out of
                                       # scope this pass (no Sankey renderer exists/is tested yet) - `byScore`
@@ -853,12 +859,33 @@ def label_confidence(candidate: Candidate) -> str:
 
 # ==================================================================== 4. pick_chart
 
-def pick_chart(candidate: Candidate) -> str:
-    """Maps a finding kind to one of this stream's small set of wired-up chart ids
-    (`overview`, `treemap`, `rank`, `sentsun`, `quality`), per SPEC.md section 4's priority table - see
-    `CHART_BY_KIND`'s comments for the fallback reasoning (sunburst's own stated skip condition, "fewer
-    than 3 sub-themes in total, use treemap", is always met while sub-themes are unpopulated)."""
-    return CHART_BY_KIND[candidate.kind]
+def pick_chart(candidate: Candidate, report_data: "ReportData | None" = None) -> str:
+    """Maps a finding kind to one of this stream's wired-up chart ids, per SPEC.md section 4's priority
+    table - `CHART_BY_KIND` for the simple one-kind-one-chart cases, plus two real skip-condition swaps
+    this stage (Stage 3) wires for real:
+
+    - `long_tail` renders `sunburst` instead of the table-default `treemap` once real sub-themes reach
+      `SUB_THEME_SUNBURST_MIN` (SPEC's own "skip when fewer than 3 sub-themes, use treemap" - applied the
+      other way around: treemap is the one-time default, sunburst is what SPEC actually wants once there
+      is enough sub-theme detail to justify an extra ring).
+    - `tone_contrast` renders `diverge` instead of the table-default `sentsun` once real tone spread drops
+      under `TONE_SPREAD_SENTSUN_MIN` (SPEC's own "sentiment spread under 0.05" skip condition - sentsun's
+      inner/outer ring split has nothing to show when every theme reads about the same, so this swaps to
+      Diverge, SPEC's own documented alternate for "reasons with neutral or positive framing", rather than
+      rendering a flat, uninformative sun).
+
+    `report_data` is `None` for a caller with no `ReportData` yet available (kept optional, not required,
+    so a direct/legacy call site still gets each kind's table-documented default) - every real call site in
+    `build_findings` below passes the real one, since it is already computed before `pick_chart` is ever
+    called there."""
+    chart = CHART_BY_KIND[candidate.kind]
+    if report_data is None:
+        return chart
+    if candidate.kind == "long_tail" and sub_theme_total(report_data) >= SUB_THEME_SUNBURST_MIN:
+        return "sunburst"
+    if candidate.kind == "tone_contrast" and max_tone_spread(report_data) < TONE_SPREAD_SENTSUN_MIN:
+        return "diverge"
+    return chart
 
 
 # ==================================================================== 5. write_headline
@@ -1033,7 +1060,7 @@ def build_findings(
     for cand in ordered:
         new_findings.append(Finding(
             dataset_id=dataset.id, theme_id=cand.theme_id, sentence=sentences[cand.id],
-            chart_type=pick_chart(cand), confidence=label_confidence(cand),
+            chart_type=pick_chart(cand, report_data), confidence=label_confidence(cand),
             data={**cand.numbers, "column": column, "kind": cand.kind},
         ))
     db_session.add_all(new_findings)
@@ -1048,7 +1075,7 @@ def build_findings(
         blocks.append({"kind": "context", "chart_id": "context", "priority": 1, "finding_id": None})
     for cand, finding in zip(ordered, new_findings):
         blocks.append({
-            "kind": "finding", "chart_id": pick_chart(cand), "priority": PRIORITY_BY_KIND[cand.kind],
+            "kind": "finding", "chart_id": pick_chart(cand, report_data), "priority": PRIORITY_BY_KIND[cand.kind],
             "finding_id": finding.id,
         })
     # "quotes"/"phrases" (wiring batch A): also always-on, shown after the competing findings but before

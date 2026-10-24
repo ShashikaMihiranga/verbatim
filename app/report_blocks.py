@@ -49,14 +49,21 @@ def _other_node(data: ReportData):
     return next((t for t in data.themes if t.color == OTHER_COLOR), None)
 
 
-def _sub_theme_total(data: ReportData) -> int:
+def sub_theme_total(data: ReportData) -> int:
+    """Public (chart-block stream, 2026-10-24, Stage 3): also used by `app.findings.pick_chart`'s real
+    sunburst-vs-treemap gate for `long_tail` findings (SPEC.md section 4's "skip when fewer than 3
+    sub-themes, use treemap"), not just this registry's own `needs()` predicates - no longer private."""
     return sum(len(t.children) for t in data.themes)
 
 
-def _max_tone_spread(data: ReportData) -> float:
+def max_tone_spread(data: ReportData) -> float:
     """Widest negative/positive split on any one real theme, 0..1 - the same shape of signal `tone_contrast`
     candidates gate on (`app/findings.py:TONE_GAP_MIN`), reused here as a data-availability check, not a
-    second copy of that scoring logic."""
+    second copy of that scoring logic.
+
+    Public (chart-block stream, 2026-10-24, Stage 3): also used by `app.findings.pick_chart`'s real
+    sentsun-vs-diverge gate for `tone_contrast` findings (SPEC.md section 4's "sentiment spread under
+    0.05" skip condition) - no longer private."""
     spreads = [abs(t.tones.pos - t.tones.neg) / 100 for t in _real_themes(data)]
     return max(spreads, default=0.0)
 
@@ -140,7 +147,7 @@ BLOCKS: list[Block] = [
         "b09", "sentiment_sun", "3", "Sentiment sun", "sentsun",
         "Delivery speed carries the most negative wording, -0.31 against -0.19 overall.",
         "Framing that is not neutral, or a tone spread above 0.05.",
-        lambda data: _max_tone_spread(data) > 0.05,
+        lambda data: max_tone_spread(data) > 0.05,
     ),
     Block(
         "b10", "group_heatmap", "4", "Themes by group", "heatmap",
@@ -303,13 +310,13 @@ BLOCKS: list[Block] = [
         "b28", "theme_hierarchy", "2", "Themes and sub-themes, sunburst", "sunburst",
         "Cost splits into upfront price, battery cost and insurance.",
         "Themes with 3 or more sub-themes in total. Desktop.",
-        lambda data: _sub_theme_total(data) >= 3,
+        lambda data: sub_theme_total(data) >= 3,
     ),
     Block(
         "b29", "theme_hierarchy_compact", "2", "Themes and sub-themes, icicle", "icicle",
         "Themes on a top row, with their sub-themes beneath.",
         "As the sunburst, on phones or when the sunburst has too many arcs.",
-        lambda data: _sub_theme_total(data) >= 3,
+        lambda data: sub_theme_total(data) >= 3,
     ),
     Block(
         "b30", "theme_similarity", "2", "Theme similarity map", "bubbles",
@@ -358,7 +365,7 @@ BLOCKS: list[Block] = [
         "b34", "tone_mekko", "3", "Share and tone together, Marimekko", "mekko",
         "Delivery speed is the widest column and the most negative.",
         "3 or more themes, and non-neutral framing or a wide tone spread.",
-        lambda data: len(_real_themes(data)) >= 3 and _max_tone_spread(data) > 0.05,
+        lambda data: len(_real_themes(data)) >= 3 and max_tone_spread(data) > 0.05,
     ),
     Block(
         "b35", "co_mentions", "3", "Themes mentioned together, arc", "arc",

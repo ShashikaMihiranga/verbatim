@@ -323,14 +323,20 @@ def _render_report(
         fid = b.get("finding_id")
         finding_row = findings_by_id.get(fid) if b["kind"] == "finding" and fid is not None else None
 
-        # Finding-aware sentsun (fixes two tone_contrast findings rendering the byte-identical, globally-
-        # same chart - see docs/DECISIONS.md): `report_data` is built ONCE and reused for every block
-        # (comment above, "never rebuilt per block") - that rule is about not re-running the expensive
-        # build_report_data pass, not about every block seeing identical data. `dataclasses.replace` makes
-        # a cheap, un-shared view with just `selected_theme` swapped to THIS finding's own theme for this
-        # one render call; `report_data` itself (and every other block's render) is untouched.
+        # Finding-aware sentsun/diverge/sunburst (fixes two findings sharing one chart_id rendering the
+        # byte-identical, globally-same chart - see docs/DECISIONS.md): `report_data` is built ONCE and
+        # reused for every block (comment above, "never rebuilt per block") - that rule is about not
+        # re-running the expensive build_report_data pass, not about every block seeing identical data.
+        # `dataclasses.replace` makes a cheap, un-shared view with just `selected_theme` swapped to THIS
+        # finding's own theme for this one render call; `report_data` itself (and every other block's
+        # render) is untouched. "diverge"/"sunburst" (chart-block stream, 2026-10-24, Stage 3) joined this
+        # list once `app.findings.pick_chart` started actually choosing them for real findings (tone_
+        # contrast's sentsun-vs-diverge swap, long_tail's treemap-vs-sunburst swap) - both renderers read
+        # `data.selected_theme` the exact same way sentsun does (see app/charts.py's f_diverge/f_sunburst),
+        # so leaving them out here would reintroduce the identical "wrong theme highlighted" bug sentsun's
+        # own fix (confirmed live, see below) already closed, just for two new chart ids instead of one.
         block_data = report_data
-        if chart_id == "sentsun" and finding_row is not None and finding_row.theme_id is not None:
+        if chart_id in ("sentsun", "diverge", "sunburst") and finding_row is not None and finding_row.theme_id is not None:
             node = next((t for t in report_data.themes if t.theme_id == finding_row.theme_id), None)
             if node is not None:
                 block_data = dataclasses.replace(report_data, selected_theme=node.name)

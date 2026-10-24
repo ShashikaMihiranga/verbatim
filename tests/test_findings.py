@@ -191,20 +191,50 @@ def test_label_confidence_thresholds():
 
 # ==================================================================== pick_chart
 
-def test_pick_chart_mapping_and_the_sunburst_to_treemap_fallback():
-    """SPEC.md section 4's table: "Sunburst: ...Skip when fewer than 3 sub-themes in total, use treemap."
-    `pick_chart` never selects sunburst/icicle for any finding kind - real sub-themes existing now
-    (app/findings.py's module docstring) does not by itself change this, since wiring that table row's own
-    threshold check into `pick_chart` is separate, explicitly out-of-scope follow-up work (see
-    CHART_BY_KIND's own comment) - so a "theme breakdown" finding (long_tail) must still use the table's
-    documented fallback (treemap), never sunburst, regardless of how many sub-themes exist."""
+def test_pick_chart_mapping_with_no_report_data_uses_each_kinds_table_default():
+    """`pick_chart(candidate)` with no `report_data` (a direct/legacy call site) must keep every kind's
+    SPEC.md section 4 table-documented default - no real gate can run without real data to check it
+    against, so this is the honest fallback, not a stale pin (see the two gate tests below for the real,
+    now-wired behavior with `report_data` given)."""
     tone = Candidate("tone_contrast", "x", 1, "X", count=1, score=1.0, numbers={})
     dominant = Candidate("dominant_theme", "x", 1, "X", count=1, score=1.0, numbers={})
     long_tail = Candidate("long_tail", "x", 1, "X", count=1, score=1.0, numbers={})
     assert pick_chart(tone) == "sentsun"
     assert pick_chart(dominant) == "rank"
     assert pick_chart(long_tail) == "treemap"
-    assert pick_chart(long_tail) != "sunburst"
+
+
+def test_pick_chart_long_tail_swaps_treemap_for_sunburst_once_real_sub_themes_reach_the_threshold():
+    """SPEC.md section 4's table: "Sunburst: ...Skip when fewer than 3 sub-themes in total, use treemap" -
+    chart-block stream, 2026-10-24, Stage 3, now wired for real via `app.report_blocks.sub_theme_total`."""
+    long_tail = Candidate("long_tail", "x", 1, "X", count=1, score=1.0, numbers={})
+    ds = Dataset(project_id=1, filename="x.csv", file_hash="1" * 64, row_count=100, profile={})
+
+    thin = [make_theme(1, "Cost", 50, 0.1, sub_themes=[make_sub_theme("Only one", 10)])]
+    thin_data = build_report_data(ds, thin, cleaning_report={}, question=QUESTION)
+    assert pick_chart(long_tail, thin_data) == "treemap"  # 1 sub-theme total - below the threshold
+
+    rich = [make_theme(1, "Cost", 50, 0.1, sub_themes=[
+        make_sub_theme("A", 10), make_sub_theme("B", 10), make_sub_theme("C", 10),
+    ])]
+    rich_data = build_report_data(ds, rich, cleaning_report={}, question=QUESTION)
+    assert pick_chart(long_tail, rich_data) == "sunburst"  # 3 sub-themes total - reaches the threshold
+
+
+def test_pick_chart_tone_contrast_swaps_sentsun_for_diverge_when_tone_spread_is_narrow():
+    """SPEC.md section 4's table: "Sentiment sunburst or Marimekko: ...Skip when sentiment spread under
+    0.05" (fallback: Diverge) - chart-block stream, 2026-10-24, Stage 3, now wired for real via
+    `app.report_blocks.max_tone_spread`."""
+    tone = Candidate("tone_contrast", "x", 1, "X", count=1, score=1.0, numbers={})
+    ds = Dataset(project_id=1, filename="x.csv", file_hash="1" * 64, row_count=100, profile={})
+
+    narrow = [make_theme(1, "Cost", 50, 0.1, tone={"neg": 34.0, "neu": 33.0, "pos": 33.0})]  # spread 0.01
+    narrow_data = build_report_data(ds, narrow, cleaning_report={}, question=QUESTION)
+    assert pick_chart(tone, narrow_data) == "diverge"  # under 0.05 - sentsun has nothing to show
+
+    wide = [make_theme(1, "Cost", 50, 0.1, tone={"neg": 70.0, "neu": 15.0, "pos": 15.0})]  # spread 0.55
+    wide_data = build_report_data(ds, wide, cleaning_report={}, question=QUESTION)
+    assert pick_chart(tone, wide_data) == "sentsun"  # clears the bar - sentsun's own table default
 
 
 # ==================================================================== theme_nodes (real sub-theme wiring)
