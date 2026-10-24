@@ -27,22 +27,28 @@ def view(chart_id: str, data: ReportData, label: str, note: str = '') -> dict:
     if chart_id == 'icicle':
         # The gallery's legacy SVG scales its text down on phones. Reuse the live overview's fluid
         # HTML icicle instead; ordinary HTML labels keep readable font sizes and theme selection.
-        from .charts import esc, fmt, hdr, icicle_html
+        from .charts import esc, fmt, hdr, icicle_html, other_display_name
+        # The merged Other box gets the report's honest name ("113 more themes", BUG-043); `data-theme`
+        # keeps the real name the frontend matches on.
+        other_label = other_display_name(data)
         key = ''.join(
             f'<div data-theme="{esc(t.name)}" style="font-size:14px;overflow-wrap:anywhere">'
-            f'<strong>{esc(t.name)}</strong><br>{t.share:g}% · {fmt(t.count)} answers</div>'
+            f'<strong>{esc(other_display_name(data, t.name) if t.color == "other" else t.name)}</strong>'
+            f'<br>{t.share:g}% · {fmt(t.count)} answers</div>'
             for t in data.themes if t.count > 0
         )
         # Both layouts ship in one fragment and a container query picks one by the chart's real width:
         # the compact 390px layout was also being shown on desktop, as a small column in a wide page.
         compact = (f'<div style="padding:24px 16px">'
-                   f'<div style="margin-top:24px">{icicle_html(data, 358, 400)}</div>'
+                   f'<div style="margin-top:24px">{icicle_html(data, 358, 400, other_label)}</div>'
                    f'<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px">{key}</div></div>')
-        wide = f'<div style="padding:24px 48px 40px">{icicle_html(data, 1084, 480)}</div>'
+        wide = f'<div style="padding:24px 48px 40px">{icicle_html(data, 1084, 480, other_label)}</div>'
         html = ('<style>.vb-icicle-wide{display:none}'
                 '@container vbicicle (min-width:640px){.vb-icicle-wide{display:block}.vb-icicle-compact{display:none}}</style>'
                 '<div style="container-type:inline-size;container-name:vbicicle">'
-                f'<div style="padding:56px 48px 0">{hdr("Themes and sub-themes", "Themes above, sub-themes below.")}</div>'
+                # Same question as the desktop overview it stands in for on phones (BUG-037); also the
+                # compact layout of a finding's sunburst, whose heading asks the same question.
+                f'<div style="padding:56px 48px 0">{hdr("What are the themes?", "Width is share of answered, with sub-themes below their theme.")}</div>'
                 f'<div class="vb-icicle-wide">{wide}</div><div class="vb-icicle-compact">{compact}</div></div>')
         width, height = 1180, 700
     else:
@@ -53,18 +59,17 @@ def view(chart_id: str, data: ReportData, label: str, note: str = '') -> dict:
 
 
 def theme_views(data: ReportData) -> dict[str, dict]:
+    """The report's overview-level theme charts: `icicle` (the overview's phone layout, and the compact
+    layout of a finding's sunburst - see app/api_report.py) and `diverge` (the tone split section). The
+    page shows nothing else from here, so nothing else is built (BUG-038: `sentsun`, `rank` and
+    `sunburst` used to be rendered on every report load and never shown)."""
     result = {}
     for chart_id, slug, label in (
         ('icicle', 'theme_hierarchy_compact', 'Icicle'),
-        ('sentsun', 'sentiment_sun', 'Sentiment sun'),
-        ('rank', 'rank_by_tone', 'Rank'),
         ('diverge', 'tone_split', 'Tone split'),
-        ('sunburst', 'theme_hierarchy', 'Sunburst'),
     ):
         if BY_SLUG[slug].needs(data):
             result[chart_id] = view(chart_id, data, label)
-    if 'sunburst' in result and 'icicle' in result:
-        result['sunburst']['compact_chart_id'] = 'icicle'
     return result
 
 

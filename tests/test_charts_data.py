@@ -794,3 +794,124 @@ def test_report_overview_is_one_question_with_no_repeated_header_or_stats():
     for repeated in ("How big, how clean", "Responses", "Typical length", "Average sentiment", data.question):
         assert repeated not in report_html
     assert "How big, how clean" in render_parts("overview", data)[0]  # gallery frame unchanged
+
+
+# ---------------------------------------------------------------- report overview labels (BUG-043/044/036)
+
+def _dataset_12_like():
+    """Dataset 12's shape: one big theme with sub-themes, six small ones, and a merged Other box of 50.7%
+    (12 unthemed answers' worth plus 113 folded real themes)."""
+    from app.chart_data import OtherBreakdown
+    data = small_report()
+    data.themes = [
+        ThemeNode("Workspace temperature and air quality", 32.0, -0.2, 320, "t1", ToneSplit(50, 30, 20),
+                  [SubTheme("Temperature control", 12), SubTheme("Air quality", 8)]),
+        ThemeNode("Privacy and noise", 6.0, -0.1, 60, "t2", ToneSplit(40, 40, 20)),
+        ThemeNode("Desk booking", 3.0, 0, 30, "t3", ToneSplit(30, 40, 30)),
+        ThemeNode("Parking availability", 2.5, 0, 25, "t4", ToneSplit(30, 40, 30)),
+        ThemeNode("Cleanliness", 2.0, 0, 20, "t5", ToneSplit(30, 40, 30)),
+        ThemeNode("Kitchen facilities", 1.8, 0, 18, "t6", ToneSplit(30, 40, 30)),
+        ThemeNode("Meeting rooms", 1.0, 0, 10, "t7", ToneSplit(30, 40, 30)),
+        ThemeNode("Other", 50.7, 0, 507, "other", ToneSplit(30, 40, 30)),
+    ]
+    data.other_breakdown = OtherBreakdown(noise_count=12, noise_share=1.7, hidden_real_count=490,
+                                          hidden_real_share=49.0, hidden_real_theme_count=113,
+                                          total_real_theme_count=120)
+    return data
+
+
+def test_report_overview_keeps_the_treemap_even_when_the_icicle_would_be_preferred(monkeypatch):
+    # BUG-044: the icicle's rotated, mid-word-broken labels read badly on desktop. The gallery keeps it.
+    import app.charts as charts
+    from app.charts import render_parts, render_report_parts
+    monkeypatch.setattr(charts, "_prefers_icicle", lambda *a, **k: True)
+    data = _dataset_12_like()
+    report_html = render_report_parts("overview", data)[0]
+    assert "Block area is share of answered" in report_html
+    assert "rotate(-90deg)" not in report_html
+    assert "container-type:inline-size" in report_html
+    gallery = render_parts("overview", data)[0]
+    assert "container-type" not in gallery and "113 more themes" not in gallery
+
+
+def test_report_overview_labels_never_break_words_and_keep_every_name_readable():
+    from app.charts import render_report_parts
+    data = _dataset_12_like()
+    html_out = render_report_parts("overview", data)[0]
+    # The browser may only wrap at spaces: no forced mid-word breaks or automatic hyphens.
+    assert "overflow-wrap:break-word" not in html_out and "hyphens:auto" not in html_out
+    assert "overflow-wrap:anywhere" not in html_out
+    for t in data.themes[:-1]:
+        # The full name stays in the box's title and in screen-reader text whatever label fits.
+        assert f'title="{t.name} {t.share}%"' in html_out
+        assert f">{t.name} {t.share}%</span>" in html_out
+    for sub in data.themes[0].children:
+        assert f'title="{sub.name} {sub.share:g}%"' in html_out
+    # Every visible label has a share-only fallback, switched by the box's own width.
+    full = re.findall(r'class="(vbtm[0-9a-f]+-\d+)f"', html_out)
+    assert full
+    for cls in full:
+        assert f"{{.{cls}f{{display:none}}.{cls}p{{display:block}}}}" in html_out
+        assert f'{cls}p"' in html_out
+
+
+def test_min_label_width_never_splits_a_word():
+    from app.charts import WORD_EM, _min_label_width
+    fs = 15
+    longest = len("Temperature") * fs * WORD_EM
+    assert _min_label_width("Temperature control 12%", fs, 3) == pytest.approx(longest)
+    one_line = len("Temperature control 12%") * fs * WORD_EM
+    assert _min_label_width("Temperature control 12%", fs, 1) == pytest.approx(one_line)
+    two = _min_label_width("Temperature control 12%", fs, 2)
+    assert longest <= two < one_line
+
+
+def test_report_overview_names_a_box_of_folded_real_themes():
+    # BUG-043: 113 real themes plus 12 unthemed answers were all labelled "Other 50.7%".
+    from app.charts import render_report_parts
+    data = _dataset_12_like()
+    html_out = render_report_parts("overview", data)[0]
+    assert 'data-theme="Other" title="113 more themes 50.7%"' in html_out
+    assert ">113 more themes 50.7%</span>" in html_out
+    assert "Look inside ↓" in html_out  # there are unthemed answers to look inside
+
+
+def test_other_display_name_rules():
+    from app.chart_data import OtherBreakdown
+    from app.charts import other_display_name
+    data = small_report()
+    assert other_display_name(data) == "Other"  # nothing known: plain Other
+    data.other_breakdown = OtherBreakdown(12, 1.7, 490, 49.0, 113, 120)
+    assert other_display_name(data) == "113 more themes"
+    data.other_breakdown = OtherBreakdown(120, 30.0, 10, 2.5, 1, 8)
+    assert other_display_name(data) == "Other and 1 more theme"
+    data.other_breakdown = OtherBreakdown(50, 12.0, 0, 0.0, 0, 5)
+    assert other_display_name(data) == "Other"  # only unthemed answers: nothing folded
+
+
+def test_report_overview_has_no_look_inside_pointer_without_unthemed_answers():
+    from app.chart_data import OtherBreakdown
+    from app.charts import render_report_parts
+    data = _dataset_12_like()
+    data.other_breakdown = OtherBreakdown(0, 0.0, 507, 50.7, 113, 120)
+    html_out = render_report_parts("overview", data)[0]
+    assert "113 more themes" in html_out
+    assert "Look inside" not in html_out and "↓" not in html_out
+
+
+def test_narrow_tall_other_box_keeps_a_compact_pointer():
+    # BUG-036: dataset 12's capped Other box was about 54px wide, below the old 80x64 the hint needed.
+    from app.charts import HINT_MIN_W, _report_treemap_cell, _TreemapLabels
+    data = _dataset_12_like()
+    labels = _TreemapLabels([("Other", 50.7)])
+    cell = _report_treemap_cell(data, labels, "Other", 50.7, "other", (1030, 140, 54, 180), 1084, 320,
+                                {"Other": 5.0}, True)
+    style = labels.style()
+    hint = re.search(r'class="(vbtm[0-9a-f]+-\d+)h"', cell).group(1)
+    # Both pointers ship; the box's own width picks one, so at ~54px only the arrow shows.
+    assert 'role="img" aria-label="Look inside Other, below"' in cell and ">↓</div>" in cell
+    assert f"@container (width<{HINT_MIN_W}px){{.{hint}h{{display:none}}.{hint}k{{display:block}}}}" in style
+    assert 54 < HINT_MIN_W
+    # The name is still there for screen readers and on hover, and the share is never word-broken.
+    assert 'title="113 more themes 50.7%"' in cell
+    assert "overflow-wrap:break-word" not in cell

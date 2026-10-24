@@ -288,3 +288,7 @@ class ReportData:
     quotes: QuoteData
     quality: QualityData
     context: ContextData
+    # What the merged "Other" box holds (unthemed answers vs real themes ranked 8th+). Set only by the
+    # report API (app/api_report.py) so the report overview can name that box honestly (BUG-043);
+    # None everywhere else, where the box stays plain "Other".
+    other_breakdown: Optional[OtherBreakdown] = None

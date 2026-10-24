@@ -1,4 +1,4 @@
-import html, json, math, random
+import html, json, math, random, zlib
 
 from .chart_data import ReportData
 from .charts_medium import f_group_mix
@@ -339,14 +339,19 @@ OVERVIEW_TREEMAP_H = 320
 
 def f_overview(data: ReportData, report: bool = False):
     stats = data.overview.stats
+    if report:
+        # The report always draws the treemap on desktop (BUG-044: the icicle's rotated, mid-word-broken
+        # labels read worse than a treemap whose small boxes drop to their % or to no label). Its phone
+        # layout is report_medium's icicle variant. `report=True` also adds the Other block's pointer to
+        # Inside Other below it and names a block that holds folded real themes (BUG-043).
+        chart = treemap_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H, other_hint=True, report=True)
     # Same decision function as f_treemap (see _prefers_icicle's own docstring), but called with THIS
     # chart's own, smaller reference size - this hero chart can legitimately need icicle even when the
     # taller standalone "What are the themes?" chart below still has enough room for treemap.
-    if _prefers_icicle(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H):
+    elif _prefers_icicle(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H):
         chart = icicle_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H)
     else:
-        # `report=True` (render_report_parts): adds the Other block's pointer to Inside Other below it.
-        chart = treemap_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H, other_hint=report)
+        chart = treemap_html(data, OVERVIEW_TREEMAP_W, OVERVIEW_TREEMAP_H)
     if report:
         # The report page has its own title, summary and context lines, so its overview is only the
         # treemap under one question; every stat below is already printed elsewhere on that page.
@@ -1007,7 +1012,7 @@ def _treemap_areas(rows_data) -> dict[str, float]:
 
 
 # ---- treemap
-def treemap_html(data: ReportData, w: int, h: int, other_hint: bool = False) -> str:
+def treemap_html(data: ReportData, w: int, h: int, other_hint: bool = False, report: bool = False) -> str:
     """The treemap's own markup (no `frame()` wrapper) - `f_treemap` below calls this at its own
     standalone size, and `f_overview` calls it again at a smaller "hero"/browse size, so the layout logic
     itself exists in exactly one place rather than being copy-pasted per caller.
@@ -1032,7 +1037,11 @@ def treemap_html(data: ReportData, w: int, h: int, other_hint: bool = False) -> 
     frontend click/hover handler can resolve any part of a theme's drawing - including a sub-theme box -
     back to its parent theme with a single `closest('[data-theme]')` lookup (see
     `frontend/src/ThemeChart.tsx`); `closest()` is DOM-structure-based and does not care that this is now
-    a `<div>` tree instead of nested `<svg><g>` groups."""
+    a `<div>` tree instead of nested `<svg><g>` groups.
+
+    `report=True` (the report overview only; gallery frames never pass it) swaps every label for one that
+    never breaks a word: see `_TreemapLabels`. It also names a merged Other box that holds real themes
+    ("113 more themes", BUG-043) and shows its "Look inside" pointer only when it holds unthemed answers."""
     rows_data = treemap_rows(data)
     # squarify's own layout math (`worst()`) divides by each row's smallest item, so a zero-share theme -
     # unreachable before the Filters feature, now a real case: a filter combination can legitimately leave
@@ -1047,56 +1056,47 @@ def treemap_html(data: ReportData, w: int, h: int, other_hint: bool = False) -> 
         # SPEC.md section 5) - an empty box, not a crash (see squarify's own comment for why `rects` can
         # come back `{}`).
         return f'<div style="position:relative;height:{h}px"></div>'
+    labels = _TreemapLabels(drawable) if report else None
     cells = []
     for idx, (name, share, sent, cnt, col) in enumerate(drawable):
         rx, ry, rw, rh = rects[name]
+        if labels is not None:
+            cells.append(_report_treemap_cell(data, labels, name, share, col, rects[name], w, h, areas, other_hint))
+            continue
 
-        subs = subs_of(data, name)
         sub_html = ""
-        header_pct = 34  # a fixed share of this cell's own height reserved for its label, not a computed
-                          # "how tall did the label actually render" pixel value - see docstring above.
-        if subs:
-            # A theme's stored sub-themes are only required to cover >= MIN_SUBTHEME_COVERAGE (50%) of
-            # its own answers (app/text_pipeline/subthemes.py) - deliberate, documented design, not a
-            # bug. But squarify() always fills 100% of the reserved sub-area with whatever `subs` it's
-            # given, so without this, a theme covered by only half its own answers LOOKS fully covered.
-            # A synthetic remainder entry gets real proportional space instead, rendered distinctly (not
-            # one of MIX's tints) below. Skipped when the gap rounds to ~0 - not worth a cell for noise.
-            remainder = round(share - sum(sp for _, sp in subs), 1)
-            if remainder > 0.5:
-                subs = subs + [("__remainder__", remainder)]
-            sub_w, sub_h = rw - 10, rh * (100 - header_pct) / 100 - 5
-            if sub_w > 20 and sub_h > 20:
-                sr = squarify(subs, 0, 0, sub_w, sub_h)
-                sub_cells = ""
-                for k, (sn, sp) in enumerate(subs):
-                    sx, sy, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
-                    # Line count is computed from this sub-cell's own known height (sh, already in the
-                    # fixed 580px design-height reference frame the browser actually renders at) rather
-                    # than capped at a fixed number - see treemap_html's own docstring. Width-wise
-                    # wrapping is left entirely to the browser's natural text flow.
-                    s_line_h = 14 * 1.2
-                    s_max_lines = max(1, int((sh - 4) // s_line_h))
-                    if sn == "__remainder__":
-                        # Muted, never one of MIX's theme-tinted colors, and the label text itself says
-                        # what it is - colour is never the only carrier (CLAUDE.md's design rules).
-                        bg = "color-mix(in srgb, var(--muted) 18%, var(--surface))"
-                        label_text = f"{sp:g}% not in a sub-theme"
-                    else:
-                        bg = f"color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"
-                        label_text = f'{esc(sn)} <span style="font-weight:600">{sp:g}%</span>'
-                    sub_cells += (
-                        f'<div style="position:absolute;left:{sx / sub_w * 100:.2f}%;top:{sy / sub_h * 100:.2f}%;'
-                        f'width:{sw / sub_w * 100:.2f}%;height:{sh / sub_h * 100:.2f}%;padding:1.5px">'
-                        f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
-                        f'background:{bg};'
-                        f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
-                        f'<span lang="en" style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2;'
-                        f'overflow:hidden;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto;display:-webkit-box;'
-                        f'-webkit-line-clamp:{s_max_lines};-webkit-box-orient:vertical">'
-                        f'{label_text}</span>'
-                        f'</div></div>')
-                sub_html = f'<div style="position:absolute;left:0;top:{header_pct}%;width:100%;height:{100 - header_pct}%">{sub_cells}</div>'
+        header_pct = TREEMAP_HEADER_PCT
+        layout = _treemap_sub_layout(data, name, share, rw, rh)
+        if layout is not None:
+            sub_entries, sub_w, sub_h = layout
+            sub_cells = ""
+            for k, sn, sp, sx, sy, sw, sh in sub_entries:
+                # Line count is computed from this sub-cell's own known height (sh, already in the
+                # fixed 580px design-height reference frame the browser actually renders at) rather
+                # than capped at a fixed number - see treemap_html's own docstring. Width-wise
+                # wrapping is left entirely to the browser's natural text flow.
+                s_line_h = 14 * 1.2
+                s_max_lines = max(1, int((sh - 4) // s_line_h))
+                if sn == "__remainder__":
+                    # Muted, never one of MIX's theme-tinted colors, and the label text itself says
+                    # what it is - colour is never the only carrier (CLAUDE.md's design rules).
+                    bg = "color-mix(in srgb, var(--muted) 18%, var(--surface))"
+                    label_text = f"{sp:g}% not in a sub-theme"
+                else:
+                    bg = f"color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"
+                    label_text = f'{esc(sn)} <span style="font-weight:600">{sp:g}%</span>'
+                sub_cells += (
+                    f'<div style="position:absolute;left:{sx / sub_w * 100:.2f}%;top:{sy / sub_h * 100:.2f}%;'
+                    f'width:{sw / sub_w * 100:.2f}%;height:{sh / sub_h * 100:.2f}%;padding:1.5px">'
+                    f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
+                    f'background:{bg};'
+                    f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
+                    f'<span lang="en" style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2;'
+                    f'overflow:hidden;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto;display:-webkit-box;'
+                    f'-webkit-line-clamp:{s_max_lines};-webkit-box-orient:vertical">'
+                    f'{label_text}</span>'
+                    f'</div></div>')
+            sub_html = f'<div style="position:absolute;left:0;top:{header_pct}%;width:100%;height:{100 - header_pct}%">{sub_cells}</div>'
 
         # Same height-derived line count as sub-cells above, computed against the header area only
         # (header_pct of rh) when sub-cells actually render - otherwise a tall cell's label could compute
@@ -1119,7 +1119,8 @@ def treemap_html(data: ReportData, w: int, h: int, other_hint: bool = False) -> 
             f'background:var(--{col})">'
             f'<div style="position:absolute;left:10px;top:12px;right:8px">{label}</div>'
             f'{sub_html}{_other_hint(name, share, areas, rw, rh) if other_hint and col == "other" else ""}</div></div>')
-    return f'<div style="position:relative;width:100%;height:{h}px">{"".join(cells)}</div>'
+    style = labels.style() if labels is not None else ""
+    return f'<div style="position:relative;width:100%;height:{h}px">{style}{"".join(cells)}</div>'
 
 
 def _other_hint(name: str, share: float, areas: dict[str, float], rw: float, rh: float) -> str:
@@ -1133,6 +1134,224 @@ def _other_hint(name: str, share: float, areas: dict[str, float], rw: float, rh:
             'Drawn smaller than its real share</div>') if capped and rw >= 120 and rh >= 84 else ""
     return (f'<div style="position:absolute;left:10px;right:8px;bottom:10px;color:{TH_ON["other"]}">'
             f'<div style="font-size:14px;font-weight:600">Look inside ↓</div>{note}</div>')
+
+
+TREEMAP_HEADER_PCT = 34  # a fixed share of a cell's own height reserved for its label when it has
+                         # sub-themes, not a computed "how tall did the label actually render" pixel value
+                         # - see treemap_html's own docstring.
+
+
+def _treemap_sub_layout(data: ReportData, name: str, share: float, rw: float, rh: float):
+    """Where a treemap cell's sub-theme boxes go, or None when it draws none: `(entries, sub_w, sub_h)`,
+    each entry `(k, name, share, x, y, w, h)` in the sub-area's own reference frame. Shared by the
+    gallery and report label paths of `treemap_html`, so both draw identical boxes."""
+    subs = subs_of(data, name)
+    if not subs:
+        return None
+    # A theme's stored sub-themes are only required to cover >= MIN_SUBTHEME_COVERAGE (50%) of its own
+    # answers (app/text_pipeline/subthemes.py) - deliberate, documented design, not a bug. But squarify()
+    # always fills 100% of the reserved sub-area with whatever `subs` it's given, so without this, a theme
+    # covered by only half its own answers LOOKS fully covered. A synthetic remainder entry gets real
+    # proportional space instead, rendered distinctly (not one of MIX's tints). Skipped when the gap
+    # rounds to ~0 - not worth a cell for noise.
+    remainder = round(share - sum(sp for _, sp in subs), 1)
+    if remainder > 0.5:
+        subs = subs + [("__remainder__", remainder)]
+    sub_w, sub_h = rw - 10, rh * (100 - TREEMAP_HEADER_PCT) / 100 - 5
+    if sub_w <= 20 or sub_h <= 20:
+        return None
+    sr = squarify(subs, 0, 0, sub_w, sub_h)
+    entries = []
+    for k, (sn, sp) in enumerate(subs):
+        sx, sy, sw, sh = sr[(sn, sp)] if (sn, sp) in sr else sr[sn]
+        entries.append((k, sn, sp, sx, sy, sw, sh))
+    return entries, sub_w, sub_h
+
+
+def other_display_name(data: ReportData, name: str = "Other") -> str:
+    """The report's name for the merged "Other" box (BUG-043). That box holds unthemed answers plus every
+    real theme ranked 8th or lower; calling all of it "Other" contradicted the Inside Other section, which
+    only counts the unthemed answers. Plain `name` when no real theme is folded in (or nothing is known)."""
+    b = data.other_breakdown
+    if b is None or b.hidden_real_theme_count <= 0:
+        return name
+    n = b.hidden_real_theme_count
+    more = f"{n} more theme{'' if n == 1 else 's'}"
+    return more if b.hidden_real_share >= b.noise_share else f"Other and {more}"
+
+
+def other_has_unthemed(data: ReportData) -> bool:
+    """Whether the merged Other box holds unthemed answers - the only thing "Look inside" works on.
+    Unknown (no breakdown, e.g. a gallery or test fixture) counts as yes, the behaviour before BUG-043."""
+    b = data.other_breakdown
+    return b is None or b.noise_count > 0
+
+
+# Visually hidden but read by screen readers: a report treemap box's full name and share, whatever its
+# visible label had room for.
+SR_ONLY = ("position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;"
+           "clip:rect(0 0 0 0);white-space:nowrap")
+WORD_EM = 0.6  # deliberately generous average letter width (in em) for "does this word fit" checks
+NUM_EM = 0.58  # the same for a printed share ("50.7%"); tabular digits are close to this
+HINT_MIN_W = 118  # container width (px) the one-line "Look inside ↓" needs; below it the hint is just "↓"
+ARROW_MIN_W = 18
+
+
+def _wrapped_line_count(words: list[str], width: float, fs: float) -> int:
+    lines, cur = 0, ""
+    for word in words:
+        line = f"{cur} {word}" if cur else word
+        if cur and len(line) * fs * WORD_EM > width:
+            lines, cur = lines + 1, word
+        else:
+            cur = line
+    return lines + (1 if cur else 0)
+
+
+def _min_label_width(text: str, fs: float, max_lines: int) -> float:
+    """The narrowest text width (px) at which `text` wraps, at spaces only, into `max_lines` lines or
+    fewer - so no word is ever wider than its line. Estimated with `WORD_EM`; never below the longest
+    word, never above the whole text on one line."""
+    words = text.split()
+    full = len(text) * fs * WORD_EM
+    width = max(len(word) for word in words) * fs * WORD_EM
+    while width < full and _wrapped_line_count(words, width, fs) > max_lines:
+        width += 2
+    return min(width, full)
+
+
+class _TreemapLabels:
+    """Report-only treemap labels (BUG-044) that never break a word mid-letter at any real width.
+
+    Every box carries up to two visible labels: its full "name share%" (wrapping at spaces only) and a
+    share-only fallback. A CSS container query on the box's own rendered width picks one: the full label
+    when its longest word and its line count fit, otherwise the share alone, otherwise nothing. The box's
+    `title` and a screen-reader-only span always carry the full name. Thresholds come from `WORD_EM`; the
+    box's height is fixed, so line counts are computed here exactly as `treemap_html` already does.
+    Class names carry a hash of the boxes so two treemaps on one page never share rules."""
+
+    def __init__(self, drawable):
+        key = repr([(r[0], r[1]) for r in drawable]).encode()
+        self.uid = f"vbtm{zlib.crc32(key):08x}"
+        self.n = 0
+        self.rules: list[str] = []
+
+    def new_class(self) -> str:
+        self.n += 1
+        return f"{self.uid}-{self.n}"
+
+    def switch(self, cls: str, full_min: float, pct_min: float) -> None:
+        self.rules.append(f"@container (width<{full_min:.0f}px){{.{cls}f{{display:none}}.{cls}p{{display:block}}}}"
+                          f"@container (width<{pct_min:.0f}px){{.{cls}p{{display:none}}}}")
+
+    def hint_switch(self, cls: str) -> None:
+        self.rules.append(f"@container (width<{HINT_MIN_W}px){{.{cls}h{{display:none}}.{cls}k{{display:block}}}}"
+                          f"@container (width<{ARROW_MIN_W}px){{.{cls}k{{display:none}}}}")
+
+    def style(self) -> str:
+        return (f"<style>.{self.uid}-p,.{self.uid}-k{{display:none}}{''.join(self.rules)}</style>")
+
+
+def _report_sub_cell(labels: _TreemapLabels, col: str, k: int, sn: str, sp: float,
+                     sx: float, sy: float, sw: float, sh: float, sub_w: float, sub_h: float) -> str:
+    if sn == "__remainder__":
+        # Muted, never one of MIX's theme-tinted colours, and the label says what it is.
+        bg = "color-mix(in srgb, var(--muted) 18%, var(--surface))"
+        plain = f"{sp:g}% not in a sub-theme"
+        label_html = esc(plain)
+    else:
+        bg = f"color-mix(in srgb,var(--{col}) {MIX[k] + 12}%,var(--surface))"
+        plain = f"{sn} {sp:g}%"
+        label_html = f'{esc(sn)} <span style="font-weight:600">{sp:g}%</span>'
+    fs, line_h = 14, 14 * 1.2
+    max_lines = int((sh - 7) // line_h)  # 1.5px outer and 2px inner padding on each side
+    visible = ""
+    if max_lines >= 1:
+        cls = labels.new_class()
+        labels.switch(cls, _min_label_width(plain, fs, max_lines) + 2, len(f"{sp:g}%") * fs * NUM_EM + 2)
+        visible = (f'<div class="{cls}f" aria-hidden="true" style="min-width:0">'
+                   f'<span lang="en" style="font-size:{fs}px;font-weight:500;color:var(--ink);line-height:1.2;'
+                   f'overflow:hidden;overflow-wrap:normal;hyphens:manual;display:-webkit-box;'
+                   f'-webkit-line-clamp:{max_lines};-webkit-box-orient:vertical">{label_html}</span></div>'
+                   f'<div class="{labels.uid}-p {cls}p" aria-hidden="true" style="font-size:{fs}px;font-weight:600;'
+                   f'color:var(--ink);line-height:1.2;white-space:nowrap">{sp:g}%</div>')
+    return (f'<div title="{esc(plain)}" style="position:absolute;left:{sx / sub_w * 100:.2f}%;top:{sy / sub_h * 100:.2f}%;'
+            f'width:{sw / sub_w * 100:.2f}%;height:{sh / sub_h * 100:.2f}%;padding:1.5px">'
+            f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;position:relative;'
+            f'background:{bg};container-type:inline-size;'
+            f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
+            f'<span style="{SR_ONLY}">{esc(plain)}</span>{visible}</div></div>')
+
+
+def _report_treemap_cell(data: ReportData, labels: _TreemapLabels, name: str, share: float, col: str,
+                         rect, w: int, h: int, areas: dict[str, float], other_hint: bool) -> str:
+    """One box of the report overview's treemap: same geometry and colours as the gallery path in
+    `treemap_html`, with `_TreemapLabels` labels, the BUG-043 name for a merged Other box, and a "Look
+    inside" pointer that drops to a bare "↓" in a box too narrow for the words (BUG-036)."""
+    rx, ry, rw, rh = rect
+    is_other = col == "other"
+    display = other_display_name(data, name) if is_other else name
+    plain = f"{display} {share}%"
+
+    sub_html = ""
+    layout = _treemap_sub_layout(data, name, share, rw, rh)
+    if layout is not None:
+        sub_entries, sub_w, sub_h = layout
+        sub_html = (f'<div style="position:absolute;left:0;top:{TREEMAP_HEADER_PCT}%;width:100%;'
+                    f'height:{100 - TREEMAP_HEADER_PCT}%">'
+                    + "".join(_report_sub_cell(labels, col, k, sn, sp, sx, sy, sw, sh, sub_w, sub_h)
+                              for k, sn, sp, sx, sy, sw, sh in sub_entries)
+                    + "</div>")
+
+    label_h = (rh * TREEMAP_HEADER_PCT / 100) if sub_html else rh
+    fs = 15 if rw >= 110 else 13
+    line_h = fs * 1.3
+    max_lines = int((label_h - 12 - 8) // line_h)
+
+    # The pointer to Inside Other, at the box's foot. Only when Other holds unthemed answers (the only
+    # thing Look inside works on) and the box is tall enough to keep at least one label line above it.
+    hint = ""
+    capped = areas.get(name, share) < share - 1e-9
+    note_fits = capped and rw >= 120 and rh >= 84
+
+    def lines_above(reserve: float) -> int:  # label lines left above a pointer `reserve` px tall
+        return int((label_h - 12 - 4 - reserve) // line_h)
+
+    note_text = "Drawn smaller than its real share"
+    # 10px foot margin + the 14px pointer line; the 11.5px note adds its own wrapped lines.
+    note_reserve = 29 + 15 * _wrapped_line_count(note_text.split(), rw - 21, 11.5)
+    if note_fits and lines_above(note_reserve) < 1:
+        note_fits = False  # keep the pointer, drop its "drawn smaller" note
+    reserve = note_reserve if note_fits else 27
+    if other_hint and is_other and other_has_unthemed(data) and rh >= 64 and lines_above(reserve) >= 1:
+        max_lines = lines_above(reserve)
+        cls = labels.new_class()
+        labels.hint_switch(cls)
+        note = ('<div style="font-size:11.5px;font-weight:400;line-height:1.3;margin-top:2px">'
+                f'{note_text}</div>') if note_fits else ""
+        hint = (f'<div style="position:absolute;left:10px;right:8px;bottom:10px;color:{TH_ON["other"]}">'
+                f'<div class="{cls}h"><div style="font-size:14px;font-weight:600;white-space:nowrap">Look inside ↓</div>{note}</div>'
+                f'<div class="{labels.uid}-k {cls}k" role="img" aria-label="Look inside Other, below" '
+                f'title="Look inside Other, below" style="font-size:16px;font-weight:600;line-height:1">↓</div></div>')
+
+    visible = ""
+    if max_lines >= 1:
+        cls = labels.new_class()
+        labels.switch(cls, _min_label_width(plain, fs, max_lines) + 18, len(f"{share}%") * fs * NUM_EM + 10)
+        visible = (f'<div class="{cls}f" aria-hidden="true" style="position:absolute;left:10px;top:12px;right:8px">'
+                   f'<div lang="en" style="font-size:{fs}px;font-weight:500;color:{TH_ON[col]};line-height:1.3;'
+                   f'overflow:hidden;overflow-wrap:normal;hyphens:manual;display:-webkit-box;'
+                   f'-webkit-line-clamp:{max_lines};-webkit-box-orient:vertical">'
+                   f'{esc(display)} <span style="font-weight:600">{share}%</span></div></div>'
+                   f'<div class="{labels.uid}-p {cls}p" aria-hidden="true" style="position:absolute;left:6px;top:12px;'
+                   f'right:4px;font-size:{fs}px;font-weight:600;color:{TH_ON[col]};line-height:1.3;'
+                   f'white-space:nowrap">{share}%</div>')
+
+    return (f'<div data-theme="{esc(name)}" title="{esc(plain)}" style="position:absolute;left:{rx / w * 100:.2f}%;'
+            f'top:{ry / h * 100:.2f}%;width:{rw / w * 100:.2f}%;height:{rh / h * 100:.2f}%;padding:1.5px">'
+            f'<div style="width:100%;height:100%;border-radius:5px;overflow:hidden;position:relative;'
+            f'background:var(--{col});container-type:inline-size">'
+            f'<span style="{SR_ONLY}">{esc(plain)}</span>{visible}{sub_html}{hint}</div></div>')
 
 
 def _too_narrow_for(name: str, box_w: float, fs: float = 15) -> bool:
@@ -1270,7 +1489,7 @@ def _icicle_rotated_label(text: str, fs: float, text_color: str) -> str:
     )
 
 
-def icicle_html(data: ReportData, w: int, h: int) -> str:
+def icicle_html(data: ReportData, w: int, h: int, other_label: str | None = None) -> str:
     """Row-based alternative to `treemap_html`'s packed squares, chosen per-report by `_prefers_icicle`
     above: every theme gets the chart's FULL row height (only its WIDTH varies, by share), and sub-themes
     sit in a second full-height row directly below their parent theme's own x-span - far more room for a
@@ -1282,6 +1501,9 @@ def icicle_html(data: ReportData, w: int, h: int) -> str:
     "Other"'s box WIDTH is capped the same way `treemap_html`'s box AREA is (`_treemap_areas`, reused
     as-is - width and area are the same thing once every box shares one fixed row height), for the same
     reason: it is frequently the single largest box for reasons unrelated to being the most worth reading.
+
+    `other_label` (report only, see `other_display_name`) replaces the merged Other box's visible name;
+    its `data-theme` stays the real name.
     """
     rows_data = treemap_rows(data)
     drawable = [r for r in rows_data if r[1] > 0]
@@ -1304,7 +1526,8 @@ def icicle_html(data: ReportData, w: int, h: int) -> str:
     x = 0.0
     for name, share, sent, cnt, col in drawable:
         box_w = areas[name] / 100 * w
-        cells.append(_icicle_cell(name, share, col, x, 0.0, box_w, theme_row_h, w, h,
+        label_name = other_label if (other_label and col == "other") else name
+        cells.append(_icicle_cell(label_name, share, col, x, 0.0, box_w, theme_row_h, w, h,
                                    theme_name=name, is_sub=False))
 
         subs = subs_of(data, name)

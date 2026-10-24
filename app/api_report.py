@@ -296,6 +296,8 @@ def _render_report(
         structured=structured, filter_rows=filter_rows,
     )
     breakdown, all_themes = other_breakdown(themes, report_data.answered, filter_rows=filter_rows)
+    # The overview names its merged Other box from this split ("113 more themes", BUG-043).
+    report_data = dataclasses.replace(report_data, other_breakdown=breakdown)
     comparison_data = comparison_groups(report_data, clean_df)
     report_data = complete_numeric_grid(report_data, clean_df, pick_structured_columns(ds.id, db))
     explorations = numeric_explorations(report_data)
@@ -317,6 +319,8 @@ def _render_report(
     # app/report_blocks.py's new "tone_split"/"theme_hierarchy" blocks name them as their chart_id. This
     # is the SAME "just expose it as a variant tab" treatment icicle/sentsun/rank already got - no new
     # finding-selection logic, that stage is explicitly deferred (see the plan's reordering note).
+    # Since BUG-038 only the two views the page shows are built: "icicle" (the overview's phone layout and
+    # a finding sunburst's compact layout, below) and "diverge" (the tone split section).
     theme_chart_variants = theme_views(report_data)
 
     blocks_content = content.get("blocks") or []

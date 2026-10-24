@@ -416,7 +416,8 @@ def test_get_report_theme_chart_variants_only_include_eligible_views(env):
 
     variants = body["theme_chart_variants"]
     # No stored sub-themes in this fixture: Stage 5 uses Stage 3's shared hierarchy guard.
-    assert set(variants.keys()) == {"sentsun", "rank", "diverge"}
+    # BUG-038: sentsun/rank/sunburst are no longer built; the page only shows icicle and diverge.
+    assert set(variants.keys()) == {"diverge"}
     for variant_id, variant in variants.items():
         assert variant["chart_title"]
         assert "Reliability" in variant["chart_html"] and "Support" in variant["chart_html"]
@@ -453,6 +454,35 @@ def test_get_report_other_breakdown_splits_noise_from_hidden_real_themes(env):
 
     assert len(body["all_themes"]) == 8  # every real theme, "Other" itself excluded
     assert "Other" not in [t["name"] for t in body["all_themes"]]
+
+    # BUG-043: unthemed answers are the larger part of the merged box, so it says both.
+    overview = next(b for b in body["blocks"] if b["kind"] == "overview")
+    assert "Other and 1 more theme " in overview["chart_html"]
+    assert 'data-theme="Other"' in overview["chart_html"]
+
+
+def test_get_report_overview_names_a_box_of_folded_real_themes(env):
+    """BUG-043: when real themes ranked 8th+ outweigh the unthemed answers, the overview's merged box is
+    "N more themes", not "Other" (Inside Other, below it, only counts the unthemed answers)."""
+    install_fake_claude()
+    did = upload_csv(env, survey_df(n_reliability=100, n_support=100))
+    clean_and_apply(env, did)
+    specs = [
+        dict(label=f"T{i}", description=f"Theme {i}.", size=15, sentiment=0.0,
+             tone={"neg": 34.0, "neu": 33.0, "pos": 33.0}, answer_refs=list(range(i * 15, i * 15 + 15)))
+        for i in range(10)  # 3 real themes beyond the treemap's 7 colours
+    ]
+    specs.append(dict(label="Other", description="Unrelated answers.", size=10, sentiment=0.0,
+                       tone={"neg": 34.0, "neu": 33.0, "pos": 33.0}, answer_refs=list(range(150, 160))))
+    seed_themes(env, did, specs)
+    job = build_report_job(env, did)
+    assert job["status"] == "done", job
+
+    body = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    assert body["other_breakdown"]["hidden_real_theme_count"] == 3
+    html = next(b for b in body["blocks"] if b["kind"] == "overview")["chart_html"]
+    assert "3 more themes " in html and "Other and" not in html
+    assert 'data-theme="Other"' in html  # the frontend still finds the box by its real name
 
 
 # ---------------------------------------------------------------- also-checked-nothing-notable

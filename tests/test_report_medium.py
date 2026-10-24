@@ -30,7 +30,11 @@ def data(groups=2):
 def test_thin_hierarchy_tabs_are_not_exposed_and_rich_hierarchy_has_compact_pair():
     report = data()
     views = theme_views(report)
-    assert views['sunburst']['compact_chart_id'] == 'icicle'
+    # BUG-038: only the views the page shows are built (the icicle, the tone split).
+    assert set(views) == {'icicle', 'diverge'}
+    # BUG-037: the icicle stands in for the overview on phones, so it asks the overview's question.
+    assert 'What are the themes?' in views['icicle']['chart_html']
+    assert 'Themes and sub-themes' not in views['icicle']['chart_html']
     # One fragment carries both layouts; a container query shows the wide one at desktop widths (it used to
     # be the 390px compact layout everywhere, a small column on a wide page) and the compact one on phones.
     html = views['icicle']['chart_html']
@@ -39,8 +43,18 @@ def test_thin_hierarchy_tabs_are_not_exposed_and_rich_hierarchy_has_compact_pair
     assert 'font-size:14px' in html  # compact key keeps readable labels
     for t in report.themes:
         t.children = []
-    assert 'sunburst' not in theme_views(report)
     assert 'icicle' not in theme_views(report)
+
+
+def test_phone_icicle_names_folded_real_themes_like_the_desktop_overview():
+    # BUG-043 on phones: the icicle is the overview's phone layout, so its Other box and key say the same.
+    from app.chart_data import OtherBreakdown
+    report = deepcopy(EV)
+    report.other_breakdown = OtherBreakdown(12, 1.7, 490, 49.0, 113, 120)
+    html = theme_views(report)['icicle']['chart_html']
+    assert '113 more themes' in html
+    assert 'data-theme="Other"' in html
+    assert '113 more themes' not in theme_views(deepcopy(EV))['icicle']['chart_html']
 
 
 def test_segment_finding_exposes_real_mix_split_and_segment_only_flow_without_mutation():
