@@ -348,7 +348,11 @@ def test_nothing_notable_writes_overview_and_quality_only(env):
     assert built.status_code == 200, built.text
     body = built.json()
     assert body["also_checked_nothing_notable"] is True
-    assert [b["kind"] for b in body["blocks"]] == ["overview", "quality"]
+    # "context"/"quotes"/"phrases" are always-on (chart-block stream, 2026-10-24, wiring batch A) - real
+    # question-kind/quote/phrase data exists here regardless of "nothing notable" among the finding kinds,
+    # unlike the first unit-level test above (test_findings.py) which passes neither quote_theme_texts nor
+    # answer_texts and so only gets "context".
+    assert [b["kind"] for b in body["blocks"]] == ["overview", "context", "quotes", "phrases", "quality"]
     assert all(b["finding"] is None for b in body["blocks"])
 
     got = env.client.get(f"/api/datasets/{did}/report", params={"column": Q})

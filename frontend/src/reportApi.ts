@@ -9,7 +9,10 @@ export interface ReportFinding {
 }
 
 export interface ReportBlock {
-  kind: 'overview' | 'finding' | 'quality'
+  // 'context'/'quotes'/'phrases' (chart-block stream, 2026-10-24, wiring batch A): always-on supplements,
+  // not competing findings - shown whenever their own data exists, with no Badge/"see answers" (those are
+  // finding-only). See Report.tsx's SupplementBlock.
+  kind: 'overview' | 'finding' | 'quality' | 'context' | 'quotes' | 'phrases'
   chart_id: string
   chart_title: string
   // Raw body fragment (app.charts.render_parts's shape: no <!doctype html>, no own background/font load) -

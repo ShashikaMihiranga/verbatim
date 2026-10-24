@@ -2632,3 +2632,58 @@ lookup table + a new renderer), `trend_grid`, `trend_aggregated`, `trend_errorba
 (smaller trend variants needing finer per-period data `TrendData` doesn't carry yet). User has explicitly
 asked to hold off starting these until Codex is available to help build them in parallel - the scoring/
 selection engine (deferred Stage 2) stays last either way, per the existing reordering decision.
+
+## 2026-10-24 (chart-block stream: wiring batch A - 3 always-on blocks reach a real report)
+
+User asked to wire all the "built but unreachable" chart blocks (22 of them - a real renderer exists, but
+nothing in `app.findings`/`app.api_report` ever asks for them, so they only ever appear in the internal
+`/frame/{id}` gallery, never a real report). Scoped into 3 groups by how each one actually needs wiring:
+**always-on supplements** (no finding-kind/gate needed - just show whenever the data exists), **alternate
+charts for an existing finding kind** (a real "which chart wins" decision, since more than one chart would
+now be valid for one kind), and **genuinely new finding kinds** (need their own new gate/detection logic
+from scratch). `co_mentions` stays permanently excluded (no real co-occurrence signal - unchanged decision).
+
+**This entry is Batch A, the always-on group**: `context_header` (`context`), `quotes` (`quotes`),
+`top_phrases` (`phrases`) - `app.report_blocks.BLOCKS`' own b27/b16/b47. Each already had real, working
+upstream data (computed unconditionally in `build_report_data` via `_build_context`/`_build_answer_map`-
+style helpers already shipped in earlier batches) - the ONLY missing piece was that `build_findings` never
+appended a block for any of them to `Report.content["blocks"]`.
+
+**Real blocker found mid-wiring, not assumed away**: the backend alone was not enough. `frontend/src/
+Report.tsx` filters `report.blocks` down to only `kind === 'overview' | 'finding' | 'quality'` - any other
+kind was silently dropped, never rendered, even though the backend would have computed and sent real HTML
+for it. Fixed both sides:
+- `app/findings.py`'s `build_findings`: appends a `"context"` block right after `overview` (chapter 1,
+  matching the design's own position) whenever `report_data.context.kind` is set (always true once there is
+  a question at all); appends `"quotes"`/`"phrases"` blocks after the competing findings, before `quality`
+  (chapter 6-7), each gated on its own real data (`report_data.quotes.quotes`/`.phrases.phrases`) being
+  non-empty - stays absent for a caller that passes neither `quote_theme_texts` nor `answer_texts` (e.g. a
+  direct `build_findings` call in a test), matching the "nothing to show" honesty every other block follows.
+- `frontend/src/reportApi.ts`: `ReportBlock.kind` widened to include `'context' | 'quotes' | 'phrases'`.
+- `frontend/src/Report.tsx`: new `SupplementBlock` component (unlike `FindingBlock`, no Badge/"see answers"
+  - those are finding-only features) renders these three in the right position: `context` right after the
+  title/summary (before the "Columns used" chips), `quotes`/`phrases` after the findings list (or the
+  "nothing notable" line), before the quality footer.
+
+**Tests updated** (2 pre-existing tests pinned the OLD block list, now correctly expect the new always-on
+blocks): `tests/test_findings.py::test_build_findings_nothing_notable_still_writes_a_report_with_only_overview_and_quality`
+(now `["overview", "context", "quality"]` - no quotes/phrases, since that call passes neither upstream
+param), `tests/test_api_report.py::test_nothing_notable_writes_overview_and_quality_only` (now
+`["overview", "context", "quotes", "phrases", "quality"]` - the real build-job path always computes both).
+
+**Verification**: backend suite green (847 passed, same 5 pre-existing unrelated failures as every prior
+entry), frontend `tsc --noEmit` clean, `npm test` (100 passed). Live-verified against dataset 11's real
+report (`Review_Text` column, rebuilt through the real running backend after restarting it with this
+code): `blocks` now really contains `context`/`quotes`/`phrases` with real non-empty `chart_html`, screenshot-
+checked in a real browser (both render correctly - context's question-kind dropdown, quotes' typical/
+random/negative/positive tabs, phrases' sized sentiment-tinted chips).
+
+**Noted but NOT fixed here, out of scope for "wire it in"**: the phrases chart shows a few stray-apostrophe
+tokenization artifacts (`i'm '`, `' lbs`) - a real data-quality bug in `app/text_pipeline/phrases.py`'s own
+n-gram extraction (an earlier batch's own work), not something this wiring batch introduced or should fix
+incidentally.
+
+Claimed on the task board as `WIRE-CHARTS-01`. **Remaining from the original 22**: the "alternate chart"
+group (`tone_split`, `theme_hierarchy`/`_compact`, `trend_groups`/`_styled`/`_mix_over_time`/`slope_change`,
+`group_split_bars`/`compare_dots`, `theme_flow`) and the "new finding kind" group (`binned_grid`,
+`vs_average`, `tone_by_number`) - not started, next batches.

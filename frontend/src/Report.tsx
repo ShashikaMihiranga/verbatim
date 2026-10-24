@@ -47,6 +47,19 @@ function Divider({ children }: { children: ReactNode }) {
   return <div className="rp-section">{children}</div>
 }
 
+// "context"/"quotes"/"phrases" blocks (chart-block stream, 2026-10-24, wiring batch A): always-on
+// supplements, not competing findings - no Badge/"see answers" (FindingBlock's own, finding-only
+// features), just the chart itself. Unlike FindingBlock, never returns null on missing data: the
+// backend (app.findings.build_findings) only ever appends one of these three kinds once its own real
+// data exists, so an empty block here would mean a real backend bug, not an expected "nothing to show".
+function SupplementBlock({ block }: { block: ReportBlock }) {
+  return (
+    <Divider>
+      <ChartFragment block={block} />
+    </Divider>
+  )
+}
+
 function FindingBlock({
   datasetId, block, selectedTheme,
 }: {
@@ -108,6 +121,9 @@ export default function ReportView({
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
   const findings = report.blocks.filter((b) => b.kind === 'finding')
+  const context = report.blocks.find((b) => b.kind === 'context')
+  const quotes = report.blocks.find((b) => b.kind === 'quotes')
+  const phrases = report.blocks.find((b) => b.kind === 'phrases')
   const [selectedThemeName, setSelectedThemeName] = useState<string | null>(null)
   const selectedTheme = themes?.find((t) => t.label === selectedThemeName) ?? null
 
@@ -115,6 +131,8 @@ export default function ReportView({
     <div className="rp">
       <div className="rp-title">{report.question}</div>
       <div className="rp-summary">{report.summary}</div>
+
+      {context && <SupplementBlock block={context} />}
 
       <div className="rp-chips-label">Columns used</div>
       <div className="rp-chips">
@@ -177,6 +195,9 @@ export default function ReportView({
               <div className="rp-nothing">Also checked, nothing notable.</div>
             </Divider>
           )}
+
+      {quotes && <SupplementBlock block={quotes} />}
+      {phrases && <SupplementBlock block={phrases} />}
 
       {quality && (
         <Divider>

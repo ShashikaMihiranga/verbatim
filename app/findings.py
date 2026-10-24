@@ -1040,11 +1040,27 @@ def build_findings(
     db_session.flush()  # assigns Finding.id before it is referenced in blocks below
 
     blocks: list[dict[str, Any]] = [{"kind": "overview", "chart_id": "overview", "priority": 1, "finding_id": None}]
+    # "context" (chart-block stream, 2026-10-24, wiring batch A): always-on, not a competing finding - the
+    # question-kind classification is real and available whenever there is a question at all
+    # (app.report_blocks.BY_SLUG["context_header"].needs), so it is shown unconditionally right after the
+    # overview, same chapter position ("1") the design itself gives it.
+    if report_data.context.kind:
+        blocks.append({"kind": "context", "chart_id": "context", "priority": 1, "finding_id": None})
     for cand, finding in zip(ordered, new_findings):
         blocks.append({
             "kind": "finding", "chart_id": pick_chart(cand), "priority": PRIORITY_BY_KIND[cand.kind],
             "finding_id": finding.id,
         })
+    # "quotes"/"phrases" (wiring batch A): also always-on, shown after the competing findings but before
+    # the quality footer - matching the design's own chapter 6 position for both (app.report_blocks.BLOCKS'
+    # b16/b47). Each needs its own real upstream data (quote_theme_texts/answer_texts) to have anything to
+    # show - app/api_report.py already computes both for every real report, so this is never empty by
+    # construction once a report has any themes at all; still checked here rather than assumed, since a
+    # caller with neither wired (e.g. a test building report_data directly) must not get an empty chart.
+    if report_data.quotes.quotes:
+        blocks.append({"kind": "quotes", "chart_id": "quotes", "priority": 7, "finding_id": None})
+    if report_data.phrases.phrases:
+        blocks.append({"kind": "phrases", "chart_id": "phrases", "priority": 7, "finding_id": None})
     blocks.append({"kind": "quality", "chart_id": "quality", "priority": 9, "finding_id": None})
 
     report = Report(dataset_id=dataset.id, content={

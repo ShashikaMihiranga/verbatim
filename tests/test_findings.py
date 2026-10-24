@@ -726,7 +726,11 @@ def test_build_findings_nothing_notable_still_writes_a_report_with_only_overview
     assert client.calls == []  # no candidates -> zero Claude calls
     assert session.scalars(select(Finding).where(Finding.dataset_id == ds.id)).all() == []
     blocks = session.get(Report, report.id).content["blocks"]
-    assert [b["kind"] for b in blocks] == ["overview", "quality"]
+    # "context" is always-on (chart-block stream, 2026-10-24, wiring batch A) - a real question-kind
+    # classification exists regardless of whether any finding kind cleared its gate. "quotes"/"phrases"
+    # stay absent here: this call passes neither quote_theme_texts nor answer_texts, so both have no real
+    # data to show (same "no candidates" nothing-to-see as the findings themselves).
+    assert [b["kind"] for b in blocks] == ["overview", "context", "quality"]
     assert session.get(Report, report.id).content["also_checked_nothing_notable"] is True
 
 
