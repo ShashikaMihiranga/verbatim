@@ -21,6 +21,8 @@ from app.api_themes import (
     MIN_OTHER_NEW_THEME_SIZE,
     _apply_other_classification,
     _apply_theme_split,
+    _cluster_centroid,
+    _project_centroids_2d,
     _themes_deadline_for,
     get_claude_client,
     get_embedding_client,
@@ -693,6 +695,60 @@ def test_themes_deadline_for_respects_a_monkeypatched_tiny_base(monkeypatch):
     module constant, never a fixed minimum of its own."""
     monkeypatch.setattr("app.api_themes.THEMES_DEADLINE_SECONDS", 0.05)
     assert _themes_deadline_for(0) == pytest.approx(0.05)
+
+
+# ==================================================================== _cluster_centroid (chart-block
+# stream, 2026-10-24, batch 3: theme_similarity)
+
+def test_cluster_centroid_is_the_real_mean_of_member_vectors():
+    import numpy as np
+    from app.text_pipeline import EmbeddedAnswers
+    from app.text_pipeline.schema import Cluster, ClusterMember
+
+    cluster = Cluster(id=0, members=[ClusterMember(row=0, text="a", distance=0.0), ClusterMember(row=1, text="b", distance=0.0)], centroid=None)
+    embedded = EmbeddedAnswers(
+        row_indexes=[0, 1, 2], vectors=np.array([[1.0, 0.0], [3.0, 0.0], [99.0, 99.0]]), position_by_row={0: 0, 1: 1, 2: 2},
+    )
+    centroid = _cluster_centroid(cluster, embedded)
+    assert centroid == pytest.approx([2.0, 0.0])  # mean of [1,0] and [3,0] - row 2 is NOT a member, excluded
+
+
+def test_cluster_centroid_is_none_when_embedded_is_none_or_no_member_has_a_vector():
+    from app.text_pipeline.schema import Cluster, ClusterMember
+
+    cluster = Cluster(id=0, members=[ClusterMember(row=0, text="a", distance=0.0)], centroid=None)
+    assert _cluster_centroid(cluster, None) is None
+
+    import numpy as np
+    from app.text_pipeline import EmbeddedAnswers
+    embedded_without_row_0 = EmbeddedAnswers(row_indexes=[5], vectors=np.array([[1.0, 2.0]]), position_by_row={5: 0})
+    assert _cluster_centroid(cluster, embedded_without_row_0) is None
+
+
+# ==================================================================== _project_centroids_2d (chart-block
+# stream, 2026-10-24, batch 3: theme_similarity)
+
+def test_project_centroids_2d_normalizes_real_centroids_to_0_1():
+    out = _project_centroids_2d([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 0.5, 0.0]])
+    assert len(out) == 3
+    assert all(p is not None for p in out)
+    xs = [p[0] for p in out]
+    ys = [p[1] for p in out]
+    assert min(xs) == pytest.approx(0.0) and max(xs) == pytest.approx(1.0)
+    assert min(ys) == pytest.approx(0.0) and max(ys) == pytest.approx(1.0)
+
+
+def test_project_centroids_2d_keeps_none_entries_at_their_own_position():
+    out = _project_centroids_2d([[1.0, 0.0], None, [0.0, 1.0], [0.5, 0.5]])
+    assert len(out) == 4
+    assert out[1] is None
+    assert out[0] is not None and out[2] is not None and out[3] is not None
+
+
+def test_project_centroids_2d_returns_all_none_when_fewer_than_two_real_centroids():
+    assert _project_centroids_2d([[1.0, 0.0]]) == [None]
+    assert _project_centroids_2d([None, None]) == [None, None]
+    assert _project_centroids_2d([]) == []
 
 
 def test_watchdog_marks_a_truly_stuck_job_failed_without_stopping_the_real_thread(env, monkeypatch):

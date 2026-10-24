@@ -2426,3 +2426,64 @@ genuinely distinct dash patterns and marker shapes (diamond/square/circle); `vs_
 engineer/Manager/Accountant/Electrician above a real dashed average line in green, Teacher/Sales
 assistant/Retail worker/Student below it in red - "Software engineers and managers earn well above
 average" confirmed directly.
+
+## 2026-10-24 (Chart-block stream batch 3: theme_similarity, binned_grid)
+
+8 remaining -> **14 done**, 8 remaining -> **6 remaining**. Before this batch, two of the remaining blocks
+(`theme_similarity`/`answer_map`, `region_map`) needed real design decisions, not just more pipeline code -
+asked the user directly rather than guessing: embeddings get a lightweight 2D projection persisted (not
+re-embedded on every report view, not full vectors stored), and `region_map` becomes a dot map (one circle
+per country at its real lat/long centroid) rather than a full political-boundary choropleth, which would
+need a large external dataset this app has no way to source/verify reliably in-session.
+
+**`theme_similarity`**: new `Theme.map_x`/`map_y` columns (migration `9e394e995e75`), a real 2D PCA
+projection of each theme's own cluster, computed once at theme-BUILD time (`app/api_themes.py`), not on
+every report view - no new embedding API call either way. `f_bubbles` (chart_id `bubbles`) already
+existed and was already registered in `FRAMES`; only the data was ever missing.
+
+**A real bug caught by actually rebuilding themes against a live dataset, not by the unit tests**:
+the first implementation read `cluster.centroid` (`Cluster.centroid`, populated by HDBSCAN's own
+`store_centers="centroid"`) - but `app.text_pipeline.merging.apply_merges` runs unconditionally in the
+real pipeline, before `_write_theme_rows` ever sees `result.clusters`, and it reconstructs EVERY cluster
+with `centroid=None` by its own explicit design (its own comment: "nothing downstream reads a Cluster's
+own centroid after labeling... recomputing it would buy nothing" - true until this stream needed one).
+Confirmed live: rebuilt dataset 11's real themes, got `map_x=None, map_y=None` on every row despite the
+new code running with no errors. Root-caused and fixed by recomputing each theme's centroid for real -
+`_cluster_centroid`, a local numpy mean over each theme's own (POST-merge) member vectors, reusing
+`EmbeddedAnswers` (`embed_and_cluster_with_vectors` already keeps these in memory for exactly this kind of
+reuse - see that dataclass's own docstring) rather than the stale `Cluster.centroid` field. Still zero
+extra embedding calls. Rebuilt dataset 11 again after the fix: 3 real themes, 3 real distinct (x,y)
+positions, "Other" correctly stayed `None`. Rendered the real `bubbles` chart from this real data and
+confirmed it visually (screenshot).
+
+**`binned_grid`**: a genuinely new data shape (`BinCell`/`BinnedGridData`, `app/chart_data.py`) - two
+independent numeric columns, each quartile-banded via the already-existing `band_quartiles`, crossed into
+a grid. New `build_binned_grid_data` (`app/findings_structured.py`) tries every real pair of numeric
+columns (never a column against itself), with each cell's sentiment via the same theme-sentiment
+approximation `build_group_trend_data` already established; a cell under the suppression floor is zeroed,
+not dropped (its row/column band still exists, just that one cell reads "nothing notable here"). New
+`f_binned_grid` renderer, plain HTML/CSS grid (`f_heatmap`'s own "no SVG needed for axis-aligned cells"
+precedent), tinted by `tone()` against the report's real overall sentiment.
+
+**A real contrast bug caught by zooming into a live screenshot, not by any test**: the per-cell answer
+count used `var(--muted)`, a flat grey with poor contrast against the chart's own strongly-tinted red/
+green cells - confirmed genuinely hard to read in a live render. Fixed to the same ink-at-reduced-opacity
+treatment the (already-confirmed-legible) sentiment number above it already uses - legible on every tint
+this chart produces, verified via a zoomed-in screenshot after the fix.
+
+**Tests**: `tests/test_api_themes.py` - `_cluster_centroid` (real mean of real member vectors, excludes
+non-members, `None` when no vector/no embedded data) and `_project_centroids_2d` tests (both already
+existed/extended). `tests/test_report_blocks.py` - `theme_similarity` real-once-3-real-positions-exist
+test (and a 2-positions-isn't-enough negative case), `binned_grid` real/placeholder test, both trimmed
+from the "stays False" list. `tests/test_findings_structured.py` - 4 new `build_binned_grid_data` tests
+(real cross-tab, both-values-required, un-bandable-column none-result, under-floor cells zeroed not
+dropped). `tests/test_charts_data.py` - 1 new golden file (`binnedGrid`; `bubbles`' own golden is
+untouched - it renders from the EV fixture's own hand-set `map_xy`, never from the new DB-backed path),
+`test_frame_count` bumped to 33, 1 new needle-text case. Full backend suite: 838 passed (same 5
+pre-existing unrelated failures). Frontend untouched (`tsc --noEmit` clean).
+
+**Live-verified**, both against real data, not fixtures: theme_similarity against dataset 11 (described
+above); `binned_grid` against the EV fixture (dataset 11/12 have no two-numeric-column combination to
+exercise it with) - confirmed the sentiment gradient reads correctly both left-to-right (higher income,
+less negative) and bottom-to-top (older, less negative), and re-confirmed via a zoomed screenshot after
+the contrast fix that every cell's count is legible against its own background tint.

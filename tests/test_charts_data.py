@@ -6,9 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.chart_data import (
-    CategoryAvg, CategoryAvgData, ContextData, CoPair, FreqData, FreqItem, GroupTrendData, GroupTrendSeries,
-    MapData, OverviewData, Phrase, PhraseData, QualityData, Quote, QuoteData, ReportData, ScoreBand,
-    ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
+    BinCell, BinnedGridData, CategoryAvg, CategoryAvgData, ContextData, CoPair, FreqData, FreqItem,
+    GroupTrendData, GroupTrendSeries, MapData, OverviewData, Phrase, PhraseData, QualityData, Quote,
+    QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme,
+    ThemeNode, ToneSplit, TrendData, TrendSeries,
 )
 from app.charts import (
     FRAMES, _icicle_rotated_label, _prefers_icicle, _too_narrow_for, _treemap_areas, f_overview, f_treemap,
@@ -71,6 +72,9 @@ def small_report() -> ReportData:
         group_trend=GroupTrendData("Region", ["W1", "W2", "W3"],
                                     [GroupTrendSeries("North", "t1", [-0.2, -0.1, 0.0]), GroupTrendSeries("South", "t2", [0.1, 0.1, 0.1])],
                                     "Weekly."),
+        binned_grid=BinnedGridData("Age", "Spend", ["Young", "Old"], ["Low", "High"],
+                                    [BinCell("Young", "Low", 40, -0.2), BinCell("Young", "High", 30, 0.1),
+                                     BinCell("Old", "Low", 20, -0.1), BinCell("Old", "High", 10, 0.3)]),
         cooccurrence=[CoPair("Zebra crossing", "Yak shaving", 120)],
         answer_map=MapData(1, "Zebras like stripes", "Zebra crossing, negative"),
         frequency=FreqData("Pet?", 900, [FreqItem("Zebra", 50, 2), FreqItem("Yak", 30)], "Zebra", "Two answers dominate."),
@@ -94,6 +98,7 @@ def test_custom_data_renders_its_own_names():
         "quotes": ["Stripes are confusing", "Zebra crossing"], "freq": ["Zebra", "Pet?"],
         "vsAverage": ["Zebra", "Yak", "Pet?"],
         "trendGroups": ["North", "South", "W1"], "trendStyled": ["North", "South", "W1"],
+        "binnedGrid": ["Young", "Old", "Age", "Spend"],
     }.items():
         html = render(frame_id, data)
         for n in needles:

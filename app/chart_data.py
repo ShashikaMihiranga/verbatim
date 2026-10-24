@@ -116,6 +116,28 @@ class TrendData:
 
 
 @dataclass
+class BinCell:
+    row_label: str  # row column's band label, e.g. "Low (18-34)"
+    col_label: str  # column column's band label, e.g. "High (80-150)"
+    count: int
+    sentiment: float  # average sentiment of rows in this cell
+
+
+@dataclass
+class BinnedGridData:
+    """`binned_grid` (docs/DECISIONS.md, 2026-10-24 chart-block stream, batch 3): "Higher spenders are far
+    less likely to sound neutral" - two independent NUMBER columns, each banded into quartiles, crossed
+    into a grid. Distinct from every other cross-tab shape here: `ScoreData` bands ONE number against
+    THEMES, `SegmentData` cross-tabs THEMES against category GROUPS - this is purely two numbers against
+    each other, themes never enter it at all."""
+    row_name: str  # the row number column's own name, e.g. "Age"
+    col_name: str  # the column number column's own name, e.g. "Monthly spend"
+    row_labels: list[str]  # row bands, low to high
+    col_labels: list[str]  # column bands, low to high
+    cells: list[BinCell]  # len == len(row_labels) * len(col_labels), row-major
+
+
+@dataclass
 class GroupTrendSeries:
     group: str  # segment group label, e.g. "Business"
     color: str  # theme-style colour token ("t1".."t7"), assigned by rank - groups have no colour of their own
@@ -249,6 +271,7 @@ class ReportData:
     segment: SegmentData
     trend: TrendData
     group_trend: GroupTrendData
+    binned_grid: BinnedGridData
     cooccurrence: list[CoPair]  # theme pairs mentioned in the same answer
     answer_map: MapData
     frequency: FreqData

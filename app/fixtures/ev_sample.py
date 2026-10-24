@@ -5,9 +5,10 @@ This is the data the 20 design charts were drawn from. render() defaults to it.
 import random
 
 from ..chart_data import (
-    CategoryAvg, CategoryAvgData, ContextData, CoPair, FreqData, FreqItem, GroupTrendData, GroupTrendSeries,
-    MapData, OverviewData, Phrase, PhraseData, QualityData, Quote, QuoteData, ReportData, ScoreBand,
-    ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
+    BinCell, BinnedGridData, CategoryAvg, CategoryAvgData, ContextData, CoPair, FreqData, FreqItem,
+    GroupTrendData, GroupTrendSeries, MapData, OverviewData, Phrase, PhraseData, QualityData, Quote,
+    QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme,
+    ThemeNode, ToneSplit, TrendData, TrendSeries,
 )
 
 
@@ -97,6 +98,21 @@ EV = ReportData(
             GroupTrendSeries("Fleet", "t3", _series(-0.08, -0.09, 0.02, 29)),
         ],
         note="Monthly, January to December.",
+    ),
+    binned_grid=BinnedGridData(
+        row_name="Age", col_name="Household income",
+        row_labels=["18-34", "35-49", "50-64", "65+"],
+        col_labels=["Under $30k", "$30k-60k", "$60k-100k", "$100k+"],
+        cells=[
+            BinCell("18-34", "Under $30k", 1840, -0.22), BinCell("18-34", "$30k-60k", 2210, -0.18),
+            BinCell("18-34", "$60k-100k", 1680, -0.08), BinCell("18-34", "$100k+", 920, 0.04),
+            BinCell("35-49", "Under $30k", 1210, -0.19), BinCell("35-49", "$30k-60k", 2680, -0.14),
+            BinCell("35-49", "$60k-100k", 2340, -0.05), BinCell("35-49", "$100k+", 1560, 0.10),
+            BinCell("50-64", "Under $30k", 980, -0.16), BinCell("50-64", "$30k-60k", 1890, -0.11),
+            BinCell("50-64", "$60k-100k", 1720, -0.02), BinCell("50-64", "$100k+", 1340, 0.13),
+            BinCell("65+", "Under $30k", 1120, -0.10), BinCell("65+", "$30k-60k", 1450, -0.06),
+            BinCell("65+", "$60k-100k", 980, 0.02), BinCell("65+", "$100k+", 610, 0.17),
+        ],
     ),
     cooccurrence=[CoPair(_MEK[a], _MEK[b], c) for a, b, c in
                   [(0, 1, 1900), (1, 2, 1600), (0, 2, 1100), (0, 4, 800), (2, 4, 700), (0, 5, 400), (1, 5, 350), (1, 3, 300), (4, 6, 200), (3, 5, 150)]],

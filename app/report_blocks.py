@@ -315,9 +315,13 @@ BLOCKS: list[Block] = [
         "b30", "theme_similarity", "2", "Theme similarity map", "bubbles",
         "Cost and Not needed are talked about in similar words.",
         "3 or more themes, and no answer map.",
-        # ThemeNode.map_xy is never populated for real data (chart_data.py's own comment: "None scatters
-        # the theme") - no similarity-embedding step exists upstream.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 3): app/api_themes.py's _write_theme_rows now
+        # stores a real 2D PCA projection of each theme's own HDBSCAN cluster centroid (Theme.map_x/
+        # map_y, migration 9e394e995e75) - no new embedding call, reuses what clustering already
+        # computes. f_bubbles already existed and was already registered; only the data was missing.
+        # Themes built before this migration landed have map_x/map_y = None (an honest gap, not a
+        # backfilled guess) - needs() checks real data, not just that themes exist.
+        lambda data: sum(1 for t in _real_themes(data) if t.map_xy is not None) >= 3,
     ),
     Block(
         "b31", "answer_map", "2", "Answer map", "map",
@@ -393,11 +397,14 @@ BLOCKS: list[Block] = [
         lambda data: 8 <= len(data.segment.groups) <= 20,
     ),
     Block(
-        "b41", "binned_grid", "4", "Two numbers together", None,
+        "b41", "binned_grid", "4", "Two numbers together", "binnedGrid",
         "Higher spenders are far less likely to sound neutral.",
         "Two number columns, or a number and a score.",
-        # Needs two independent numeric columns cross-tabbed - not built (ScoreData is one score column only).
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 3): app/findings_structured.py's new
+        # build_binned_grid_data - two independent numeric columns, each quartile-banded, crossed into a
+        # grid with a real per-cell sentiment (same theme-sentiment approximation build_group_trend_data
+        # already uses).
+        lambda data: bool(data.binned_grid.cells),
     ),
     Block(
         "b42", "region_map", "4", "Where answers come from", None,

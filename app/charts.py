@@ -1776,6 +1776,42 @@ def f_trend_styled(data: ReportData):
     return body, 1180, h + 160
 
 
+# ---------- binned_grid (chart-block stream, 2026-10-24, batch 3 - a NEW data shape: BinnedGridData) ----
+def f_binned_grid(data: ReportData):
+    """Two independent number columns, quartile-banded, crossed into a grid - "Higher spenders are far
+    less likely to sound neutral." Same plain HTML/CSS grid shape `f_heatmap` already uses (axis-aligned
+    cells, no curved geometry, no reason for SVG), tinted by `tone()` against this report's real overall
+    sentiment instead of `--ramp` against a row's own overall (there is no single "theme" row here to be
+    above/below - every cell is its own independent (row band, column band) pairing)."""
+    bg = data.binned_grid
+    overall = data.overall_sentiment
+    g = f'<div style="display:grid;grid-template-columns:minmax(140px,180px) repeat({len(bg.col_labels)},minmax(0,1fr));gap:4px">'
+    g += '<div></div>'
+    for cl in bg.col_labels:
+        g += f'<div style="padding:0 0 8px;text-align:center;font-size:14px;font-weight:500">{esc(cl)}</div>'
+    cell_by_pos = {(c.row_label, c.col_label): c for c in bg.cells}
+    for rl in bg.row_labels:
+        g += f'<div style="display:flex;align-items:center;font-size:15px;font-weight:500">{esc(rl)}</div>'
+        for cl in bg.col_labels:
+            c = cell_by_pos.get((rl, cl))
+            if c is None or c.count == 0:
+                g += '<div style="height:66px;border-radius:4px;background:var(--line);opacity:.35"></div>'
+                continue
+            col = tone(c.sentiment, overall)
+            g += (f'<div style="height:66px;border-radius:4px;background:{col};display:flex;flex-direction:column;'
+                  f'align-items:center;justify-content:center;color:var(--ink)">'
+                  f'<span style="font-size:17px;font-weight:600">{c.sentiment:+.2f}</span>'
+                  # var(--ink) at reduced opacity, NOT var(--muted) - found live: a flat muted grey has
+                  # poor contrast against a strongly-tinted cell (confirmed via screenshot on a real
+                  # dataset), while ink-at-opacity stays legible on every tint this chart ever produces,
+                  # matching the sentiment number's own already-confirmed-legible colour above it.
+                  f'<span style="font-size:12px;color:var(--ink);opacity:.6">{fmt(c.count)}</span></div>')
+    g += "</div>"
+    sub = f"{bg.row_name} by {bg.col_name}. Colour is average sentiment, against this report's overall ({overall:+.2f})."
+    body = f'<div style="padding:56px 48px">{hdr("Two numbers together", sub)}<div style="height:28px"></div>{g}</div>'
+    return body, 1180, 160 + 90 * len(bg.row_labels)
+
+
 # ---------- vs_average (chart-block stream, 2026-10-24, batch 2 - a NEW data shape: CategoryAvgData) ----
 def f_vs_average(data: ReportData):
     """One bar per category, length = that category's own average of the number column, with a dashed
@@ -1816,7 +1852,7 @@ FRAMES = {
     "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
     "phrases": f_phrases, "toneByNumber": f_tone_by_number, "themeMixOverTime": f_theme_mix_over_time,
     "quotes": f_quotes, "freq": f_freq, "vsAverage": f_vs_average,
-    "trendGroups": f_trend_groups, "trendStyled": f_trend_styled,
+    "trendGroups": f_trend_groups, "trendStyled": f_trend_styled, "binnedGrid": f_binned_grid,
 }
 
 # Human-readable title per frame id, for the chart list API.
@@ -1832,7 +1868,7 @@ TITLES = {
     "toneByNumber": "Tone by number band", "themeMixOverTime": "Theme mix over time",
     "quotes": "What does it sound like?", "freq": "What did people say most?",
     "vsAverage": "Compared with average", "trendGroups": "Over time, by group",
-    "trendStyled": "Over time, by dash and marker",
+    "trendStyled": "Over time, by dash and marker", "binnedGrid": "Two numbers together",
 }
 
 def render_parts(frame_id: str, data: ReportData | None = None):

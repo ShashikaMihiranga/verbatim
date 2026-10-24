@@ -7,9 +7,9 @@ an oversight a future edit could silently break).
 from __future__ import annotations
 
 from app.chart_data import (
-    CategoryAvgData, ContextData, CoPair, FreqData, GroupTrendData, MapData, OverviewData, PhraseData,
-    QualityData, QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow,
-    SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
+    BinnedGridData, CategoryAvgData, ContextData, CoPair, FreqData, GroupTrendData, MapData, OverviewData,
+    PhraseData, QualityData, QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup,
+    SegmentRow, SubTheme, ThemeNode, ToneSplit, TrendData, TrendSeries,
 )
 from app.charts import FRAMES
 from app.report_blocks import BLOCKS, BY_ID, BY_SLUG
@@ -23,6 +23,7 @@ def _empty_placeholders() -> dict:
         score=ScoreData(name="", bands=[]), segment=SegmentData(name="", groups=[], rows=[]),
         trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
         group_trend=GroupTrendData(group_column="", labels=[], series=[], note=""),
+        binned_grid=BinnedGridData(row_name="", col_name="", row_labels=[], col_labels=[], cells=[]),
         cooccurrence=[], answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),
         category_avg=CategoryAvgData(category_name="", number_name="", overall_avg=0.0, items=[]),
@@ -66,6 +67,7 @@ def rich_report() -> ReportData:
                              [SegmentRow("Cost", 50, [55, 45])]),
         trend=TrendData(["Jan", "Feb", "Mar"], [TrendSeries("Cost", "t1", [40, 45, 50])], [-0.1, -0.05, 0.0], 0, ""),
         group_trend=GroupTrendData(group_column="", labels=[], series=[], note=""),
+        binned_grid=BinnedGridData(row_name="", col_name="", row_labels=[], col_labels=[], cells=[]),
         cooccurrence=[CoPair("Cost", "Charging", 50)], answer_map=MapData(1, "", ""),
         frequency=FreqData("", 0, [], "", ""), category_avg=CategoryAvgData("", "", 0.0, []), phrases=PhraseData([], ""),
         quotes=QuoteData([], 0), context=ContextData("reasons", [], "", "neutrally", "a few words", ""),
@@ -236,6 +238,29 @@ def test_batch_2_blocks_are_real():
     assert BY_SLUG["trend_styled"].chart_id == "trendStyled"
     assert BY_SLUG["trend_styled"].needs(thin_report()) is False
 
+    assert BY_SLUG["binned_grid"].chart_id == "binnedGrid"
+    assert BY_SLUG["binned_grid"].needs(thin_report()) is False  # empty BinnedGridData placeholder
+
+
+def test_theme_similarity_is_real_once_at_least_three_themes_have_a_real_position():
+    # Chart-block stream, "new pipeline" batch 3 (2026-10-24): real once Theme.map_x/map_y are populated
+    # (app/api_themes.py._write_theme_rows, from each theme's own HDBSCAN cluster centroid).
+    b = BY_SLUG["theme_similarity"]
+    assert b.chart_id == "bubbles"
+    assert b.needs(rich_report()) is False  # rich_report's themes have no map_xy set
+
+    richer = rich_report()
+    for i, t in enumerate(richer.themes):
+        if t.color != "other":
+            t.map_xy = (0.1 * i, 0.2 * i)
+    assert b.needs(richer) is True  # now 3 real themes (Cost, Charging, Not needed) have a position
+
+    only_two = rich_report()
+    for i, t in enumerate(only_two.themes):
+        if t.color != "other" and i < 2:
+            t.map_xy = (0.1 * i, 0.2 * i)
+    assert b.needs(only_two) is False  # only 2 positioned - below the "3 or more" gate
+
 
 def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report():
     # Every one of these describes a column kind or cross-tab this app genuinely does not build today
@@ -245,7 +270,7 @@ def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report(
     for slug in (
         "see_more",
         "trend_grid", "trend_aggregated", "trend_errorbars",
-        "theme_similarity", "answer_map", "binned_grid", "region_map",
+        "answer_map", "region_map",
         "trend_sparse",
     ):
         assert BY_SLUG[slug].needs(richest) is False, slug

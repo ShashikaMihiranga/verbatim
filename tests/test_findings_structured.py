@@ -26,6 +26,7 @@ from app.findings_structured import (
     band_dates,
     band_quartiles,
     band_score,
+    build_binned_grid_data,
     build_category_avg_data,
     build_frequency_data,
     build_group_trend_data,
@@ -649,6 +650,48 @@ def test_build_group_trend_data_returns_none_when_fewer_than_two_groups_survive(
     segment_raw = {r: "OnlyGroup" for r in range(100)}
     period_by_row = {r: ["P1", "P2", "P3"][r % 3] for r in range(100)}
     assert build_group_trend_data("Type", segment_raw, period_by_row, ["P1", "P2", "P3"], "note", nodes, group_floor=10) is None
+
+
+# -------------------------------------------------------------------- build_binned_grid_data (chart-block
+# stream, 2026-10-24, batch 3: binned_grid)
+
+def test_build_binned_grid_data_crosses_two_real_number_columns():
+    themes = [make_theme("Pos", 50, 0.5, list(range(50))), make_theme("Neg", 50, -0.5, list(range(50, 100)))]
+    nodes = theme_nodes(themes, total_answered=100)
+    row_raw = {r: float(r % 10) for r in range(100)}  # 10 distinct values, even spread
+    col_raw = {r: float((r * 7) % 20) for r in range(100)}
+    data = build_binned_grid_data("Age", "Spend", row_raw, col_raw, nodes, floor=1)
+    assert data is not None
+    assert data.row_name == "Age" and data.col_name == "Spend"
+    assert len(data.cells) == len(data.row_labels) * len(data.col_labels)
+    assert sum(c.count for c in data.cells) <= 100  # some cells may be under-floor and zeroed
+
+
+def test_build_binned_grid_data_only_counts_rows_with_both_values():
+    themes = [make_theme("A", 2, 0.0, [0, 1])]
+    nodes = theme_nodes(themes, total_answered=2)
+    row_raw = {0: 1.0, 1: 2.0}  # row 2 has no col value
+    col_raw = {0: 1.0, 2: 2.0}  # row 1 has no row value
+    assert build_binned_grid_data("A", "B", row_raw, col_raw, nodes, floor=1) is None  # only row 0 has both
+
+
+def test_build_binned_grid_data_returns_none_when_a_column_cannot_be_banded():
+    themes = [make_theme("A", 20, 0.0, list(range(20)))]
+    nodes = theme_nodes(themes, total_answered=20)
+    row_raw = {r: 5.0 for r in range(20)}  # only 1 distinct value - band_quartiles raises
+    col_raw = {r: float(r) for r in range(20)}
+    assert build_binned_grid_data("A", "B", row_raw, col_raw, nodes, floor=1) is None
+
+
+def test_build_binned_grid_data_zeroes_cells_under_the_floor_without_dropping_the_band():
+    themes = [make_theme("A", 40, 0.2, list(range(40)))]
+    nodes = theme_nodes(themes, total_answered=40)
+    row_raw = {r: float(r % 4) for r in range(40)}  # 4 even row bands
+    col_raw = {r: (0.0 if r != 0 else 1.0) for r in range(40)}  # col band with only 1 member overall
+    data = build_binned_grid_data("A", "B", row_raw, col_raw, nodes, floor=5)
+    assert data is not None
+    sparse_cells = [c for c in data.cells if c.col_label == data.col_labels[-1]]
+    assert all(c.count == 0 and c.sentiment == 0.0 for c in sparse_cells)  # under floor=5, zeroed not dropped
 
 
 # -------------------------------------------------------------------- pick_structured_columns

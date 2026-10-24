@@ -37,17 +37,19 @@ import re
 import threading
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from sklearn.decomposition import PCA
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import db as _db
 from .api_upload import _dataset_role, _own_dataset, current_user
 from .chart_data import (
-    CategoryAvgData, ContextData, FreqData, GroupTrendData, MapData, OverviewData, PhraseData, QualityData,
-    QuoteData, ReportData, ScoreData, SegmentData, TrendData,
+    BinnedGridData, CategoryAvgData, ContextData, FreqData, GroupTrendData, MapData, OverviewData,
+    PhraseData, QualityData, QuoteData, ReportData, ScoreData, SegmentData, TrendData,
 )
 from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
@@ -60,6 +62,7 @@ from .text_pipeline import (
     AnthropicClaudeClient,
     ClaudeClient,
     Cluster,
+    EmbeddedAnswers,
     EmbeddingClient,
     EmbeddingNotConfigured,
     HttpJevClient,
@@ -237,10 +240,62 @@ def _aggregate_tone(rows: list[int], scores_by_row: dict[int, object]) -> tuple[
     return {"neg": ts.neg, "neu": ts.neu, "pos": ts.pos}, sentiment
 
 
+def _cluster_centroid(cluster: Cluster, embedded: "EmbeddedAnswers | None") -> list[float] | None:
+    """The real mean embedding vector of `cluster`'s own (post-merge) members - NOT `cluster.centroid`
+    (`app.text_pipeline.schema.Cluster.centroid`), which HDBSCAN genuinely computes but
+    `app.text_pipeline.merging.apply_merges` then unconditionally discards for EVERY cluster, merged or
+    not (`_merge_one_level`'s own comment: "nothing downstream reads a Cluster's own centroid after
+    labeling... recomputing it would buy nothing" - found live, 2026-10-24: that was true until this
+    block needed one, so `_write_theme_rows` always received `centroid=None` and this map was always
+    empty even on a real dataset with real themes). Recomputed here instead, from vectors
+    `embed_and_cluster_with_vectors` already computed for clustering (`embedded`, kept alongside the
+    `ClusterResult` precisely so a later pass can reuse them - see `EmbeddedAnswers`'s own docstring) -
+    still zero extra embedding calls, just a local numpy mean over vectors already in memory, computed
+    AFTER merging so it reflects the real, final theme membership."""
+    if embedded is None:
+        return None
+    idxs = [embedded.position_by_row[m.row] for m in cluster.members if m.row in embedded.position_by_row]
+    if not idxs:
+        return None
+    return list(np.asarray(embedded.vectors)[idxs].mean(axis=0))
+
+
+def _project_centroids_2d(centroids: list[list[float] | None]) -> list[tuple[float, float] | None]:
+    """2D positions for the theme-similarity map (chart-block stream, 2026-10-24, batch 3 -
+    `theme_similarity` block) from each real theme's own (post-merge) centroid - see `_cluster_centroid`
+    for where `centroids` comes from and why it is not simply `[c.centroid for c in result.clusters]`.
+    Pure local PCA via sklearn, which this app already depends on for HDBSCAN itself - no network cost.
+
+    `None` entries (a cluster whose centroid could not be recomputed - `_cluster_centroid` returns `None`
+    when no member row has a matching embedding vector) pass straight through as `None`, at the same
+    position in the returned list - never dropped, never given an invented centroid, so the caller can zip
+    this 1:1 against its own cluster list.
+
+    Normalized to 0..1 on each axis (matching `ThemeNode.map_xy`'s own documented range) by min-max scaling
+    over only the REAL centroids - never by the dropped `None` ones. Fewer than 2 real centroids can't form
+    a meaningful 2D spread (PCA needs at least 2 points, and 1 point has no "relative to each other"
+    position worth plotting), so every entry stays `None` in that case - an honest gap, not a fabricated
+    single dot in the middle of the chart."""
+    real = [(i, c) for i, c in enumerate(centroids) if c is not None]
+    out: list[tuple[float, float] | None] = [None] * len(centroids)
+    if len(real) < 2:
+        return out
+    idxs, vectors = zip(*real)
+    xy = PCA(n_components=2).fit_transform(np.array(vectors))
+    x_lo, x_hi = xy[:, 0].min(), xy[:, 0].max()
+    y_lo, y_hi = xy[:, 1].min(), xy[:, 1].max()
+    x_span = (x_hi - x_lo) or 1.0
+    y_span = (y_hi - y_lo) or 1.0
+    for i, (x, y) in zip(idxs, xy):
+        out[i] = (float((x - x_lo) / x_span), float((y - y_lo) / y_span))
+    return out
+
+
 def _write_theme_rows(
     db: Session, dataset_id: int, column: str, result, labels, scores,
     sub_clusters: dict[int, list[Cluster]] | None = None,
     sub_labels: dict[int, list[ThemeLabel]] | None = None,
+    embedded: "EmbeddedAnswers | None" = None,
 ) -> list[Theme]:
     """The row-building/replace step `build_themes` used to run inline, synchronously, at the end of its
     request. Factored out so the background job thread (see `app/jobs.py`) can call it with its OWN
@@ -252,7 +307,12 @@ def _write_theme_rows(
     (`{parent Cluster.id: [kept sub-Clusters, largest first]}`), `sub_labels` is `label_sub_clusters`'s
     (`{parent Cluster.id: [ThemeLabel, ...]}`, same order as `sub_clusters[parent_id]`). A real theme whose
     `cluster.id` is a key in BOTH gets a real `sub_themes` list; every other real theme, and "Other"
-    unconditionally (sub-clustering never touches noise/"Other" - see subthemes.py), gets `[]`."""
+    unconditionally (sub-clustering never touches noise/"Other" - see subthemes.py), gets `[]`.
+
+    `embedded` (chart-block stream, 2026-10-24, batch 3) is the `EmbeddedAnswers` `embed_and_cluster_with_vectors`
+    already produced, optionally passed through so `map_x`/`map_y` can be computed from each theme's real
+    (post-merge) member vectors - see `_cluster_centroid`. `None` (the default) leaves every theme's
+    `map_x`/`map_y` at their honest `None` default, same as a caller that never passes it (e.g. tests)."""
     scores_by_row = {s.row: s for s in scores if s is not None}
 
     # `label_clusters` returns one entry per `result.clusters` (same order), plus at most one extra
@@ -263,8 +323,13 @@ def _write_theme_rows(
     column_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
     column_id = column_row.id if column_row else None
 
+    # chart-block stream, 2026-10-24, batch 3 (theme_similarity): one real 2D position per REAL theme
+    # (never "Other" - noise has no single centroid), recomputed from each theme's own real post-merge
+    # member vectors - see _cluster_centroid's own docstring for why this is NOT cluster.centroid.
+    positions = _project_centroids_2d([_cluster_centroid(c, embedded) for c in result.clusters])
+
     new_rows: list[Theme] = []
-    for cluster, label in zip(result.clusters, real_labels):
+    for cluster, label, pos in zip(result.clusters, real_labels, positions):
         rows = [m.row for m in cluster.members]
         tone, sentiment = _aggregate_tone(rows, scores_by_row)
 
@@ -282,6 +347,7 @@ def _write_theme_rows(
             dataset_id=dataset_id, column_id=column_id, column_name=column,
             label=label.label, description=label.description, size=label.size,
             sentiment=sentiment, tone=tone, answer_refs=rows, sub_themes=sub_themes_json,
+            map_x=pos[0] if pos else None, map_y=pos[1] if pos else None,
         ))
     for label in other_labels:
         rows = [m.row for m in result.noise]
@@ -516,6 +582,7 @@ def _build_other_result_charts(theme_rows: list[Theme]) -> dict[str, dict]:
         segment=SegmentData(name="", groups=[], rows=[]),
         trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
         group_trend=GroupTrendData(group_column="", labels=[], series=[], note=""),
+        binned_grid=BinnedGridData(row_name="", col_name="", row_labels=[], col_labels=[], cells=[]),
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),
@@ -646,7 +713,7 @@ def build_themes(
         else:
             scores = score_column(clean_df, plan, column)
         with _db.SessionLocal() as job_db:
-            _write_theme_rows(job_db, dataset_id_, column, result, labels, scores, sub_clusters, sub_labels)
+            _write_theme_rows(job_db, dataset_id_, column, result, labels, scores, sub_clusters, sub_labels, embedded)
 
     start_job(
         job, _SLOTS, _work, _theme_build_error,
@@ -1121,6 +1188,7 @@ def themes_chart(
         segment=SegmentData(name="", groups=[], rows=[]),
         trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""),
         group_trend=GroupTrendData(group_column="", labels=[], series=[], note=""),
+        binned_grid=BinnedGridData(row_name="", col_name="", row_labels=[], col_labels=[], cells=[]),
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),

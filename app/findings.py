@@ -45,9 +45,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .chart_data import (
-    CategoryAvgData, ContextData, FreqData, GroupTrendData, MapData, OtherBreakdown, OverviewData,
-    PhraseData, QualityData, QuoteData, ReportData, ScoreData, SegmentData, SubTheme, ThemeNode,
-    ThemeSummary, ToneSplit, TrendData,
+    BinnedGridData, CategoryAvgData, ContextData, FreqData, GroupTrendData, MapData, OtherBreakdown,
+    OverviewData, PhraseData, QualityData, QuoteData, ReportData, ScoreData, SegmentData, SubTheme,
+    ThemeNode, ThemeSummary, ToneSplit, TrendData,
 )
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
 from .findings_structured import (
@@ -286,11 +286,17 @@ def theme_nodes(
         count = len(refs) if filter_rows is not None else t.size
         share = round(count / total_answered * 100, 1) if total_answered else 0.0
         tone = t.tone or {}
+        # chart-block stream, 2026-10-24, batch 3 (theme_similarity): real for any theme built since the
+        # map_x/map_y columns landed (a 2D PCA projection of the theme's own real HDBSCAN cluster centroid,
+        # computed once at build time - see app/api_themes.py's _write_theme_rows). None/None for "Other"
+        # and for any theme built before this stream - map_xy already means "None scatters the theme"
+        # (this field's own docstring), so an old row just renders exactly as it always did.
+        map_xy = (t.map_x, t.map_y) if t.map_x is not None and t.map_y is not None else None
         return ThemeNode(
             name=t.label, share=share, sentiment=t.sentiment if t.sentiment is not None else 0.0,
             count=count, color=color,
             tones=ToneSplit(neg=tone.get("neg", 0.0), neu=tone.get("neu", 100.0), pos=tone.get("pos", 0.0)),
-            children=_children(t),
+            children=_children(t), map_xy=map_xy,
             answer_refs=refs, theme_id=t.id,
         )
 
@@ -545,6 +551,7 @@ def build_report_data(
         segment=segment,
         trend=trend,
         group_trend=structured.group_trend if structured and structured.group_trend else GroupTrendData(group_column="", labels=[], series=[], note=""),
+        binned_grid=structured.binned_grid if structured and structured.binned_grid else BinnedGridData(row_name="", col_name="", row_labels=[], col_labels=[], cells=[]),
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
         frequency=structured.frequency if structured and structured.frequency else FreqData(question="", answered=0, items=[], highlight="", footnote=""),

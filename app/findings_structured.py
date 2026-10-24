@@ -38,16 +38,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .chart_data import (
-    CategoryAvg, CategoryAvgData, FreqData, FreqItem, GroupTrendData, GroupTrendSeries, ScoreBand,
-    ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries,
+    BinCell, BinnedGridData, CategoryAvg, CategoryAvgData, FreqData, FreqItem, GroupTrendData,
+    GroupTrendSeries, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries,
 )
 from .models import Column, Theme
 
 __all__ = [
     "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
     "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
-    "build_frequency_data", "build_category_avg_data", "build_group_trend_data", "pick_structured_columns",
-    "build_structured_context", "resolve_filter_rows", "segment_skew_candidates",
+    "build_frequency_data", "build_category_avg_data", "build_group_trend_data", "build_binned_grid_data",
+    "pick_structured_columns", "build_structured_context", "resolve_filter_rows", "segment_skew_candidates",
     "score_correlation_candidates", "trend_shift_candidates",
 ]
 
@@ -396,6 +396,7 @@ class StructuredContext:
     frequency_column_name: str = ""
     category_avg: CategoryAvgData | None = None
     group_trend: GroupTrendData | None = None
+    binned_grid: BinnedGridData | None = None
 
     # Raw (pre-band/pre-cap), per-row values behind whichever candidate column won each role, stashed here
     # purely so `resolve_filter_rows` (below) can turn a filter request into a row-index set without
@@ -834,6 +835,64 @@ def build_group_trend_data(
     return GroupTrendData(group_column=group_col, labels=surviving_periods, series=series, note=date_note)
 
 
+# -------------------------------------------------------------------- build_binned_grid_data (chart-block
+# stream, 2026-10-24, batch 3: binned_grid - two independent number columns, quartile-banded, crossed)
+
+def build_binned_grid_data(
+    row_col: str, col_col: str,
+    row_raw: dict[int, float], col_raw: dict[int, float],
+    nodes: list["ThemeNode"], floor: int,
+) -> "BinnedGridData | None":
+    """Reuses `band_quartiles` (same quartile cuts `build_numeric_data`'s own numeric fallback already
+    uses) independently on each column, then crosses the two real band sets into a grid. Each cell's
+    sentiment is the same count-weighted-average-of-`Theme.sentiment` approximation
+    `build_group_trend_data` already uses (via each row's own home theme - no true per-row sentiment is
+    ever persisted, see that function's own docstring). A cell under `floor` answers is dropped from the
+    output entirely (its count/sentiment stay at 0/0.0, matching a reader's own expectation of "nothing
+    notable here" rather than a noisy small-sample average) - never discarding the row/column band it
+    sits in, only that one cell's own number.
+
+    Returns `None` when either column fails to band (`band_quartiles`'s own `ValueError` - fewer than 2
+    distinct values) or no row has values in both columns at all."""
+    rows = set(row_raw) & set(col_raw)
+    if not rows:
+        return None
+    row_sentiment: dict[int, float] = {}
+    for node in nodes:
+        for r in node.answer_refs:
+            row_sentiment[r] = node.sentiment
+    try:
+        row_bands = band_quartiles([row_raw[r] for r in rows])
+        col_bands = band_quartiles([col_raw[r] for r in rows])
+    except ValueError:
+        return None
+
+    row_label_by_row = apply_bands({r: row_raw[r] for r in rows}, row_bands)
+    col_label_by_row = apply_bands({r: col_raw[r] for r in rows}, col_bands)
+
+    cell_rows: dict[tuple[str, str], list[int]] = {}
+    for r in rows:
+        rl, cl = row_label_by_row.get(r), col_label_by_row.get(r)
+        if rl is None or cl is None:
+            continue
+        cell_rows.setdefault((rl, cl), []).append(r)
+
+    row_labels = [b.label for b in row_bands]
+    col_labels = [b.label for b in col_bands]
+    cells = []
+    for rl in row_labels:
+        for cl in col_labels:
+            members = cell_rows.get((rl, cl), [])
+            if len(members) < floor:
+                cells.append(BinCell(row_label=rl, col_label=cl, count=0, sentiment=0.0))
+                continue
+            sentiments = [row_sentiment[r] for r in members if r in row_sentiment]
+            avg = round(sum(sentiments) / len(sentiments), 3) if sentiments else 0.0
+            cells.append(BinCell(row_label=rl, col_label=cl, count=len(members), sentiment=avg))
+
+    return BinnedGridData(row_name=row_col, col_name=col_col, row_labels=row_labels, col_labels=col_labels, cells=cells)
+
+
 # -------------------------------------------------------------------- pick_structured_columns
 
 def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]]:
@@ -1113,6 +1172,47 @@ def build_structured_context(
             gt_data = build_group_trend_data(seg_col, raw_grp, period_by_row, periods, date_note, nodes)
             if gt_data is not None:
                 context.group_trend = gt_data
+                found = True
+                break
+        if found:
+            break
+
+    # chart-block stream, 2026-10-24, batch 3: binned_grid. Needs TWO distinct numeric columns - tries
+    # every real pair (never a column against itself), independent of whichever numeric candidate already
+    # won the score role above.
+    numeric_cols = columns.get("numeric", [])
+    for i, row_col in enumerate(numeric_cols):
+        row_raw: dict[int, float] = {}
+        for r in rows:
+            try:
+                v = clean_df.at[r, row_col]
+            except KeyError:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isnan(fv):
+                continue
+            row_raw[r] = fv
+        found = False
+        for col_col in numeric_cols[i + 1:]:
+            col_raw: dict[int, float] = {}
+            for r in rows:
+                try:
+                    v = clean_df.at[r, col_col]
+                except KeyError:
+                    continue
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isnan(fv):
+                    continue
+                col_raw[r] = fv
+            bg_data = build_binned_grid_data(row_col, col_col, row_raw, col_raw, nodes, floor)
+            if bg_data is not None:
+                context.binned_grid = bg_data
                 found = True
                 break
         if found:
