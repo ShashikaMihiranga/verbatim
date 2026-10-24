@@ -28,6 +28,8 @@
 .th-merge-list { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 14px 18px; margin-top: 16px; }
 .th-merge-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 14px; }
 .th-merge-row input { flex: none; }
+.th-merge-filter { display: block; width: 100%; max-width: 360px; margin: 8px 0 6px; font: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+.th-merge-none { font-size: 14px; margin: 6px 0; }
 .th-pct { font-weight: 300; font-size: 28px; margin: 0 0 10px; font-variant-numeric: tabular-nums; }
 .th-pct span { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }
 

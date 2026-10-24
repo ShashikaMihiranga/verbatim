@@ -177,6 +177,56 @@ export function AnswerList({ id, themeId, subIndex }: { id: number; themeId: num
   )
 }
 
+// Merge control (docs/TODO.md, fixed 2026-10-22): a compact checklist, shown only in Manage themes mode
+// (or before a report exists). With dozens of themes (121 on dataset 12, BUG-047) a filter box narrows the
+// list by name; themes already ticked stay visible so the selection never hides itself.
+const MERGE_FILTER_MIN = 9
+
+export function MergeThemesList({ themes, selection, onSelectionChange, onMerge }: {
+  themes: ThemeCard[]
+  selection: Set<number>
+  onSelectionChange: (next: Set<number>) => void
+  onMerge: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
+  const visible = q ? themes.filter((t) => selection.has(t.id) || t.label.toLowerCase().includes(q)) : themes
+  return (
+    <div className="th-merge-list">
+      <div className="th-subs-h">Merge themes</div>
+      {themes.length >= MERGE_FILTER_MIN && (
+        <input
+          type="search"
+          className="th-merge-filter"
+          placeholder="Filter themes by name"
+          aria-label="Filter themes by name"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      )}
+      {visible.map((t) => (
+        <label className="th-merge-row" key={t.id}>
+          <input
+            type="checkbox"
+            checked={selection.has(t.id)}
+            onChange={(e) => {
+              const next = new Set(selection)
+              if (e.target.checked) next.add(t.id)
+              else next.delete(t.id)
+              onSelectionChange(next)
+            }}
+          />
+          {t.label}
+        </label>
+      ))}
+      {visible.length === 0 && <p className="muted th-merge-none">No themes match.</p>}
+      <button type="button" className="btn quiet" disabled={selection.size < 2} onClick={onMerge}>
+        Merge {selection.size > 0 ? `${selection.size} selected` : 'selected'} themes
+      </button>
+    </div>
+  )
+}
+
 export default function Themes() {
   const [params] = useSearchParams()
   const id = Number(params.get('dataset'))
@@ -186,6 +236,9 @@ export default function Themes() {
   const [themes, setThemes] = useState<ThemeCard[] | null>(null)
   const [themesJob, setThemesJob] = useState<Job | null>(null)
   const [report, setReport] = useState<ReportResponse | null>(null)
+  // True until we know whether a report exists (BUG-047: `GET /report` takes ~6 s on a big dataset). While
+  // it is true the page shows one loading line, not the theme-editing view with "Build report".
+  const [reportLoading, setReportLoading] = useState(true)
   const [reportJob, setReportJob] = useState<Job | null>(null)
   const [lookInsideOtherJob, setLookInsideOtherJob] = useState<Job | null>(null)
   const [filters, setFilters] = useState<ReportFilters>({})
@@ -233,19 +286,25 @@ export default function Themes() {
       setThemes((await getThemes(id, col)).themes)
       setThemesJob(null)
       setReport(null) // the rebuild invalidated the old report on the server
+      setReportLoading(true)
       setReport(await getReport(id, col, filters))
     } catch {
       /* no report after a rebuild is the expected state: the page offers "Build report" */
+    } finally {
+      setReportLoading(false)
     }
   }
 
   async function refreshReport() {
     if (!column) return
+    setReportLoading(true)
     try {
       setReport(await getReport(id, column, filters))
       setReportJob(null)
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setReportLoading(false)
     }
   }
 
@@ -339,7 +398,10 @@ export default function Themes() {
         setDs(d)
         const col = pickOpenTextColumn(d.profile)
         setColumn(col)
-        if (!col) return
+        if (!col) {
+          setReportLoading(false)
+          return
+        }
 
         // Themes already built (the common case on a normal page view) win outright. Otherwise, before
         // assuming nothing has ever been started, check for a running or just-finished job for this
@@ -390,6 +452,7 @@ export default function Themes() {
             /* no job either; show the build-report trigger once themes exist */
           }
         }
+        setReportLoading(false)
 
         // A reload mid-run (or right after one) must resume this job's own progress/results view too -
         // same reasoning as the themes/report resume above. Unlike those, a `look_inside_other` job that
@@ -561,6 +624,9 @@ export default function Themes() {
   const themesFailed = themesJob !== null && themesJob.status === 'failed'
   const reportRunning = reportJob !== null && reportJob.status === 'running'
   const reportFailed = reportJob !== null && reportJob.status === 'failed'
+  // A report may exist and is still being fetched: show only a loading line (BUG-047). Manage themes
+  // opens the editing view regardless.
+  const reportPending = reportLoading && !report && !manageThemes
 
   return (
     <>
@@ -569,7 +635,7 @@ export default function Themes() {
         <Progress />
       </div>
       {/* Introduces the theme cards; the report has its own title and summary. */}
-      {!report && (
+      {!report && !reportPending && (
         <div className="th-summary">
           Themes for <b>{column}</b>. Every theme links back to real answers - use "See answers" on any card.
         </div>
@@ -578,6 +644,8 @@ export default function Themes() {
       {error && <div className="err" role="alert">{error}</div>}
 
       {themesRunning && themesJob && <JobProgress job={themesJob} />}
+
+      {reportPending && !themesRunning && <p className="muted" role="status">Loading the report...</p>}
 
       {themesFailed && themesJob && (
         <div className="jp-failed">
@@ -589,7 +657,7 @@ export default function Themes() {
         </div>
       )}
 
-      {!themesJob && themes === null && (
+      {!themesJob && themes === null && !reportPending && (
         <div className="th-build">
           <div className="big">Ready to find themes</div>
           <p className="small">
@@ -659,7 +727,7 @@ export default function Themes() {
         </>
       )}
 
-      {themes !== null && (!report || manageThemes) && (
+      {themes !== null && (!report || manageThemes) && !reportPending && (
         <>
           {/* One chart showing every theme at a glance, replacing the old wall-of-cards grid (see
               docs/DECISIONS.md). Clicking or hovering a theme in the chart is handled by ThemeChart
@@ -694,36 +762,13 @@ export default function Themes() {
                   </>
                 )
               })()}
-              {/* Merge (docs/TODO.md, fixed 2026-10-22): a compact checklist, not a second chart - picking
-                  2+ themes here and merging them is a rare, deliberate action, not something that needs
-                  its own visual real estate competing with the chart above. */}
               {themes.length > 1 && (
-                <div className="th-merge-list">
-                  <div className="th-subs-h">Merge themes</div>
-                  {themes.map((t) => (
-                    <label className="th-merge-row" key={t.id}>
-                      <input
-                        type="checkbox"
-                        checked={mergeSelection.has(t.id)}
-                        onChange={(e) => {
-                          const next = new Set(mergeSelection)
-                          if (e.target.checked) next.add(t.id)
-                          else next.delete(t.id)
-                          setMergeSelection(next)
-                        }}
-                      />
-                      {t.label}
-                    </label>
-                  ))}
-                  <button
-                    type="button"
-                    className="btn quiet"
-                    disabled={mergeSelection.size < 2}
-                    onClick={() => void handleMergeSelected()}
-                  >
-                    Merge {mergeSelection.size > 0 ? `${mergeSelection.size} selected` : 'selected'} themes
-                  </button>
-                </div>
+                <MergeThemesList
+                  themes={themes}
+                  selection={mergeSelection}
+                  onSelectionChange={setMergeSelection}
+                  onMerge={() => void handleMergeSelected()}
+                />
               )}
               {editError && <div className="err" role="alert">{editError}</div>}
             </>
