@@ -132,6 +132,29 @@ def _answer_texts_for(clean_df, column: str, themes: list[Theme]) -> list[str]:
     return texts
 
 
+def _quote_theme_texts_for(clean_df, column: str, themes: list[Theme]) -> list[tuple[str, list[str]]]:
+    """Real answer texts GROUPED BY theme, largest theme first, for the `quotes` block (chart-block
+    stream, 2026-10-24) - unlike `_answer_texts_for`'s flattened list (phrase extraction aggregates across
+    every answer regardless of theme), a quote needs its own theme attribution, and the merged "Other"
+    bucket is deliberately excluded - a quote attributed to "Other" would misleadingly imply it represents
+    one real idea when that bucket is a mix of unrelated small themes (same reasoning `app/charts.py`'s
+    `f_sentsun` highlight fallback already documents for a different block)."""
+    real_themes = sorted((t for t in themes if t.label != OTHER_LABEL), key=lambda t: t.size, reverse=True)
+    out: list[tuple[str, list[str]]] = []
+    for t in real_themes:
+        texts: list[str] = []
+        for r in sorted(t.answer_refs or []):
+            try:
+                v = clean_df.at[r, column]
+            except KeyError:
+                continue
+            if isinstance(v, str) and v.strip():
+                texts.append(v)
+        if texts:
+            out.append((t.label, texts))
+    return out
+
+
 def _structured_context_for(
     db: Session, ds: Dataset, clean_df, plan, themes: list[Theme], filter_rows: set[int] | None = None,
 ) -> StructuredContext:
@@ -239,10 +262,12 @@ def _render_report(
         structured = _structured_context_for(db, ds, clean_df, plan, themes, filter_rows=filter_rows)
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
     answer_texts = _answer_texts_for(clean_df, column, themes)
+    quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes)
     question = content.get("question") or column
     report_data = build_report_data(
         ds, themes, _cleaning_report_for(ds), question, answer_lengths=answer_lengths,
-        answer_texts=answer_texts, structured=structured, filter_rows=filter_rows,
+        answer_texts=answer_texts, quote_theme_texts=quote_theme_texts, structured=structured,
+        filter_rows=filter_rows,
     )
     breakdown, all_themes = other_breakdown(themes, report_data.answered, filter_rows=filter_rows)
 
@@ -418,11 +443,13 @@ def build_report(
     ).all())
     answer_lengths = None
     answer_texts = None
+    quote_theme_texts = None
     structured = None
     if themes:
         clean_df, plan = _load_clean_df(ds, db)
         answer_lengths = _answer_lengths_for(clean_df, column, themes)
         answer_texts = _answer_texts_for(clean_df, column, themes)
+        quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes)
         # Built here (synchronously, alongside answer_lengths above) rather than re-queried inside `_work`'s
         # own job-thread session: `StructuredContext` is plain data once built (no lingering ORM references),
         # so it crosses into the closure below exactly like `answer_lengths` already does - one fewer
@@ -450,7 +477,7 @@ def build_report(
             report = build_findings(
                 job_ds, column, job_db, claude_client,
                 cleaning_report=cleaning_report, answer_lengths=answer_lengths, answer_texts=answer_texts,
-                structured=structured,
+                quote_theme_texts=quote_theme_texts, structured=structured,
             )
             step("Drawing charts")
             # Rendered here too (and discarded) purely so a rendering bug fails the job with a plain

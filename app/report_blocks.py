@@ -93,13 +93,14 @@ BLOCKS: list[Block] = [
         lambda data: len(_real_themes(data)) >= 3,
     ),
     Block(
-        "b04", "ranked_answers", "2", "Ranked answers", None,
+        "b04", "ranked_answers", "2", "Ranked answers", "freq",
         "Teacher and Nurse are the most common jobs, at nearly one answer in six.",
         "Short factual answers, merged for spelling and plurals.",
-        # Needs a second, SHORT-ANSWER column's own frequency table (ReportData.frequency/FreqData) - that
-        # column is never populated for real data today (app/chart_data.py's own placeholder comment);
-        # this is a genuinely separate pipeline from the open-text themes list, not a missing wiring step.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 1): a new "short_text" column kind, wired into
+        # pick_structured_columns/build_structured_context for the first time, resolves to a real
+        # FreqData via app/findings_structured.py's new build_frequency_data (spelling/plural merge, a
+        # real suppression floor, "nothing rankable" -> None same as every other build_*_data function).
+        lambda data: bool(data.frequency.items),
     ),
     Block(
         "b05", "summary", "2", "Summary numbers and one bar", "overview",
@@ -176,12 +177,14 @@ BLOCKS: list[Block] = [
         lambda data: False,
     ),
     Block(
-        "b14", "tone_by_number", "4", "Tone by number band", None,
+        "b14", "tone_by_number", "4", "Tone by number band", "toneByNumber",
         "The more customers spend, the more negative they sound.",
         "A number column and sentiment scores.",
-        # No number-column-by-sentiment cross-tab exists in ReportData today (ScoreData is explicitly a
-        # 0-10/1-5 SCORE column, not an arbitrary number column like spend or age).
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 1): `ScoreBand.sentiment` was already real and
+        # already computed, whether `data.score` came from a real 0-10/1-5 score column or the numeric
+        # fallback (age/income/spend - see band_bars/number_spread's own comment above) - just never had
+        # its own renderer. Same data `score_groups`/`band_bars`/`number_spread` already use.
+        lambda data: bool(data.score.bands),
     ),
     Block(
         "b15", "trend", "5", "Over time", "trend",
@@ -193,13 +196,14 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.trend.labels) and len(data.trend.labels) >= 3,
     ),
     Block(
-        "b16", "quotes", "6", "Quotes", None,
+        "b16", "quotes", "6", "Quotes", "quotes",
         "Deliveries keep arriving a day late.",
         "Open-ended text.",
-        # Real verbatim quotes DO exist in this app (the "See answers" drill-down, a separate endpoint -
-        # app/api_themes.py's theme_answers), just never through ReportData.quotes, which stays an honest
-        # empty placeholder (chart_data.py's own comment). Not wired to THIS registry's data model yet.
-        lambda data: False,
+        # Real (chart-block stream, 2026-10-24, batch 1): app/text_pipeline/quotes.py picks each real
+        # theme's own most-typical answer(s) (closest to that theme's median length), tagged with real
+        # lexicon tone. Threaded via a new quote_theme_texts param (build_report_data), same shape as
+        # answer_texts/answer_lengths above.
+        lambda data: bool(data.quotes.quotes),
     ),
     Block(
         "b17", "also_checked", "7", "Also checked", None,
@@ -398,7 +402,7 @@ BLOCKS: list[Block] = [
         lambda data: bool(data.trend.labels) and len(data.trend.labels) >= 3,
     ),
     Block(
-        "b44", "theme_mix_over_time", "5", "Theme mix over time", None,
+        "b44", "theme_mix_over_time", "5", "Theme mix over time", "themeMixOverTime",
         "Charging fell from 33% to 22% of answers while Cost grew.",
         "A date column with 3 or more periods and 3 or more themes.",
         lambda data: bool(data.trend.labels) and len(data.trend.labels) >= 3 and len(_real_themes(data)) >= 3,

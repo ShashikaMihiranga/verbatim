@@ -2304,3 +2304,67 @@ the "41+ words" typical length already seen in this dataset's report screenshots
 correctly named "Overall_Satisfaction, Region" - the dataset's own real score and segment columns -
 instead of the old stale "not wired yet" claim. Rendered the real chart from this real data and confirmed
 it visually.
+
+## 2026-10-24 (Chart-block stream batch 1: theme_mix_over_time, tone_by_number, quotes, ranked_answers)
+
+User asked to finish the remaining chart blocks in batches of 4, with a running done/in-progress/remaining
+count after each batch (corrected earlier miscount: 16 batchable blocks remained before this batch, not
+11 - see the plan file's "Progress tracker" section). This batch: 12 done -> **16 done**, 16 remaining ->
+**12 remaining**.
+
+**`theme_mix_over_time` and `tone_by_number`** needed ZERO new data - new `f_theme_mix_over_time`
+(stacked bars per period from `TrendData.series`, already real) and `f_tone_by_number` (bars diverging
+from 0 toward each `ScoreBand.sentiment`, already real and already computed whether `data.score` came
+from a true score column or the numeric fallback) in `app/charts.py`. Both registered in `FRAMES`/
+`TITLES`; `app/report_blocks.py`'s b44/b14 given real `chart_id`s and (for tone_by_number) a corrected
+`needs()` - its Stage 1 comment ("ScoreData is explicitly a 0-10/1-5 score column") was the same kind of
+mistake already caught once this stream for band_bars/number_spread.
+
+**`quotes`**: new `app/text_pipeline/quotes.py::build_quote_data` - picks each real theme's own
+MOST TYPICAL answer(s) (closest to that theme's median word count, matching `f_quotes`'s own default
+"Most typical" view), tagged with real lexicon tone. New `_quote_theme_texts_for` helper
+(`app/api_report.py`, same shape as `_answer_texts_for`/`_answer_lengths_for`) groups real text by theme,
+largest-first, excluding the merged "Other" bucket (a quote attributed to "Other" would misleadingly imply
+one real idea behind a mix of unrelated small themes).
+
+**A real bug caught by this module's own tests, not shipped**: `score_text` returns short tone codes
+("neg"/"neu"/"pos" - `sentiment.py`'s own `Literal` type), but `Quote.tone` and `f_quotes`'s own `SC`
+colour lookup both expect the full word ("negative"/"neutral"/"positive") - `build_quote_data` was
+passing the short code straight through, which would have thrown `KeyError` in `f_quotes` the first time
+it ran on real data. Fixed with an explicit `_TONE_WORD` map before this ever reached a live render.
+
+**`ranked_answers`/`ranked_list`**: the biggest piece of this batch. A new `"short_text"` column kind,
+wired into `pick_structured_columns`/`build_structured_context` for the first time (same "try every
+candidate column of this kind, in position order, keep the first that survives" pattern every other kind
+there already follows) - genuinely separate from the main open-ended column (that one gets clustered into
+themes; a `short_text` column is a DIFFERENT column, like a job title or product name, never
+frequency-counted before). New `build_frequency_data` (`app/findings_structured.py`): groups by a
+case/simple-plural-insensitive merge key, keeps the most-common original casing as the display label,
+drops groups under the general suppression floor (not a block-specific stricter one - this is a plain
+ranked list, not a per-cell breakdown someone could be singled out in), returns `None` when fewer than 2
+groups survive. `StructuredContext` gained `frequency`/`frequency_column_name` fields (both default
+`None`/`""`, so every existing construction site stays byte-identical). `ReportData.frequency` now reads
+`structured.frequency` instead of its permanent empty placeholder.
+
+**`f_freq` had the same empty-sequence crash `f_phrases` had** (found and fixed before shipping, same
+class of bug, same fix shape): `max()` over an empty items list, never caught before because this
+renderer was gallery-only until now. Fixed with the same honest "nothing real to show" message instead of
+a chart.
+
+**Tests**: `tests/test_findings_structured.py` - 5 new `build_frequency_data` tests (merge/case-casing/
+floor/none-result/max_items cap), both `pick_structured_columns` tests updated for the new `short_text`
+key. `tests/test_text_pipeline_quotes.py` (new, 5 tests) - including the tone-word-mapping bug caught
+directly by `test_tone_is_a_real_lexicon_score_not_hardcoded`. `tests/test_report_blocks.py` - new
+`test_batch_1_blocks_are_real`, the "stays False" list trimmed of all 4. `tests/test_charts_data.py` - 4
+new golden files, `test_frame_count` bumped to 29, 4 new needle-text cases. Full backend suite: 811 passed
+(same 5 pre-existing unrelated failures). Frontend untouched (`tsc --noEmit` clean, no frontend files
+changed - none of these charts are surfaced in a real report yet, selection logic stays deferred to
+Stage 2).
+
+**Live-verified** against dataset 12's real data (not test fixtures): `tone_by_number` showed real
+Overall_Satisfaction bands with real sentiment (-0.06/-0.05/-0.05, consistent with this dataset's own
+observed overall tone); `quotes` showed real representative answers per real theme with correct tone
+colours (confirming the tone-word fix actually works against real text, not just the unit test); `freq`
+auto-discovered a real `short_text` column ("Agency") nobody pointed it at and produced a genuinely
+sensible ranked list (VA 16.3%, DHS 11.6%, TREASURY 10.5%, ...) - all three rendered and screenshotted
+together from one real `build_report_data` call.

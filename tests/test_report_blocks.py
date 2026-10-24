@@ -202,13 +202,30 @@ def test_context_header_is_real_once_any_question_exists():
     assert BY_SLUG["context_header"].needs(rich_report()) is True
 
 
+def test_batch_1_blocks_are_real():
+    # Chart-block stream batch 1 (2026-10-24): theme_mix_over_time/tone_by_number needed zero new data
+    # (renderer only); quotes/ranked_answers got real new pipelines.
+    assert BY_SLUG["theme_mix_over_time"].chart_id == "themeMixOverTime"
+    assert BY_SLUG["theme_mix_over_time"].needs(rich_report()) is True
+
+    assert BY_SLUG["tone_by_number"].chart_id == "toneByNumber"
+    assert BY_SLUG["tone_by_number"].needs(thin_report()) is False
+    assert BY_SLUG["tone_by_number"].needs(rich_report()) is True
+
+    assert BY_SLUG["quotes"].chart_id == "quotes"
+    assert BY_SLUG["quotes"].needs(thin_report()) is False  # empty QuoteData placeholder
+
+    assert BY_SLUG["ranked_answers"].chart_id == "freq"
+    assert BY_SLUG["ranked_answers"].needs(thin_report()) is False  # empty FreqData placeholder
+
+
 def test_blocks_with_no_data_pipeline_yet_stay_false_even_on_the_richest_report():
     # Every one of these describes a column kind or cross-tab this app genuinely does not build today
     # (per each block's own comment in app/report_blocks.py) - confirms the registry doesn't silently
     # start claiming readiness once rich_report() happens to have unrelated real data.
     richest = rich_report()
     for slug in (
-        "ranked_answers", "vs_average", "tone_by_number", "quotes", "see_more", "trend_groups",
+        "vs_average", "see_more", "trend_groups",
         "trend_styled", "trend_grid", "trend_aggregated", "trend_errorbars",
         "theme_similarity", "answer_map", "ranked_list", "binned_grid", "region_map",
         "trend_sparse",

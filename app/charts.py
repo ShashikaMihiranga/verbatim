@@ -650,6 +650,14 @@ def f_trend(data: ReportData):
 def f_freq(data: ReportData):
     fq = data.frequency
     OCC = [(i.label, i.pct, i.merged) for i in fq.items]
+    if not OCC:
+        # Same empty-sequence guard f_phrases needed (chart-block stream, 2026-10-24) - this crashed on
+        # max() of an empty list for any report with no real short_text column (every report until this
+        # stream, and still most real reports, which have no second short-answer column at all).
+        body = (f'<div style="padding:56px 48px">{hdr("What did people say most?", "")}'
+                '<div style="height:20px"></div><div style="color:var(--muted);max-width:640px">'
+                "No short-answer column produced a real ranked list for this report.</div></div>")
+        return body, 1180, 220
     mx = max(p for _, p, _ in OCC)
     rows_html = ""
     for i, (n, p, merged) in enumerate(OCC):
@@ -1626,6 +1634,71 @@ def f_slope_change(data: ReportData):
     return frame("First against last", f"{first_label} against {last_label}. Every theme's share, start to end.", diagram, H)
 
 
+# ---------- tone_by_number, theme_mix_over_time (chart-block stream, 2026-10-24 batch 1 - both reuse ----
+# data shapes that already existed before this stream started: ScoreBand already carries a real
+# `sentiment` per band (used today only by byScore's own mix bars), and TrendData already carries a real
+# per-theme-per-period share series (used today only by f_trend's combined line chart). Neither needed a
+# new upstream pipeline - only a new way to look at data this app already computes.
+
+def f_tone_by_number(data: ReportData):
+    """One row per score/number band, a bar diverging from 0 toward each band's own average sentiment,
+    tinted by `tone()` the same way f_rank's own sentiment column already is - "the more X, the more
+    negative they sound" as a real, already-computed trend across bands, not a new correlation computed
+    here."""
+    sd = data.score
+    overall = data.overall_sentiment
+    rh = 60
+    AXIS_W = 760
+    rows_html = ""
+    for b in sd.bands:
+        col = tone(b.sentiment, overall)
+        pct = (max(-1.0, min(1.0, b.sentiment)) + 1) / 2 * 100  # -1..1 -> 0..100% of the axis
+        left, width = (50.0, pct - 50.0) if pct >= 50 else (pct, 50.0 - pct)
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:16px;height:{rh}px;border-top:1px solid var(--line)">'
+            f'<div style="flex:0 0 clamp(140px,20%,220px);font-size:15px;font-weight:500">{esc(b.label)}</div>'
+            f'<div style="position:relative;width:{AXIS_W}px;height:28px">'
+            f'<div style="position:absolute;left:50%;top:0;bottom:0;width:0;border-left:1px dashed var(--muted)"></div>'
+            f'<div style="position:absolute;top:50%;transform:translateY(-50%);left:{left:.1f}%;width:{width:.1f}%;height:16px;border-radius:3px;background:{col}"></div>'
+            f'</div><div style="width:64px;text-align:right;font-size:14px;font-weight:600">{b.sentiment:+.2f}</div>'
+            f'<div style="width:72px;text-align:right;font-size:13px;color:var(--muted)">{fmt(b.answers)}</div></div>'
+        )
+    sub = f"{sd.name}, lowest to highest. Average sentiment per band, dashed line is 0 (neutral)."
+    body = (f'<div style="padding:56px 48px">{hdr("Tone by number band", sub)}<div style="height:24px"></div>{rows_html}</div>')
+    return body, 1180, 120 + rh * len(sd.bands)
+
+
+def f_theme_mix_over_time(data: ReportData):
+    """Stacked horizontal bars, one per period - each theme's own real per-period share (`TrendData.series`)
+    as a segment, so a reader sees the whole MIX shift, not just one line's up-and-down the way f_trend's
+    combined chart already shows. Deliberately horizontal stacked bars, not an SVG stream/area shape - same
+    "shapes-only-SVG not needed for axis-aligned rects" reasoning f_quality/f_byscore already follow."""
+    tr = data.trend
+    rh = 48
+    rows_html = ""
+    for i, label in enumerate(tr.labels):
+        segs = ""
+        for s in tr.series:
+            v = s.values[i] if i < len(s.values) else 0
+            if v <= 0:
+                continue
+            segs += f'<div style="width:{v}%;height:100%;background:var(--{s.color})" title="{esc(s.theme)} {v}%"></div>'
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:16px;height:{rh}px">'
+            f'<div style="flex:0 0 80px;font-size:14px;color:var(--muted)">{esc(label)}</div>'
+            f'<div style="flex:1;display:flex;height:28px;border-radius:4px;overflow:hidden;background:var(--line)">{segs}</div></div>'
+        )
+    legend = "".join(
+        f'<span style="display:inline-flex;align-items:center;gap:8px;margin-right:20px;font-size:14px;color:var(--muted)">'
+        f'<span style="width:14px;height:14px;border-radius:3px;background:var(--{s.color})"></span>{esc(s.theme)}</span>'
+        for s in tr.series
+    )
+    sub = f"{tr.note} Each bar is one period; segment width is that theme's share."
+    body = (f'<div style="padding:56px 48px">{hdr("Theme mix over time", sub)}<div style="height:24px"></div>'
+            f'{rows_html}<div style="margin-top:24px">{legend}</div></div>')
+    return body, 1180, 120 + rh * len(tr.labels)
+
+
 # ---------- registry and standalone rendering ----------
 FRAMES = {
     "overview": f_overview, "sunburst": f_sunburst, "treemap": f_treemap, "icicle": f_icicle,
@@ -1634,7 +1707,8 @@ FRAMES = {
     "trend": f_trend, "quality": f_quality, "context": f_context, "tokens": f_tokens,
     "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m, "othergrowth": f_other_growth,
     "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
-    "phrases": f_phrases,
+    "phrases": f_phrases, "toneByNumber": f_tone_by_number, "themeMixOverTime": f_theme_mix_over_time,
+    "quotes": f_quotes, "freq": f_freq,
 }
 
 # Human-readable title per frame id, for the chart list API.
@@ -1647,6 +1721,8 @@ TITLES = {
     "rank-mobile": "Rank themes (mobile)", "othergrowth": "New themes found",
     "groupSplitBars": "Two groups side by side", "compareDots": "Many groups, little space",
     "slopeChange": "First against last", "phrases": "Which phrases recur?",
+    "toneByNumber": "Tone by number band", "themeMixOverTime": "Theme mix over time",
+    "quotes": "What does it sound like?", "freq": "What did people say most?",
 }
 
 def render_parts(frame_id: str, data: ReportData | None = None):

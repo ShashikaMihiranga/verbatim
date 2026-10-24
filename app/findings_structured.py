@@ -37,13 +37,15 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .chart_data import ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries
+from .chart_data import (
+    FreqData, FreqItem, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries,
+)
 from .models import Column, Theme
 
 __all__ = [
     "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
     "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
-    "pick_structured_columns", "build_structured_context", "resolve_filter_rows",
+    "build_frequency_data", "pick_structured_columns", "build_structured_context", "resolve_filter_rows",
     "segment_skew_candidates", "score_correlation_candidates", "trend_shift_candidates",
 ]
 
@@ -388,6 +390,8 @@ class StructuredContext:
     segment_column_name: str = ""
     trend: TrendData | None = None
     trend_column_name: str = ""
+    frequency: FreqData | None = None
+    frequency_column_name: str = ""
 
     # Raw (pre-band/pre-cap), per-row values behind whichever candidate column won each role, stashed here
     # purely so `resolve_filter_rows` (below) can turn a filter request into a row-index set without
@@ -581,6 +585,72 @@ def build_segment_data(
     )
 
 
+# -------------------------------------------------------------------- build_frequency_data (chart-block
+# stream, 2026-10-24: `ranked_answers`/`ranked_list` - a frequency table for a SECOND, short-answer text
+# column, distinct from the main open-ended column every other chart in this stream reads)
+
+def _merge_key(value: str) -> str:
+    """Case- and simple-plural-insensitive grouping key: "Teacher"/"teacher"/"teachers" all collapse to one
+    group. Deliberately NOT a full lemmatizer/stemmer (no new dependency, no model call) - a plain trailing
+    "s" strip catches the large majority of real spelling-variant duplicates this block's own example
+    ("Teacher and Nurse... merged for spelling and plurals") describes, at the cost of occasionally
+    under-merging a genuine irregular plural ("children"/"child") - an honest, documented limit, not a
+    silent one."""
+    v = value.strip().lower()
+    return v[:-1] if v.endswith("s") and len(v) > 3 else v
+
+
+def build_frequency_data(
+    column: str, raw_by_row: dict[int, str], floor: int, max_items: int = 8,
+) -> "FreqData | None":
+    """A real answer-frequency table for a short-answer column (occupation, product name, free-form
+    one-word/few-word answers) - distinct from the main open-ended column's theme clustering, which this
+    function has no involvement in. Groups by `_merge_key` (spelling/case/simple-plural merge), keeps the
+    most-common ORIGINAL casing/form as the display label per group, and drops any group under `floor`
+    (the same general suppression floor every other candidate-building step in this app already uses - no
+    block-specific stricter floor the way the segment heatmap has one, since this is a plain ranked list,
+    not a per-cell breakdown someone could be singled out in).
+
+    Returns `None` when fewer than 2 groups survive the floor (an un-rankable "everyone said something
+    different" list is not a real finding) - same "a valid empty result, not an error" contract every
+    other `build_*_data` function here already follows.
+    """
+    groups: dict[str, dict[str, int]] = {}  # merge key -> {display form -> count}
+    answered = 0
+    for v in raw_by_row.values():
+        if not isinstance(v, str) or not v.strip():
+            continue
+        answered += 1
+        key = _merge_key(v)
+        forms = groups.setdefault(key, {})
+        forms[v.strip()] = forms.get(v.strip(), 0) + 1
+
+    ranked = sorted(
+        ((key, forms) for key, forms in groups.items() if sum(forms.values()) >= floor),
+        key=lambda kf: sum(kf[1].values()), reverse=True,
+    )
+    if len(ranked) < 2:
+        return None
+    if answered <= 0:
+        return None
+
+    top = ranked[:max_items]
+    items = []
+    for _, forms in top:
+        total = sum(forms.values())
+        label = max(forms, key=forms.get)  # most-common original casing/form, never invented
+        merged = len(forms) - 1  # how many OTHER spellings/forms folded into this one
+        items.append(FreqItem(label=label, pct=round(total / answered * 100, 1), merged=merged))
+
+    top_label = items[0].label
+    merged_total = sum(i.merged for i in items)
+    footnote = (
+        f"{merged_total} spelling or plural variant{'s' if merged_total != 1 else ''} merged into the "
+        f"{len(items)} answers shown." if merged_total else f"{len(items)} distinct answers shown, no spelling variants merged."
+    )
+    return FreqData(question=column, answered=answered, items=items, highlight=top_label, footnote=footnote)
+
+
 # -------------------------------------------------------------------- build_trend_data
 
 def build_trend_data(
@@ -649,14 +719,20 @@ def build_trend_data(
 
 def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]]:
     """Every confirmed, not-switched-off `Column` name of each kind ("score", "segment", "date", "numeric",
-    "yes_no"), in
+    "yes_no", "short_text"), in
     `Column.position` order - every candidate, not just the first, so `build_structured_context` can try
     each in turn and use the first one that actually produces a usable chart, instead of committing to
-    upload-column-order regardless of whether that specific column's data survives suppression."""
+    upload-column-order regardless of whether that specific column's data survives suppression.
+
+    `short_text` added (chart-block stream, 2026-10-24) for `ranked_answers`/`ranked_list` - a SEPARATE
+    short-answer column (job title, product name, one-word/few-word factual answers), never the dataset's
+    main open-ended column (that one is clustered into themes, never frequency-counted as a flat list)."""
     cols = list(db.scalars(
         select(Column).where(Column.dataset_id == dataset_id).order_by(Column.position)
     ).all())
-    result: dict[str, list[str]] = {"score": [], "segment": [], "date": [], "numeric": [], "yes_no": []}
+    result: dict[str, list[str]] = {
+        "score": [], "segment": [], "date": [], "numeric": [], "yes_no": [], "short_text": [],
+    }
     for c in cols:
         if c.kind in result and not (c.stats or {}).get("off"):
             result[c.kind].append(c.name)
@@ -829,6 +905,24 @@ def build_structured_context(
             context.trend = trend_data
             context.trend_column_name = date_col
             context.date_raw_by_row = parsed_by_row
+            break
+
+    # chart-block stream, 2026-10-24: ranked_answers/ranked_list. Independent of the score/segment/trend
+    # loops above - a short_text column's own frequency table has nothing to do with themes or the floor
+    # candidates already won for other roles, so there is no "already won" early-exit to mirror here.
+    for freq_col in columns.get("short_text", []):
+        raw_freq: dict[int, str] = {}
+        for r in rows:
+            try:
+                v = clean_df.at[r, freq_col]
+            except KeyError:
+                continue
+            if isinstance(v, str) and v.strip():
+                raw_freq[r] = v
+        freq_data = build_frequency_data(freq_col, raw_freq, floor)
+        if freq_data is not None:
+            context.frequency = freq_data
+            context.frequency_column_name = freq_col
             break
 
     return context

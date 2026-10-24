@@ -26,6 +26,7 @@ from app.findings_structured import (
     band_dates,
     band_quartiles,
     band_score,
+    build_frequency_data,
     build_numeric_data,
     build_score_data,
     build_segment_data,
@@ -427,6 +428,55 @@ def test_build_segment_data_skips_rows_whose_overall_share_is_zero():
         assert data.rows[data.highlight[0]].theme != "A"
 
 
+# -------------------------------------------------------------------- build_frequency_data (chart-block
+# stream, 2026-10-24: ranked_answers/ranked_list)
+
+def test_build_frequency_data_merges_case_and_plural_variants():
+    raw = {i: v for i, v in enumerate(
+        ["Teacher"] * 20 + ["teacher"] * 5 + ["Nurse"] * 18 + ["nurses"] * 3 + ["Engineer"] * 10,
+    )}
+    data = build_frequency_data("Job", raw, floor=2)
+    by_label = {i.label: i for i in data.items}
+    assert by_label["Teacher"].merged == 1  # "teacher" folded in
+    assert by_label["Nurse"].merged == 1  # "nurses" folded in
+    assert by_label["Engineer"].merged == 0
+    assert data.answered == 56
+    assert data.highlight == "Teacher"  # the most common group
+
+
+def test_build_frequency_data_keeps_the_most_common_casing_as_the_display_label():
+    raw = {i: v for i, v in enumerate(
+        ["teacher"] * 2 + ["Teacher"] * 10 + ["TEACHER"] * 1 + ["Nurse"] * 8,
+    )}
+    data = build_frequency_data("Job", raw, floor=2)
+    assert data.items[0].label == "Teacher"  # the most common of the 3 case forms, not the first seen
+
+
+def test_build_frequency_data_drops_groups_below_the_floor():
+    raw = {i: v for i, v in enumerate(["Common"] * 10 + ["AlsoCommon"] * 6 + ["Rare"] * 2)}
+    data = build_frequency_data("Job", raw, floor=5)
+    labels = {i.label for i in data.items}
+    assert "Rare" not in labels  # below floor=5, dropped
+    assert labels == {"Common", "AlsoCommon"}
+    assert data.answered == 18  # answered counts every real row, including the dropped group's
+
+
+def test_build_frequency_data_returns_none_when_fewer_than_two_groups_survive():
+    raw = {i: "OnlyOne" for i in range(10)}
+    assert build_frequency_data("Job", raw, floor=2) is None
+
+
+def test_build_frequency_data_caps_to_max_items():
+    raw: dict[int, str] = {}
+    i = 0
+    for n in range(12):  # 12 distinct groups, each well above the floor
+        for _ in range(5):
+            raw[i] = f"Group{n}"
+            i += 1
+    data = build_frequency_data("Job", raw, floor=2, max_items=8)
+    assert len(data.items) == 8
+
+
 # -------------------------------------------------------------------- build_trend_data
 
 def _period_row_ids(period_sizes: dict[str, int]) -> dict[str, list[int]]:
@@ -532,6 +582,7 @@ def test_pick_structured_columns_respects_position_order(session):
     picked = pick_structured_columns(ds.id, session)
     assert picked == {
         "score": ["Score1", "Score2"], "segment": ["Segment1"], "date": ["Date1"], "numeric": [], "yes_no": [],
+        "short_text": [],
     }
 
 
@@ -553,7 +604,7 @@ def test_pick_structured_columns_none_when_no_matching_kind(session):
     session.commit()
 
     picked = pick_structured_columns(ds.id, session)
-    assert picked == {"score": [], "segment": [], "date": [], "numeric": [], "yes_no": []}
+    assert picked == {"score": [], "segment": [], "date": [], "numeric": [], "yes_no": [], "short_text": []}
 
 
 # -------------------------------------------------------------------- build_structured_context

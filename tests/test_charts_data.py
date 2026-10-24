@@ -86,6 +86,8 @@ def test_custom_data_renders_its_own_names():
         "trend": ["W2"], "arc": ["Yak shaving"], "map": ["Zebras like stripes"],
         "groupSplitBars": ["Zebra crossing", "North", "South"], "compareDots": ["Zebra crossing", "North"],
         "slopeChange": ["Zebra crossing", "Yak shaving", "W1", "W3"], "phrases": ["zebra stripes"],
+        "toneByNumber": ["Low", "High", "Mood"], "themeMixOverTime": ["Zebra crossing", "Yak shaving", "W1"],
+        "quotes": ["Stripes are confusing", "Zebra crossing"], "freq": ["Zebra", "Pet?"],
     }.items():
         html = render(frame_id, data)
         for n in needles:
@@ -100,9 +102,9 @@ def test_custom_data_renders_every_frame():
 
 
 def test_unregistered_frames_take_data_too():
-    # f_phrases moved to FRAMES (chart-block stream, 2026-10-24: see test_frame_identical_to_golden and
-    # test_custom_data_renders_its_own_names, which now cover it the normal way) - f_freq/f_quotes stay
-    # here, genuinely unregistered (no block in app/report_blocks.py reads FreqData/QuoteData yet).
+    # f_phrases/f_freq/f_quotes all moved to FRAMES (chart-block stream, 2026-10-24: see
+    # test_frame_identical_to_golden and test_custom_data_renders_its_own_names, which now cover them the
+    # normal way) - f_quality is the one genuinely registered-elsewhere function kept in this smoke test.
     from app import charts
 
     data = small_report()

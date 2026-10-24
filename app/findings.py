@@ -63,6 +63,7 @@ from .text_pipeline import AnthropicClaudeClient, ClaudeClient
 from .text_pipeline import LabelingClaudeNotConfigured as FindingsClaudeNotConfigured
 from .text_pipeline.labeling import OTHER_LABEL
 from .text_pipeline.phrases import build_phrase_data
+from .text_pipeline.quotes import build_quote_data
 
 __all__ = [
     "Candidate", "FindingsClaudeNotConfigured", "FindingsError", "NoThemesForColumn", "FakeClaudeClient",
@@ -449,6 +450,7 @@ def build_report_data(
     *,
     answer_lengths: list[int] | None = None,
     answer_texts: list[str] | None = None,
+    quote_theme_texts: list[tuple[str, list[str]]] | None = None,
     structured: StructuredContext | None = None,
     filter_rows: set[int] | None = None,
 ) -> ReportData:
@@ -478,14 +480,18 @@ def build_report_data(
     here). `pick_chart` does not yet select a chart kind that reads `score`/`segment`/`trend` (that is a
     separate, later stream), so populating them here has no visible effect on `build_findings`'s own output
     until that wiring lands.
-    `answer_map`/`frequency`/`quotes` are placeholders for the same reason: none of this stream's chosen
-    chart ids (`overview`, `treemap`/`rank`/`sentsun`, `quality`) read them.
+    `answer_map` is still a placeholder - no similarity-embedding pipeline exists upstream yet.
 
     `phrases` is real (chart-block stream, 2026-10-24) when `answer_texts` is given - the actual cleaned
     answer strings, same "this function only has Theme rows, a caller with the dataframe already loaded
     passes the real thing through" shape as `answer_lengths` above. `app.text_pipeline.phrases.build_phrase_data`
     does the extraction (pure code, no network - see that module's own docstring). Without `answer_texts`,
     `phrases` stays the honest empty placeholder it always was.
+
+    `quotes` is real when `quote_theme_texts` is given - each real theme's own most-typical answer(s), via
+    `app.text_pipeline.quotes.build_quote_data`. `frequency` is real whenever `structured` resolved a real
+    `short_text` candidate column (`app.findings_structured.build_frequency_data`, a short-answer
+    column's own frequency table - distinct from the main open-ended column's theme clustering).
 
     `filter_rows` (Filters feature, SPEC.md section 5) restricts `themes`/`score`/`segment`/`trend` to the
     given row-index set; `total_rows`/`quality`/`answer_lengths` stay dataset-wide regardless (they
@@ -537,9 +543,9 @@ def build_report_data(
         trend=trend,
         cooccurrence=[],
         answer_map=MapData(seed=0, tip_text="", tip_note=""),
-        frequency=FreqData(question="", answered=0, items=[], highlight="", footnote=""),
+        frequency=structured.frequency if structured and structured.frequency else FreqData(question="", answered=0, items=[], highlight="", footnote=""),
         phrases=(build_phrase_data(answer_texts) if answer_texts else None) or PhraseData(phrases=[], highlight=""),
-        quotes=QuoteData(quotes=[], highlight_index=0),
+        quotes=(build_quote_data(quote_theme_texts) if quote_theme_texts else None) or QuoteData(quotes=[], highlight_index=0),
         quality=quality,
         context=context,
     )
@@ -929,6 +935,7 @@ def build_findings(
     cleaning_report: Any = None,
     answer_lengths: list[int] | None = None,
     answer_texts: list[str] | None = None,
+    quote_theme_texts: list[tuple[str, list[str]]] | None = None,
     min_group_size: int | None = None,
     structured: StructuredContext | None = None,
 ) -> Report:
@@ -969,7 +976,7 @@ def build_findings(
     sentences = write_headline(candidates, claude_client, question)
     report_data = build_report_data(
         dataset, themes, cleaning_report, question, answer_lengths=answer_lengths,
-        answer_texts=answer_texts, structured=structured,
+        answer_texts=answer_texts, quote_theme_texts=quote_theme_texts, structured=structured,
     )
 
     # Replace prior findings/report for this dataset + column - see the column-correlation note above.
