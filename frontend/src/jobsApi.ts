@@ -43,6 +43,16 @@ export interface LookInsideOtherResult {
   other_before_count?: number
   answered_total?: number
   known_gains?: Array<{ label: string; count: number }>
+  // Added 2026-10-25: new groups placed inside an existing theme (`is_sub_theme` false when too few to
+  // form a sub-theme; the answers still joined the parent), and the themes chart as it was before the run.
+  sub_theme_gains?: Array<{ label: string; parent: string; count: number; is_sub_theme: boolean }>
+  before_chart?: { chart_html: string; chart_width: number; chart_height: number }
+}
+
+// A theme build's own result: whether it started Look inside Other on its own (Other over 20% of the
+// answers, app/api_themes.py `_queue_auto_look_inside`), or why it could not.
+export interface ThemesJobResult {
+  auto_look_inside?: { other_share: number; job_id?: number; skipped?: string }
 }
 
 // Theme editing (docs/TODO.md, fixed 2026-10-22): "split theme"'s own job result - the real pieces a
@@ -70,7 +80,7 @@ export interface Job {
   error: string | null
   // `null` for every job kind that has nothing to summarize (themes, report) - only "look_inside_other"
   // and "split_theme" ever populate this, once they reach "done".
-  result: LookInsideOtherResult | SplitThemeResult | null
+  result: LookInsideOtherResult | SplitThemeResult | ThemesJobResult | null
   // Live counts while "look_inside_other" matches answers (app/api_themes.py, step "Matching answers to
   // themes"). Optional/null: other jobs, older servers, and the synthetic just-started Job never have it.
   progress?: LookInsideOtherProgress | null

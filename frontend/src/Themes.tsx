@@ -5,9 +5,11 @@ import type { ColumnProfile, DatasetView, Kind } from './api'
 import { buildThemes, getThemeAnswers, getThemes, getThemesChart, lookInsideOther, mergeThemes, renameTheme, splitTheme } from './themesApi'
 import type { ThemeAnswer, ThemeCard, ThemeChartResponse } from './themesApi'
 import { buildReport, exportReport, getReport } from './reportApi'
-import type { ExportFormat, ReportFilters, ReportResponse } from './reportApi'
+import type { ExportFormat, ReportFilters, ReportOtherBreakdown, ReportResponse, ReportThemeSummary } from './reportApi'
 import { getLatestJob, pollJob } from './jobsApi'
 import type { Job } from './jobsApi'
+import InsideOther from './InsideOther'
+import { isResult } from './insideOtherModel'
 import JobProgress from './JobProgress'
 import SharePanel from './SharePanel'
 import ReportView from './Report'
@@ -227,6 +229,21 @@ export function MergeThemesList({ themes, selection, onSelectionChange, onMerge 
   )
 }
 
+// The report's theme summary shapes, from the theme rows alone, so Inside Other works before any report.
+function summariseThemes(themes: ThemeCard[]): { all: ReportThemeSummary[]; breakdown: ReportOtherBreakdown | null } {
+  const answered = themes.reduce((sum, t) => sum + t.size, 0)
+  const share = (n: number) => (answered ? Math.round((n / answered) * 1000) / 10 : 0)
+  const real = themes.filter((t) => t.label !== 'Other').sort((a, b) => b.size - a.size)
+  const other = themes.find((t) => t.label === 'Other')
+  return {
+    all: real.map((t) => ({ name: t.label, share: share(t.size), count: t.size, sentiment: t.sentiment ?? 0 })),
+    breakdown: other && other.size > 0 ? {
+      noise_count: other.size, noise_share: share(other.size),
+      hidden_real_count: 0, hidden_real_share: 0, hidden_real_theme_count: 0, total_real_theme_count: real.length,
+    } : null,
+  }
+}
+
 export default function Themes() {
   const [params] = useSearchParams()
   const id = Number(params.get('dataset'))
@@ -241,6 +258,7 @@ export default function Themes() {
   const [reportLoading, setReportLoading] = useState(true)
   const [reportJob, setReportJob] = useState<Job | null>(null)
   const [lookInsideOtherJob, setLookInsideOtherJob] = useState<Job | null>(null)
+  const [autoLookNote, setAutoLookNote] = useState<string | null>(null)
   const [filters, setFilters] = useState<ReportFilters>({})
   const [manageThemes, setManageThemes] = useState(false)
   const [showShare, setShowShare] = useState(false)
@@ -258,13 +276,32 @@ export default function Themes() {
   // that polling and wires it to whichever `set*Job`/refresh pair the caller is watching; every place that
   // starts or resumes a job (an explicit click, or the page-load resume below) goes through it, so there is
   // exactly one polling implementation for both themes and report jobs, not two near-duplicates.
-  function watch(job: Job, setJob: (j: Job | null) => void, refresh: () => void): () => void {
+  function watch(job: Job, setJob: (j: Job | null) => void, refresh: (done: Job) => void): () => void {
     setJob(job)
     if (job.status !== 'running') return () => {}
     return pollJob(id, job.id, (j) => {
       setJob(j)
-      if (j.status === 'done') refresh()
+      if (j.status === 'done') refresh(j)
     })
+  }
+
+  // A theme build that leaves Other over 20% of the answers starts Look inside on its own (user decision,
+  // 2026-10-25; app/api_themes.py `_queue_auto_look_inside`). Follow that run, or say why it did not start.
+  function followAutoLookInside(done: Job, col: string) {
+    const auto = done.result && 'auto_look_inside' in done.result ? done.result.auto_look_inside : undefined
+    if (auto?.job_id) {
+      setAutoLookNote(null)
+      watch(
+        {
+          id: auto.job_id, dataset_id: id, column: col, kind: 'look_inside_other',
+          status: 'running', step: 'Waiting to start', error: null, result: null,
+        },
+        setLookInsideOtherJob,
+        () => void refreshAfterLookInsideOther(col),
+      )
+    } else if (auto?.skipped) {
+      setAutoLookNote(`Other holds ${auto.other_share}% of the answers, so Look inside would have started, but: ${auto.skipped}`)
+    }
   }
 
   async function refreshThemes() {
@@ -314,19 +351,25 @@ export default function Themes() {
   // the Known/New/Still-in-Other results panel (LookInsideOther.tsx) stays showing the real final counts
   // from `job.result` until the viewer starts another run, rather than vanishing the moment fresh data
   // arrives.
-  async function refreshAfterLookInsideOther() {
-    if (!column) return
+  // `col` is passed explicitly when this runs from the page-load effect, whose closure predates `column`.
+  async function refreshAfterLookInsideOther(col: string | null = column) {
+    if (!col) return
     try {
-      const existing = await getThemes(id, column)
-      setThemes(existing.themes)
-      setReport(await getReport(id, column, filters))
+      setThemes((await getThemes(id, col)).themes)
     } catch (e) {
       setError((e as Error).message)
+      return
+    }
+    try {
+      setReport(await getReport(id, col, filters)) // still there, now marked stale; Rebuild report updates it
+    } catch {
+      /* no report yet: the themes screen offers Build report */
     }
   }
 
   async function startLookInsideOther() {
     setError('')
+    setAutoLookNote(null)
     try {
       const started = await lookInsideOther(id, column as string)
       watch(
@@ -420,7 +463,12 @@ export default function Themes() {
         if (!hasThemes) {
           try {
             const job = await getLatestJob(id, col, 'themes')
-            if (job) stopThemesPoll = watch(job, setThemesJob, () => void refreshThemes())
+            if (job) {
+              stopThemesPoll = watch(job, setThemesJob, (done) => {
+                void reloadAfterThemeRebuild(col)
+                followAutoLookInside(done, col)
+              })
+            }
           } catch {
             /* no job either; show the build trigger */
           }
@@ -430,7 +478,10 @@ export default function Themes() {
           try {
             const job = await getLatestJob(id, col, 'themes')
             if (job && job.status === 'running') {
-              stopThemesPoll = watch(job, setThemesJob, () => void reloadAfterThemeRebuild(col))
+              stopThemesPoll = watch(job, setThemesJob, (done) => {
+                void reloadAfterThemeRebuild(col)
+                followAutoLookInside(done, col)
+              })
             }
           } catch {
             /* no theme job */
@@ -461,7 +512,7 @@ export default function Themes() {
         // reconstruct.
         try {
           const job = await getLatestJob(id, col, 'look_inside_other')
-          if (job) stopLookInsideOtherPoll = watch(job, setLookInsideOtherJob, () => void refreshAfterLookInsideOther())
+          if (job) stopLookInsideOtherPoll = watch(job, setLookInsideOtherJob, () => void refreshAfterLookInsideOther(col))
         } catch {
           /* nothing run yet */
         }
@@ -516,10 +567,15 @@ export default function Themes() {
     try {
       const started = await buildThemes(id, column as string, useJev)
       setThemes(null)
+      setLookInsideOtherJob(null) // the server dropped the old run's result with the old themes
+      setAutoLookNote(null)
       watch(
         { id: started.job_id, dataset_id: id, column: column as string, kind: 'themes', status: 'running', step: 'Starting', error: null, result: null },
         setThemesJob,
-        () => void refreshThemes(),
+        (done) => {
+          void refreshThemes()
+          followAutoLookInside(done, column as string)
+        },
       )
     } catch (e) {
       // A cheap/instant check failed before any job started (e.g. a missing key, or busy) - still an
@@ -624,6 +680,12 @@ export default function Themes() {
   const themesFailed = themesJob !== null && themesJob.status === 'failed'
   const reportRunning = reportJob !== null && reportJob.status === 'running'
   const reportFailed = reportJob !== null && reportJob.status === 'failed'
+  const lookRunning = lookInsideOtherJob !== null && lookInsideOtherJob.status === 'running'
+  // Look inside on the themes screen (user decision, 2026-10-25): the first build's chart, the flow, then
+  // the updated themes under it, then Build report.
+  const lookResult = lookInsideOtherJob?.status === 'done' && isResult(lookInsideOtherJob.result) ? lookInsideOtherJob.result : null
+  const beforeChart = lookResult?.before_chart ?? null
+  const themeSummaries = themes ? summariseThemes(themes) : null
   // A report may exist and is still being fetched: show only a loading line (BUG-047). Manage themes
   // opens the editing view regardless.
   const reportPending = reportLoading && !report && !manageThemes
@@ -681,7 +743,7 @@ export default function Themes() {
           {report.stale && (
             <div className="report-stale" role="status">
               <span>The themes changed after this report was built, so its findings are out of date.</span>
-              <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning}>
+              <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning || lookRunning}>
                 {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
               </button>
             </div>
@@ -693,11 +755,10 @@ export default function Themes() {
             filters={filters}
             onFiltersChange={setFilters}
             lookInsideOtherJob={lookInsideOtherJob}
-            onLookInsideOther={() => void startLookInsideOther()}
           />
           <div className="foot report-foot">
             <div className="report-foot-group">
-              <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning}>
+              <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning || lookRunning}>
                 {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
               </button>
               <button type="button" className="btn quiet" onClick={() => setManageThemes(true)}>
@@ -734,15 +795,43 @@ export default function Themes() {
               itself (see its own comment); the selected theme's full detail renders once, below. */}
           {themesChart ? (
             <>
-              <ThemeChart
-                fragment={themesChart}
-                title="Themes"
-                onThemeSelect={(name) => {
-                  const t = themes.find((x) => x.label === name)
-                  if (t) setSelectedThemeId(t.id)
-                }}
-                selectedTheme={themes.find((t) => t.id === selectedThemeId)?.label ?? null}
-              />
+              {(() => {
+                const current = (
+                  <ThemeChart
+                    fragment={themesChart}
+                    title={beforeChart ? 'Updated themes' : 'Themes'}
+                    onThemeSelect={(name) => {
+                      const t = themes.find((x) => x.label === name)
+                      if (t) setSelectedThemeId(t.id)
+                    }}
+                    selectedTheme={themes.find((t) => t.id === selectedThemeId)?.label ?? null}
+                    highlightOtherRunning={lookRunning}
+                  />
+                )
+                const showInside = themeSummaries?.breakdown != null || lookInsideOtherJob !== null
+                return (
+                  <>
+                    {beforeChart ? (
+                      <section className="th-stage">
+                        <p className="th-stage-label">First build</p>
+                        <ThemeChart fragment={beforeChart} title="First build" />
+                      </section>
+                    ) : current}
+                    {showInside && themeSummaries && (
+                      <InsideOther
+                        job={lookInsideOtherJob} onStart={() => void startLookInsideOther()} context="themes"
+                        allThemes={themeSummaries.all} breakdown={themeSummaries.breakdown} note={autoLookNote}
+                      />
+                    )}
+                    {beforeChart && (
+                      <section className="th-stage">
+                        <p className="th-stage-label">Updated themes</p>
+                        {current}
+                      </section>
+                    )}
+                  </>
+                )
+              })()}
               {(() => {
                 const selected = themes.find((t) => t.id === selectedThemeId)
                 if (!selected) return null
@@ -794,7 +883,7 @@ export default function Themes() {
                 <div className="jp-failed">
                   <div className="big">Building the report didn't work</div>
                   <p className="err" role="alert">{reportJob.error}</p>
-                  <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={themesRunning}>
+                  <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={themesRunning || lookRunning}>
                     Try again
                   </button>
                 </div>
@@ -805,7 +894,7 @@ export default function Themes() {
                     We will pick the strongest, best-supported findings from these themes, write one plain
                     sentence for each, and choose the chart that shows it best.
                   </p>
-                  <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={themesRunning}>
+                  <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={themesRunning || lookRunning}>
                     Build report
                   </button>
                 </div>

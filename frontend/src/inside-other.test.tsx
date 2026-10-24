@@ -39,7 +39,7 @@ describe('InsideOther', () => {
     expect(html).not.toContain('class="io-cta"')
     expect(html).toContain('Matching answers to themes... 500 of 1,000')
     expect(html).toContain('+300')
-    for (const step of ['Finding patterns in Other', 'Naming new themes', 'Matching answers to themes', 'Updating the report']) {
+    for (const step of ['Finding new groups', 'Sorting into main themes and sub-themes', 'Matching answers to themes', 'Updating the themes']) {
       expect(html).toContain(step)
     }
     expect(html.match(/data-state="done"/g)).toHaveLength(2)
@@ -76,13 +76,45 @@ describe('InsideOther', () => {
     expect(html).toContain('<span class="io-newshare">12</span>')
   })
 
-  it('done while the report is stale asks for a rebuild instead of "Everything is updated" (BUG-046)', () => {
-    const doneJob = job({ status: 'done', step: 'Done', result: done })
-    const fresh = renderToStaticMarkup(<InsideOther job={doneJob} onStart={vi.fn()} allThemes={themes} />)
-    expect(fresh).toContain('Done. The report below is updated.')
-    const stale = renderToStaticMarkup(<InsideOther job={doneJob} onStart={vi.fn()} allThemes={themes} reportStale />)
-    expect(stale).toContain('Done. Rebuild the report to update the findings.')
-    expect(stale).not.toContain('The report below is updated')
+  it('on the themes screen the done line points at the updated themes; in the report there is no button', () => {
+    const before_chart = { chart_html: '<div>BEFORE</div>', chart_width: 1180, chart_height: 400 }
+    const doneJob = job({ status: 'done', step: 'Done', result: { ...done, before_chart } })
+    const onThemes = renderToStaticMarkup(<InsideOther job={doneJob} onStart={vi.fn()} allThemes={themes} />)
+    expect(onThemes).toContain('Done. The updated themes are below.')
+    // A run from before the "before" chart existed has no updated chart to point at.
+    const legacy = renderToStaticMarkup(<InsideOther job={job({ status: 'done', step: 'Done', result: done })} onStart={vi.fn()} allThemes={themes} />)
+    expect(legacy).not.toContain('updated themes are below')
+    const inReport = renderToStaticMarkup(<InsideOther job={doneJob} allThemes={themes} context="report" />)
+    expect(inReport).not.toContain('class="io-cta"')
+    expect(inReport).not.toContain('updated themes are below')
+  })
+
+  it('the automatic run waiting for a slot reads as starting, on the first step', () => {
+    const html = render(job({ step: 'Waiting to start' }))
+    expect(html).toContain('Starting...')
+    expect(html.match(/data-state="running"/g)).toHaveLength(1)
+    expect(html).not.toContain('class="io-cta"')
+  })
+
+  it('new groups placed inside existing themes show as sub-theme chips and in the banner', () => {
+    const withSubs: LookInsideOtherResult = {
+      ...done,
+      sub_theme_gains: [
+        { label: 'Price increases', parent: 'Cost', count: 40, is_sub_theme: true },
+        { label: 'Hidden fees', parent: 'Cost', count: 3, is_sub_theme: false },
+      ],
+    }
+    const html = render(job({ status: 'done', step: 'Done', result: withSubs }))
+    expect(html).toContain('Done. 1 new theme and 1 new sub-theme inside existing themes found.')
+    expect(html).toContain('Price increases')
+    expect(html).toContain('in Cost · 40')
+    expect(html).not.toContain('Hidden fees') // too few for a sub-theme; its answers simply joined Cost
+  })
+
+  it('shows why the automatic run did not start, only before any run', () => {
+    const note = 'Other holds 34% of the answers, so Look inside would have started, but: no key.'
+    expect(renderToStaticMarkup(<InsideOther job={null} onStart={vi.fn()} allThemes={themes} note={note} />)).toContain(note)
+    expect(renderToStaticMarkup(<InsideOther job={job({})} onStart={vi.fn()} allThemes={themes} note={note} />)).not.toContain(note)
   })
 
   it('failed: shows the real error and offers the button again', () => {
@@ -158,7 +190,7 @@ describe('InsideOther with the report breakdown', () => {
   })
 
   it('running: the live count replaces the report count', () => {
-    const html = renderToStaticMarkup(<InsideOther job={job({ step: 'Naming new themes' })} onStart={vi.fn()} allThemes={themes} breakdown={breakdown} />)
+    const html = renderToStaticMarkup(<InsideOther job={job({ step: 'Sorting into main themes and sub-themes' })} onStart={vi.fn()} allThemes={themes} breakdown={breakdown} />)
     expect(html).not.toContain('3,000')
   })
 })

@@ -158,6 +158,17 @@ function Results({ m }: { m: InsideOtherModel }) {
           ))}
         </ul>
       )}
+      {m.subThemes.length > 0 && (
+        <ul className="io-chips" aria-label="New sub-themes">
+          {m.subThemes.map((st) => (
+            <li key={`${st.parent}/${st.label}`} className="io-newchip">
+              <span className="io-newbadge">sub</span>
+              {st.label}
+              <span className="io-newshare">in {st.parent} · {fmt(st.count)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {m.known.length > 0 && (
         <section className="io-chart">
           <h4 className="io-chart-title">What each known theme gained</h4>
@@ -203,15 +214,17 @@ function Results({ m }: { m: InsideOtherModel }) {
 }
 
 export default function InsideOther({
-  job, onStart, allThemes = [], breakdown = null, reportStale = false,
+  job, onStart, allThemes = [], breakdown = null, context = 'themes', note = null,
 }: {
   job: Job | null
-  onStart: () => void
+  // The themes screen runs Look inside; the report only shows an earlier run's result (no button).
+  onStart?: () => void
   allThemes?: ReportThemeSummary[]
   breakdown?: ReportOtherBreakdown | null
-  reportStale?: boolean // findings built before this run: the done line asks for a rebuild
+  context?: 'themes' | 'report'
+  note?: string | null // e.g. why the automatic run after a theme build did not start
 }) {
-  const m = useMemo(() => insideOtherModel(job, allThemes, breakdown, reportStale), [job, allThemes, breakdown, reportStale])
+  const m = useMemo(() => insideOtherModel(job, allThemes, breakdown, context), [job, allThemes, breakdown, context])
   const reducedMotion = useMemo(() => prefersReducedMotion(), [])
   const [showAll, setShowAll] = useState(false)
   // The full list only adds something when real themes are folded into Other; otherwise it repeats the treemap.
@@ -225,7 +238,7 @@ export default function InsideOther({
     <section className="io" aria-labelledby="io-title">
       <div className="io-head">
         <h3 id="io-title" className="io-title">Inside Other</h3>
-        {m.phase !== 'running' && (
+        {onStart && m.phase !== 'running' && (
           <button type="button" className="io-cta" onClick={onStart}>
             {m.phase === 'done' ? 'Look inside again' : 'Look inside'} <Arrow />
           </button>
@@ -235,6 +248,7 @@ export default function InsideOther({
         {m.phase === 'running' && <span className="io-live-dot" aria-hidden="true" />}
         {m.phase === 'failed' ? m.error ?? m.status : m.status}
       </p>
+      {note && m.phase === 'idle' && <p className="io-warn">{note}</p>}
       <p className="io-help">Each ribbon is a group of answers. Wider ribbon, more answers.</p>
       {m.failedCount > 0 && (
         <p className="io-warn">{fmt(m.failedCount)} answer{m.failedCount === 1 ? '' : 's'} could not be checked and stayed in Other.</p>

@@ -169,14 +169,19 @@ describe('ReportView', () => {
           other_breakdown: { noise_count: 314, noise_share: 15.7, hidden_real_count: 0, hidden_real_share: 0, hidden_real_theme_count: 0, total_real_theme_count: 2 },
           theme_chart_variants: { diverge: fragment('TONE-MARK'), icicle: fragment('ICICLE-MARK') },
         })}
-        datasetId={1} filters={{}} onFiltersChange={() => {}} onLookInsideOther={() => {}}
+        datasetId={1} filters={{}} onFiltersChange={() => {}}
+        lookInsideOtherJob={{
+          id: 9, dataset_id: 1, column: 'Why', kind: 'look_inside_other', status: 'done', step: 'Done', error: null,
+          result: { known_added: 0, new_themes: [], still_other_count: 314, failed_classification_count: 0 },
+        }}
       />,
     )
     const order = ['rp-toolbar', 'OVERVIEW-MARK', 'Inside Other', 'TONE-MARK', 'RELIABILITY-CHART-MARK', 'QUALITY-MARK']
     const at = order.map((mark) => html.indexOf(mark))
     expect(at.every((i) => i >= 0)).toBe(true)
     expect([...at].sort((a, b) => a - b)).toEqual(at)
-    expect(html).toContain('314') // idle Still in Other shows Other's real count
+    expect(html).toContain('314') // Still in Other after the run
+    expect(html).not.toContain('class="io-cta"') // Look inside runs on the themes screen, not in the report
     expect(html).not.toContain('See all') // nothing folded into Other, so the full list would repeat the treemap
   })
 
@@ -194,5 +199,19 @@ describe('ReportView', () => {
       'Other is a catch-all bucket', "aren't in the", 'distinct topic', 'Genuinely varied answers',
       'These views show the broader context', 'The big picture', 'role="tablist"', 'RANK-MARK',
     ]) expect(html).not.toContain(gone)
+  })
+})
+
+describe('Inside Other in the report', () => {
+  it('is not shown until a Look inside run has finished', () => {
+    const html = renderToStaticMarkup(
+      <ReportView
+        report={makeReport({
+          other_breakdown: { noise_count: 314, noise_share: 15.7, hidden_real_count: 0, hidden_real_share: 0, hidden_real_theme_count: 0, total_real_theme_count: 2 },
+        })}
+        datasetId={1}
+      />,
+    )
+    expect(html).not.toContain('Inside Other')
   })
 })

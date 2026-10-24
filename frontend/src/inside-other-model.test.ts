@@ -31,10 +31,10 @@ describe('insideOtherModel', () => {
   })
 
   it('running before matching starts: right step, no invented numbers', () => {
-    const m = insideOtherModel(job({ step: 'Naming new themes' }), themes)
+    const m = insideOtherModel(job({ step: 'Sorting into main themes and sub-themes' }), themes)
     expect(m.phase).toBe('running')
     expect(m.stepIndex).toBe(1)
-    expect(m.status).toBe('Naming new themes...')
+    expect(m.status).toBe('Sorting into main themes and sub-themes...')
     expect(m.still).toBeNull()
     expect(m.known).toEqual([])
   })

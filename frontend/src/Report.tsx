@@ -97,7 +97,6 @@ export default function ReportView({
   filters,
   onFiltersChange,
   lookInsideOtherJob,
-  onLookInsideOther,
 }: {
   report: ReportResponse
   datasetId: number
@@ -113,11 +112,8 @@ export default function ReportView({
   // itself already hides whenever `report.filter_options` has every field `null` (see ReportFilters).
   filters?: ReportFiltersValue
   onFiltersChange?: (next: ReportFiltersValue) => void
-  // "Look inside Other" Stage 3 (docs/TODO.md, 2026-10-21). Both optional: a caller with no job-watching
-  // state wired up (e.g. a future standalone embed) still renders a perfectly good report, just without
-  // the "Look inside" CTA - same optionality pattern as `filters`/`onFiltersChange` above.
+  // "Look inside Other": the finished run's result, shown read-only. Optional, like `filters` above.
   lookInsideOtherJob?: Job | null
-  onLookInsideOther?: () => void
 }) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
@@ -190,10 +186,12 @@ export default function ReportView({
         </Divider>
       )}
 
-      {onLookInsideOther && (report.other_breakdown !== null || lookInsideOtherJob) && (
+      {/* Look inside runs on the themes screen (user decision, 2026-10-25); the report only shows what a
+          finished run moved out of Other. */}
+      {lookInsideOtherJob?.status === 'done' && (
         <InsideOther
-          job={lookInsideOtherJob ?? null} onStart={onLookInsideOther}
-          allThemes={report.all_themes} breakdown={report.other_breakdown} reportStale={report.stale ?? false}
+          job={lookInsideOtherJob} context="report"
+          allThemes={report.all_themes} breakdown={report.other_breakdown}
         />
       )}
 

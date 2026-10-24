@@ -4,8 +4,10 @@
 import type { Job, LookInsideOtherChart, LookInsideOtherResult } from './jobsApi'
 import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
 
-// Same labels the server sets in app/api_themes.py look_inside_other.
-export const STEPS = ['Finding patterns in Other', 'Naming new themes', 'Matching answers to themes', 'Updating the report'] as const
+// Same labels the server sets in app/api_themes.py `_start_look_inside`.
+export const STEPS = ['Finding new groups', 'Sorting into main themes and sub-themes', 'Matching answers to themes', 'Updating the themes'] as const
+// The automatic run (after a theme build) waits for a free slot before its first step.
+const WAITING = 'Waiting to start'
 const MATCHING_STEP = 2
 
 export const MAX_KNOWN_LEAVES = 7
@@ -42,6 +44,7 @@ export interface InsideOtherModel {
   otherNowPct: number | null
   banner: string | null
   failedCount: number
+  subThemes: Array<{ label: string; parent: string; count: number }> // new sub-themes inside known themes
   error: string | null
   charts: { icicle?: LookInsideOtherChart }
 }
@@ -94,7 +97,7 @@ function leaves(
 
 const fromRecord = (r: Record<string, number> | undefined) => Object.entries(r ?? {}).map(([label, count]) => ({ label, count }))
 
-function isResult(r: Job['result']): r is LookInsideOtherResult {
+export function isResult(r: Job['result']): r is LookInsideOtherResult {
   return r !== null && typeof r === 'object' && 'known_added' in r
 }
 
@@ -102,8 +105,9 @@ export function insideOtherModel(
   job: Job | null,
   allThemes: ReportThemeSummary[],
   breakdown: ReportOtherBreakdown | null = null,
-  // The report's findings were built before this run (BUG-046): the run updated the themes, not them.
-  reportStale = false,
+  // Where the panel sits: on the themes screen the updated themes follow it; in the report it only
+  // shows what an earlier run did.
+  context: 'themes' | 'report' = 'themes',
 ): InsideOtherModel {
   const realThemes = allThemes.map((t) => t.name)
   // Before a run (or after a failed one) everything in Other is still there: the report's own count.
@@ -112,12 +116,16 @@ export function insideOtherModel(
     known: [], knownMore: 0, knownTotal: 0, newThemes: [], newMore: 0, newTotal: 0,
     still: breakdown?.noise_count ?? null, sourceTotal: null, answeredTotal: null, otherBeforePct: null,
     otherNowPct: breakdown?.noise_share ?? null,
-    banner: null, failedCount: 0, error: null, charts: {},
+    banner: null, failedCount: 0, subThemes: [], error: null, charts: {},
   }
   if (!job) return base
 
   if (job.status === 'failed') {
     return { ...base, phase: 'failed', status: 'This run did not finish.', error: job.error }
+  }
+
+  if (job.status === 'running' && job.step === WAITING) {
+    return { ...base, phase: 'running', stepIndex: 0, status: 'Starting...', still: null, otherNowPct: null }
   }
 
   if (job.status === 'running') {
@@ -153,14 +161,19 @@ export function insideOtherModel(
   const otherBeforePct = before !== null ? pct(before, answered) : null
   const otherNowPct = pct(r.still_other_count, answered)
   const k = r.new_themes.length
-  const found = k === 0 ? 'No new themes found.' : `${k} new theme${k === 1 ? '' : 's'} found.`
+  const subThemes = (r.sub_theme_gains ?? []).filter((s) => s.is_sub_theme)
+  const s = subThemes.length
+  const parts = [k > 0 && `${k} new theme${k === 1 ? '' : 's'}`, s > 0 && `${s} new sub-theme${s === 1 ? '' : 's'} inside existing themes`]
+    .filter(Boolean)
+  const found = parts.length === 0 ? 'No new themes found.' : `${parts.join(' and ')} found.`
   const moved = otherBeforePct !== null && otherNowPct !== null ? ` Other went from ${otherBeforePct}% to ${otherNowPct}%.` : ''
   return {
     ...base,
     phase: 'done',
     stepIndex: STEPS.length,
     matchingProgress: 1,
-    status: reportStale ? 'Done. Rebuild the report to update the findings.' : 'Done. The report below is updated.',
+    // Runs before 2026-10-25 kept no "before" chart, so the themes screen shows no separate updated chart.
+    status: context === 'themes' && r.before_chart ? 'Done. The updated themes are below.' : 'Done.',
     known: known.shown, knownMore: known.more,
     // Older runs have no per-theme breakdown; the total is still real.
     knownTotal: r.known_added,
@@ -171,6 +184,7 @@ export function insideOtherModel(
     otherBeforePct, otherNowPct,
     banner: `Done. ${found}${moved}`,
     failedCount: r.failed_classification_count ?? 0,
+    subThemes: subThemes.map(({ label, parent, count }) => ({ label, parent, count })),
     charts: { icicle: r.charts?.icicle },
   }
 }

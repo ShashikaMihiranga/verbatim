@@ -3189,3 +3189,27 @@ labels), not only from findings about deleted themes; reports built before this 
 check until rebuilt. Banner text: "The themes changed after this report was built, so its findings are
 out of date." Inside Other's done line: "Done. The report below is updated."
 
+## 2026-10-25 (Look inside Other moves to the themes screen, and starts on its own)
+
+User: Look inside belongs after the theme build, not after the report ("Look inside button is one of our
+problem, not users problem"); start it automatically when Other is over 20%; animate the stages (find new
+groups, sort them into main or sub groups, show the updated themes under the first build), then offer
+Build report. Two choices, user picked the recommended ones: a new group may become a sub-theme of an
+existing theme; the report shows the finished run's result only, with no button.
+
+- `fbec562`: the Look inside labelling call (same Claude call) gets the existing themes and may name a
+  parent for each new group (`PARENT_SYSTEM`, `ThemeLabel.parent_theme`, kept through merges). Matched
+  answers join the parent and, with at least `MIN_OTHER_NEW_THEME_SIZE`, form a sub-theme in it (merged
+  into a same-named one). Result `sub_theme_gains`.
+- `99ea7e0`: `AUTO_LOOK_INSIDE_OTHER_SHARE = 20`. The theme build queues the run (job step "Waiting to
+  start", id in the theme job's `result.auto_look_inside`) and starts it after releasing its slot
+  (`start_job(then=...)`); without a TypeSafe key it records why it skipped. Each automatic run is paid
+  (Voyage + Claude + Jev). Step names: "Finding new groups", "Sorting into main themes and sub-themes",
+  "Matching answers to themes", "Updating the themes". The run stores `before_chart`. Look inside no
+  longer rebuilds the report (that BUG-053 behaviour is replaced: the user wants the Build report choice);
+  the report's themes signature still marks it out of date. A theme rebuild deletes the old run's job.
+- Frontend (this commit): Inside Other sits on the themes screen with the Look inside button; when a run
+  finishes, "First build" (the before chart), the flow, then "Updated themes", then Build report (disabled
+  while a run is going). The page follows the automatic run from the theme job's result, and resumes it
+  on reload. The report shows Inside Other only after a finished run, read-only.
+
