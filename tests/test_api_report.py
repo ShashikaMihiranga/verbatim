@@ -36,6 +36,62 @@ from tests.job_test_support import BlockingClient, wait_for_job
 Q = "What could we do better?"
 
 
+def test_stage5_views_and_numeric_score_grid_are_reachable_and_filter_aware(env):
+    """Existing saved reports gain views without a rebuild, extra finding or model call."""
+    df = survey_df(180, 60)
+    df['Customer type'] = ['A' if r < 120 else 'B' for r in range(240)]
+    df['Rating'] = [0 if r < 120 else 10 for r in range(240)]
+    df['Spend'] = [float(r % 4 * 100) for r in range(240)]
+    df['Date'] = [f'2025-{r // 80 + 1:02d}-15' for r in range(240)]
+    did = upload_csv(env, df)
+    profile = env.client.get(f'/api/datasets/{did}/profile').json()['profile']
+    kinds = {Q: 'open_text', 'Customer type': 'segment', 'Rating': 'score', 'Spend': 'numeric', 'Date': 'date'}
+    choices = [{'position': c['position'], 'name': c['name'], 'kind': kinds.get(c['name'], c['kind']), 'off': False}
+               for c in profile['columns']]
+    confirmed = env.client.patch(f'/api/datasets/{did}/columns', json={'columns': choices})
+    assert confirmed.status_code == 200, confirmed.text
+    applied = clean_and_apply(env, did)
+    assert applied['report']['rows_out'] == 240
+    specs = [
+        dict(label='Reliability', size=160, sentiment=-0.3, tone={'neg': 70, 'neu': 20, 'pos': 10}, answer_refs=list(range(160))),
+        dict(label='Support', size=40, sentiment=0.3, tone={'neg': 10, 'neu': 20, 'pos': 70}, answer_refs=list(range(160, 200))),
+        dict(label='Delivery', size=40, sentiment=-0.1, tone={'neg': 40, 'neu': 40, 'pos': 20}, answer_refs=list(range(200, 240))),
+    ]
+    seed_themes(env, did, specs)
+    with env.Session() as db:
+        theme = db.scalar(select(Theme).where(Theme.dataset_id == did, Theme.label == 'Reliability'))
+        blocks = [{'kind': 'overview', 'chart_id': 'overview', 'priority': 1, 'finding_id': None}]
+        for kind, chart in (('segment_skew', 'heatmap'), ('score_correlation', 'byScore'), ('trend_shift', 'trend')):
+            finding = Finding(dataset_id=did, theme_id=theme.id, sentence=f'Saved {kind} sentence.',
+                              chart_type=chart, confidence='solid', data={'column': Q, 'kind': kind, 'theme': theme.label})
+            db.add(finding)
+            db.flush()
+            blocks.append({'kind': 'finding', 'chart_id': chart, 'priority': 5, 'finding_id': finding.id})
+        blocks.append({'kind': 'quality', 'chart_id': 'quality', 'priority': 9, 'finding_id': None})
+        db.add(Report(dataset_id=did, content={'column': Q, 'question': Q, 'blocks': blocks}))
+        db.commit()
+    result = env.client.get(f'/api/datasets/{did}/report', params={'column': Q})
+    assert result.status_code == 200, result.text
+    report = result.json()
+    findings = [b for b in report['blocks'] if b['kind'] == 'finding']
+    assert len(findings) == 3
+    assert {'groupMix', 'groupSplitBars', 'sankey'} <= findings[0]['chart_variants'].keys()
+    assert 'sankey' in findings[1]['chart_variants']
+    assert 'slopeChange' in findings[2]['chart_variants']
+    assert [b['chart_id'] for b in findings] == ['heatmap', 'byScore', 'trend']
+    assert report['explorations'][0]['chart_id'] == 'binnedGrid'
+    assert {'name': 'Spend', 'role': 'numeric'} in report['columns_used']
+    assert report['blocks'][-1]['kind'] == 'quality'
+
+    filtered = env.client.get(f'/api/datasets/{did}/report', params={'column': Q, 'segment': 'A'})
+    assert filtered.status_code == 200, filtered.text
+    body = filtered.json()
+    assert body['explorations'] == []  # Rating becomes constant inside A; never reuse the unfiltered grid
+    assert all('groupSplitBars' not in b.get('chart_variants', {}) for b in body['blocks'])
+    assert all('sankey' not in b.get('chart_variants', {}) for b in body['blocks'])
+    assert [b['finding']['sentence'] for b in body['blocks'] if b['kind'] == 'finding'] == [b['finding']['sentence'] for b in findings]
+
+
 # ---------------------------------------------------------------- fixture data
 
 def _reliability_phrase(i: int) -> str:
@@ -275,7 +331,7 @@ def test_get_report_other_breakdown_none_with_two_ordinary_themes(env):
 
 # ---------------------------------------------------------------- chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2)
 
-def test_get_report_theme_chart_variants_has_five_safe_tabs_but_not_arc_or_sankey(env):
+def test_get_report_theme_chart_variants_only_include_eligible_views(env):
     """The chart-type switcher's safe-to-wire tabs are rendered from the SAME report_data the treemap
     above already used, with real theme names reaching real chart HTML - same discipline as
     test_build_then_get_round_trip_renders_real_chart_html_with_real_theme_names above. "arc" and
@@ -295,7 +351,8 @@ def test_get_report_theme_chart_variants_has_five_safe_tabs_but_not_arc_or_sanke
     body = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
 
     variants = body["theme_chart_variants"]
-    assert set(variants.keys()) == {"icicle", "sentsun", "rank", "diverge", "sunburst"}
+    # No stored sub-themes in this fixture: Stage 5 uses Stage 3's shared hierarchy guard.
+    assert set(variants.keys()) == {"sentsun", "rank", "diverge"}
     for variant_id, variant in variants.items():
         assert variant["chart_title"]
         assert "Reliability" in variant["chart_html"] and "Support" in variant["chart_html"]

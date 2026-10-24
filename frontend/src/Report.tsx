@@ -8,6 +8,7 @@ import OtherExploration from './OtherExploration'
 import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
 import ThemeChartTabs from './ThemeChartTabs'
+import FindingChartTabs from './FindingChartTabs'
 import ThemeDetail from './ThemeDetail'
 import './themes.css'
 import './report.css'
@@ -83,7 +84,7 @@ function FindingBlock({
           )}
         </div>
       </div>
-      <ChartFragment block={block} selectedTheme={selectedTheme} />
+      <FindingChartTabs block={block} selectedTheme={selectedTheme} />
       {open && finding.theme_id != null && <AnswerList id={datasetId} themeId={finding.theme_id} />}
     </Divider>
   )
@@ -195,6 +196,16 @@ export default function ReportView({
               <div className="rp-nothing">Also checked, nothing notable.</div>
             </Divider>
           )}
+
+      {(report.explorations ?? []).map((exploration) => (
+        <Divider key={exploration.chart_id ?? exploration.chart_title}>
+          <details className="rp-exploration">
+            <summary>Explore {exploration.chart_label ?? exploration.chart_title}</summary>
+            {exploration.chart_note && <p className="rp-method-note">{exploration.chart_note}</p>}
+            <ThemeChart fragment={exploration} title={exploration.chart_title} selectedTheme={selectedThemeName} />
+          </details>
+        </Divider>
+      ))}
 
       {quotes && <SupplementBlock block={quotes} />}
       {phrases && <SupplementBlock block={phrases} />}

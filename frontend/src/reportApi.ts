@@ -24,6 +24,8 @@ export interface ReportBlock {
   priority: number
   finding_id: number | null
   finding: ReportFinding | null
+  chart_variants?: Record<string, ReportThemeChartVariant>
+  compact_chart_id?: string
 }
 
 // One chip per column this report actually used - the report's own open-text column first (role
@@ -77,6 +79,10 @@ export interface ReportThemeSummary {
 // Keyed by chart id ("icicle" | "sentsun" | "rank") - deliberately no "arc" or "sankey" key; see
 // app/api_report.py's own comment for why those two are excluded from this feature.
 export interface ReportThemeChartVariant {
+  chart_id?: string
+  chart_label?: string
+  chart_note?: string
+  compact_chart_id?: string
   chart_title: string
   chart_html: string
   chart_width: number
@@ -93,6 +99,7 @@ export interface ReportFilters {
 }
 
 export interface ReportResponse {
+  explorations?: ReportThemeChartVariant[]
   dataset_id: number
   column: string
   question: string

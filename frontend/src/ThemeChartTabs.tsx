@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ReportBlock, ReportThemeChartVariant } from './reportApi'
 import ThemeChart from './ThemeChart'
+import { ResponsiveChart } from './FindingChartTabs'
 
 // Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): the mockup's 5-tab switcher, minus the two
 // tabs this stage deliberately defers - "Known themes" (a bespoke animated build, Stage 3) and "Arc"
@@ -38,6 +39,9 @@ export default function ThemeChartTabs({
 }) {
   const [active, setActive] = useState<string>('treemap')
   const available = VARIANT_ORDER.filter((v) => variants?.[v.id])
+  const effectiveActive = active === 'treemap' || available.some((v) => v.id === active) ? active : 'treemap'
+  const selected = variants?.[effectiveActive]
+  const compact = selected?.compact_chart_id ? variants[selected.compact_chart_id] : undefined
 
   if (available.length === 0) {
     // No variants reached the response (e.g. an older cached report) - render just the treemap, same as
@@ -56,8 +60,8 @@ export default function ThemeChartTabs({
         <button
           type="button"
           role="tab"
-          aria-selected={active === 'treemap'}
-          className={`rp-tab ${active === 'treemap' ? 'active' : ''}`}
+          aria-selected={effectiveActive === 'treemap'}
+          className={`rp-tab ${effectiveActive === 'treemap' ? 'active' : ''}`}
           onClick={() => setActive('treemap')}
         >
           Known themes
@@ -67,8 +71,8 @@ export default function ThemeChartTabs({
             key={v.id}
             type="button"
             role="tab"
-            aria-selected={active === v.id}
-            className={`rp-tab ${active === v.id ? 'active' : ''}`}
+            aria-selected={effectiveActive === v.id}
+            className={`rp-tab ${effectiveActive === v.id ? 'active' : ''}`}
             onClick={() => setActive(v.id)}
           >
             {v.label}
@@ -76,13 +80,13 @@ export default function ThemeChartTabs({
         ))}
       </div>
 
-      {active === 'treemap' ? (
+      {effectiveActive === 'treemap' ? (
         <ThemeChart
           fragment={overview} title={overview.chart_title} onThemeSelect={onThemeSelect}
           selectedTheme={selectedTheme} highlightOtherRunning={highlightOtherRunning}
         />
       ) : (
-        <ThemeChart fragment={variants[active]} title={variants[active].chart_title} selectedTheme={selectedTheme} />
+        <ResponsiveChart fragment={selected} compact={compact} title={selected.chart_title} selectedTheme={selectedTheme} onThemeSelect={onThemeSelect} />
       )}
     </div>
   )

@@ -1,6 +1,7 @@
 import html, math, random
 
 from .chart_data import ReportData
+from .charts_medium import f_group_mix
 
 
 def esc(s): return html.escape(str(s))
@@ -590,6 +591,9 @@ def trend_label(x, y, text, size, w=400, color="var(--ink)", anchor="start"):
 
 def f_trend(data: ReportData):
     tr = data.trend
+    if (len(tr.labels) < 2 or not tr.series or len(tr.sentiment) != len(tr.labels)
+            or any(len(s.values) != len(tr.labels) for s in tr.series)):
+        return frame("What's rising or fading?", "Not enough eligible periods under the current filters.", "", 240)
     MONTHS = tr.labels
     NP = len(MONTHS)
     S = [(x.theme, x.color, x.values) for x in tr.series]
@@ -1379,7 +1383,7 @@ def f_mekko(data: ReportData):
 
 # ---- sankey
 def f_sankey(data: ReportData):
-    W, H = 1084, 620
+    W, H = 1084, max(620, 36 * (len(data.score.bands) - 1) + 180)
     names = [t.name for t in data.themes]
     tcol = [t.color for t in data.themes]
     BYS = [(b.label, b.mix, b.sentiment, b.answers) for b in data.score.bands]
@@ -1390,13 +1394,16 @@ def f_sankey(data: ReportData):
         L.append([n * v / 100 for v in vals])
     M = [sum(L[b][i] for b in range(nb)) for i in range(nt)]
     tot = sum(M)
+    if tot <= 0:
+        return frame("Who says what, and how do they feel?", "No eligible grouped answers are available.", "", 320)
     R_ = [[M[i] * tones[names[i]][t] / 100 for i in range(nt)] for t in range(3)]
     RT = [sum(r) for r in R_]
-    s = (560 - (nt - 1) * 12) / tot
+    # All three columns must fit, including segment flows with more than three score-style bands.
+    s = (H - 60 - max((nt - 1) * 12, (nb - 1) * 36, 72)) / tot
     xl, xm, xr, nw = 170, 520, 900, 14
     y0l = (H - (tot * s + (nb - 1) * 36)) / 2
     y0m = (H - (tot * s + (nt - 1) * 12)) / 2
-    y0r = y0l
+    y0r = (H - (tot * s + 72)) / 2
     ly = []; y = y0l
     for b in range(nb):
         ly.append(y); y += sum(L[b]) * s + 36
@@ -1442,7 +1449,8 @@ def f_sankey(data: ReportData):
         o.append(T(xr + nw + 10, ry[t] + h / 2 - 10, lab, 16, 600))
         o.append(T(xr + nw + 10, ry[t] + h / 2 + 10, f"{fmt(round(RT[t]))} ({RT[t] / tot * 100:.0f}%)", 14, 400, "var(--muted)"))
     o.append("</svg>")
-    return frame("Who says what, and how do they feel?", "Answers flow from score group to theme to tone. Band height is number of answers.", "".join(o), 860)
+    source = "group" if data.score.name == data.segment.name else "score group"
+    return frame("Who says what, and how do they feel?", f"Answers flow from {source} to theme to tone. Band height is number of answers.", "".join(o), H + 240)
 
 # ---- arc diagram
 def f_arc(data: ReportData):
@@ -1866,6 +1874,7 @@ FRAMES = {
     "trend": f_trend, "quality": f_quality, "context": f_context, "tokens": f_tokens,
     "sunburst-mobile": f_sunburst_m, "rank-mobile": f_rank_m, "othergrowth": f_other_growth,
     "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
+    "groupMix": f_group_mix,
     "phrases": f_phrases, "toneByNumber": f_tone_by_number, "themeMixOverTime": f_theme_mix_over_time,
     "quotes": f_quotes, "freq": f_freq, "vsAverage": f_vs_average,
     "trendGroups": f_trend_groups, "trendStyled": f_trend_styled, "binnedGrid": f_binned_grid,
@@ -1873,6 +1882,7 @@ FRAMES = {
 
 # Human-readable title per frame id, for the chart list API.
 TITLES = {
+    "groupMix": "Group size and theme mix",
     "overview": "Overview", "sunburst": "Themes, sunburst", "treemap": "Themes, treemap", "icicle": "Themes, icicle",
     "sentsun": "Sentiment sunburst", "rank": "Rank themes", "diverge": "Diverging sentiment", "mekko": "Sentiment marimekko",
     "bubbles": "Theme similarity", "sankey": "Score to theme to tone", "arc": "Theme co-occurrence", "map": "Answer map",

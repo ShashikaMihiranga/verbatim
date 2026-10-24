@@ -221,3 +221,11 @@
   .lio-steps { flex-wrap: wrap; row-gap: 12px; }
   .lio-step-bar { display: none; }
 }
+.rp-chart-compact { display: none; }
+.rp-method-note { color: var(--muted); font-size: 14px; line-height: 1.55; margin: 12px 0; max-width: 900px; }
+.rp-exploration > summary { color: var(--accent); cursor: pointer; font-size: 18px; font-weight: 500; }
+.rp-exploration > summary:focus-visible, .rp-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+@media (max-width: 640px) {
+  .rp-chart-desktop { display: none; }
+  .rp-chart-compact { display: block; }
+}

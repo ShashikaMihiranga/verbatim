@@ -68,6 +68,7 @@ from .findings_structured import (
 )
 from .jobs import create_job, start_job
 from .models import Column, Dataset, Finding, Report, Theme, User
+from .report_medium import comparison_groups, complete_numeric_grid, finding_views, numeric_explorations, theme_views
 from .text_pipeline import ClaudeClient
 from .text_pipeline.labeling import OTHER_LABEL
 
@@ -268,10 +269,14 @@ def _render_report(
     ).all())
     clean_df, plan = _load_clean_df(ds, db)
     structured = _structured_context_for(db, ds, clean_df, plan, themes)
+    source_columns = {'score_correlation': structured.score_column_name,
+                      'segment_skew': structured.segment_column_name, 'trend_shift': structured.trend_column_name}
     filter_options = _filter_options_for(structured)
     filter_rows = resolve_filter_rows(structured, segment, score_band, date_from, date_to)
     if filter_rows is not None:
         structured = _structured_context_for(db, ds, clean_df, plan, themes, filter_rows=filter_rows)
+    current_columns = {'score_correlation': structured.score_column_name,
+                       'segment_skew': structured.segment_column_name, 'trend_shift': structured.trend_column_name}
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
     answer_texts = _answer_texts_for(clean_df, column, themes)
     quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes)
@@ -283,6 +288,9 @@ def _render_report(
         structured=structured, filter_rows=filter_rows,
     )
     breakdown, all_themes = other_breakdown(themes, report_data.answered, filter_rows=filter_rows)
+    comparison_data = comparison_groups(report_data, clean_df)
+    report_data = complete_numeric_grid(report_data, clean_df, pick_structured_columns(ds.id, db))
+    explorations = numeric_explorations(report_data)
 
     # Chart-type switcher (docs/TODO.md, 2026-10-21 Stage 2): alternate views of the SAME theme data the
     # treemap above already shows, rendered from the ONE already-built `report_data` (never rebuilt per
@@ -301,13 +309,7 @@ def _render_report(
     # app/report_blocks.py's new "tone_split"/"theme_hierarchy" blocks name them as their chart_id. This
     # is the SAME "just expose it as a variant tab" treatment icicle/sentsun/rank already got - no new
     # finding-selection logic, that stage is explicitly deferred (see the plan's reordering note).
-    theme_chart_variants = {}
-    for variant_id in ("icicle", "sentsun", "rank", "diverge", "sunburst"):
-        v_html, v_width, v_height = render_parts(variant_id, report_data)
-        theme_chart_variants[variant_id] = {
-            "chart_title": TITLES.get(variant_id, variant_id),
-            "chart_html": v_html, "chart_width": v_width, "chart_height": v_height,
-        }
+    theme_chart_variants = theme_views(report_data)
 
     blocks_content = content.get("blocks") or []
     finding_ids = [b["finding_id"] for b in blocks_content if b.get("finding_id") is not None]
@@ -372,6 +374,14 @@ def _render_report(
             block["finding"] = {
                 "id": f.id, "theme_id": f.theme_id, "sentence": f.sentence, "confidence": f.confidence,
             }
+            finding_data = f.data if isinstance(f.data, dict) else {}
+            kind = finding_data.get("kind", "")
+            block["chart_variants"] = finding_views(
+                block_data, finding_data.get("kind", ""), finding_data.get("theme", ""), comparison_data,
+            ) if source_columns.get(kind) == current_columns.get(kind) else {}
+            if chart_id == "sunburst" and "icicle" in theme_chart_variants:
+                block["compact_chart_id"] = "icicle"
+                block["chart_variants"]["icicle"] = theme_chart_variants["icicle"]
         blocks_out.append(block)
 
     # SPEC.md section 2's "aggregated numbers only" rule applies to this header line too: it is plain
@@ -392,6 +402,12 @@ def _render_report(
         columns_used.append({"name": structured.segment_column_name, "role": _column_role(db, ds.id, structured.segment_column_name, "segment")})
     if structured.trend is not None:
         columns_used.append({"name": structured.trend_column_name, "role": "date"})
+    if explorations:
+        used = {c["name"] for c in columns_used}
+        for name in (report_data.binned_grid.row_name, report_data.binned_grid.col_name):
+            if name not in used:
+                columns_used.append({"name": name, "role": _column_role(db, ds.id, name, "numeric")})
+                used.add(name)
 
     return {
         "dataset_id": ds.id,
@@ -421,6 +437,7 @@ def _render_report(
             {"name": t.name, "share": t.share, "count": t.count, "sentiment": t.sentiment} for t in all_themes
         ],
         "theme_chart_variants": theme_chart_variants,
+        "explorations": explorations,
     }
 
 
