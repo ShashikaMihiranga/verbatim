@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import threading
+from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
@@ -55,7 +56,7 @@ from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, theme_nodes
-from .jobs import REPORT_JOB_MAX_AGE, blocking_job, create_job, set_progress, start_job
+from .jobs import REPORT_JOB_MAX_AGE, _mark_failed, blocking_job, create_job, set_progress, start_job
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
     AnswerScore,
@@ -783,6 +784,12 @@ def build_themes(
     dataset_id_ = ds.id
     use_jev = body.use_jev_sentiment
     job = create_job(db, dataset_id_, column, "themes")
+    # A Look inside run belongs to the themes it looked at: a rebuild must not show the old run's result.
+    for old in db.scalars(select(Job).where(
+            Job.dataset_id == dataset_id_, Job.column_name == column, Job.kind == "look_inside_other")).all():
+        db.delete(old)
+    db.commit()
+    auto_look: list = []  # filled by _work when Look inside Other should start on its own
     # A cheap raw non-null count (not the real masked/cleaned answer count `embed_and_cluster_with_vectors`
     # computes later) is enough to size the watchdog - see `_themes_deadline_for`'s own comment for why a
     # flat 300s was confirmed live to kill a real, still-progressing large build.
@@ -829,6 +836,25 @@ def build_themes(
             if col_row is not None:
                 col_row.answer_positions = {str(r): list(xy) for r, xy in positions.items()}
                 job_db.commit()
+            queued = _queue_auto_look_inside(job_db, job.id, dataset_id_, column, jev_factory)
+            if queued is not None:
+                auto_look.append(queued)
+
+    def _then() -> None:
+        if not auto_look:
+            return
+        look_job, prep, look_jev = auto_look[0]
+        # The theme build just released its slot; wait for it (another build may have taken it first).
+        if not _SLOTS.acquire(timeout=AUTO_LOOK_INSIDE_SLOT_WAIT):
+            _mark_failed(look_job.id, "Theme building was busy, so Look inside Other did not start. Try it again.")
+            return
+        try:
+            _start_look_inside(look_job, dataset_id_, column, clean_df, plan, prep,
+                               embedding_client, claude_client, look_jev)
+        except Exception:
+            _SLOTS.release()
+            _mark_failed(look_job.id, "Look inside Other could not start. Try it again.")
+            raise
 
     start_job(
         job, _SLOTS, _work, _theme_build_error,
@@ -837,6 +863,7 @@ def build_themes(
             f"Building themes took longer than {int(deadline)} seconds and did not finish "
             "in time. Try again, or with a smaller file."
         ),
+        then=_then,
     )
 
     return {"job_id": job.id, "status": "running"}
@@ -847,30 +874,68 @@ class LookInsideOtherRequest(BaseModel):
     column: str = Field(max_length=255)
 
 
-@router.post("/datasets/{dataset_id}/themes/look-inside-other", status_code=202)
-def look_inside_other(
-    dataset_id: int,
-    body: LookInsideOtherRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(current_user),
-    embedding_client: EmbeddingClient = Depends(get_embedding_client),
-    claude_client: ClaudeClient = Depends(get_claude_client),
-    jev_client: JevClient = Depends(get_jev_client),
-):
-    """"Look inside Other" (docs/TODO.md, 2026-10-21): re-clusters a column's "Other" answers, labels and
-    consolidates what it finds against the column's own known themes, classifies every Other answer
-    against the combined set via Jev, and updates `Theme` rows accordingly - see
-    `app/text_pipeline/other_classify.py`'s own docstring for the full mechanism. Same
-    validate-cheap-things-synchronously-then-run-in-a-background-job shape as `build_themes` above,
-    sharing its `_SLOTS` concurrency pool (this is the same class of heavy embed+Claude+Jev work, not a
-    separate budget)."""
-    ds = _own_dataset(db, user, dataset_id, min_role="editor")
-    clean_df, plan = _load_clean_df(ds, db)
-    column = body.column
-    if column not in plan.columns:
-        raise HTTPException(422, "Unknown column.")
-    _refuse_while_report_builds(db, ds.id, column)
+# Look inside Other starts on its own after a theme build when Other holds more than this share of the
+# answers (user decision, 2026-10-25: a big Other is our problem to solve, not the user's).
+AUTO_LOOK_INSIDE_OTHER_SHARE = 20.0
+AUTO_LOOK_INSIDE_SLOT_WAIT = 600.0  # seconds to wait for a free theme-building slot
 
+
+def _queue_auto_look_inside(
+    db: Session, themes_job_id: int, dataset_id: int, column: str, jev_factory: Callable[[], JevClient],
+) -> tuple[Job, "_LookInsidePlan", JevClient] | None:
+    """Decides, right after a theme build wrote its themes, whether Look inside Other runs on its own.
+    When it does, creates its job now (step "Waiting to start") so the page can follow it the moment the
+    theme build reports done, and returns what `_start_look_inside` needs. Either way the decision is
+    written to the theme build's `result["auto_look_inside"]`: `{other_share, job_id}` or `{other_share,
+    skipped}` (e.g. no TypeSafe key), so the page can say why it did not run."""
+    rows = _stored_themes(db, dataset_id, column)
+    total = sum(t.size for t in rows)
+    other = next((t for t in rows if t.label == "Other"), None)
+    if other is None or total == 0:
+        return None
+    share = 100 * other.size / total
+    if share <= AUTO_LOOK_INSIDE_OTHER_SHARE:
+        return None
+    info: dict = {"other_share": round(share, 1)}
+    queued = None
+    try:
+        jev = jev_factory()
+        prep = _plan_look_inside(db, db.get(Dataset, dataset_id), column)
+    except JevNotConfigured:
+        info["skipped"] = "Looking inside Other needs a TypeSafe key (TYPESAFE_API_KEY) that is not configured yet."
+    except _LookInsideRefused as e:
+        info["skipped"] = e.message
+    else:
+        look_job = create_job(db, dataset_id, column, "look_inside_other")
+        look_job.step = "Waiting to start"
+        info["job_id"] = look_job.id
+        queued = (look_job, prep, jev)
+    themes_job = db.get(Job, themes_job_id)
+    if themes_job is not None:
+        themes_job.result = {**(themes_job.result or {}), "auto_look_inside": info}
+    db.commit()
+    return queued
+
+
+class _LookInsideRefused(Exception):
+    """Look inside Other cannot run for this column (no Other, Other empty); `status` is the HTTP code the
+    route answers with, the theme build's automatic run just skips."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+@dataclass
+class _LookInsidePlan:
+    question: str
+    other_theme_id: int
+    other_refs: list[int]
+    known_themes: dict[str, str | None]
+
+
+def _plan_look_inside(db: Session, ds: Dataset, column: str) -> _LookInsidePlan:
     confirmed = (ds.profile or {}).get("confirmed") or {}
     question = (confirmed.get("question") or "").strip()
     if not question:
@@ -880,12 +945,12 @@ def look_inside_other(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column, Theme.label == "Other")
     )
     if other is None:
-        raise HTTPException(
+        raise _LookInsideRefused(
             409, 'There is no "Other" group for this column - build themes first, or everything already '
             "fits a known theme.",
         )
     if not other.answer_refs:
-        raise HTTPException(409, '"Other" has no answers to look inside.')
+        raise _LookInsideRefused(409, '"Other" has no answers to look inside.')
 
     known_themes = {
         t.label: t.description
@@ -893,20 +958,28 @@ def look_inside_other(
             select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column, Theme.label != "Other")
         ).all()
     }
+    return _LookInsidePlan(question, other.id, list(other.answer_refs or []), known_themes)
 
-    if not _SLOTS.acquire(blocking=False):
-        raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
 
-    dataset_id_ = ds.id
-    other_theme_id = other.id
-    other_refs = list(other.answer_refs or [])
-    job = create_job(db, dataset_id_, column, "look_inside_other")
+def _start_look_inside(
+    job: Job, dataset_id_: int, column: str, clean_df: pd.DataFrame, plan: CleaningPlan, prep: _LookInsidePlan,
+    embedding_client: EmbeddingClient, claude_client: ClaudeClient, jev_client: JevClient,
+) -> None:
+    """Runs a Look inside Other job that `create_job` already made. `_SLOTS` must already be acquired."""
+    question = prep.question
+    other_theme_id = prep.other_theme_id
+    other_refs = prep.other_refs
+    known_themes = prep.known_themes
     # Sized to Other's own answer count, not the whole dataset's - this job's real work (re-embed,
     # re-cluster, classify) only ever touches the Other-bucket rows, never the full column.
-    deadline = _themes_deadline_for(len(other_refs)) + 120  # + the report refresh at the end
+    deadline = _themes_deadline_for(len(other_refs))
 
     def _work(step: Callable[[str], None]) -> None:
-        step("Finding patterns in Other")
+        step("Finding new groups")
+        with _db.SessionLocal() as snap_db:
+            # The themes as they were before this run, shown above the updated ones when it finishes.
+            before_chart = _themes_chart_payload(
+                snap_db.get(Dataset, dataset_id_), _stored_themes(snap_db, dataset_id_, column), column)
         other_refs_set = set(other_refs)
         masked = model_safe_column(clean_df, plan, column)
         row_text: dict[int, str] = {
@@ -919,7 +992,7 @@ def look_inside_other(
         vectors = embedding_client.embed(texts)
         reclustered = recluster_other(rows, texts, vectors)
 
-        step("Naming new themes")
+        step("Sorting into main themes and sub-themes")
         candidates = label_and_consolidate(reclustered, question, claude_client, for_other=True,
                                            existing_themes=known_themes)
         criteria, new_label_descriptions = build_classification_question(known_themes, candidates)
@@ -958,7 +1031,7 @@ def look_inside_other(
             # Every call failed: a systemic problem (key, credit, outage), not "nothing matched". Fail the
             # job before anything is applied, with the real reason (docs/BUGS.md BUG-040).
             raise JevError(_all_rows_failed_message(len(classify_rows), classification.sample_error))
-        step("Updating the report")
+        step("Updating the themes")
         vec_by_row = dict(zip(rows, vectors))
         with _db.SessionLocal() as job_db:
             summary = _apply_other_classification(
@@ -982,19 +1055,8 @@ def look_inside_other(
                     )
                 ).all())
                 summary["charts"] = _build_other_result_charts(new_theme_rows)
-            # "Updating the report" means it: the findings are rebuilt from the changed themes (one Claude
-            # call, as Rebuild report). The theme changes above are already committed, so a failure here
-            # only leaves the report stale - it shows its Rebuild banner - and never fails the run.
             if summary is not None:
-                from .api_report import _report_build_error, refresh_report  # deferred: api_report imports us
-
-                try:
-                    summary["report_updated"] = refresh_report(job_db, dataset_id_, column, claude_client)
-                except Exception as e:  # noqa: BLE001 - any failure is reported, the run itself succeeded
-                    job_db.rollback()
-                    log.warning("Look inside Other: report refresh failed", exc_info=True)
-                    summary["report_updated"] = False
-                    summary["report_error"] = _report_build_error(e) or "The report could not be updated."
+                summary["before_chart"] = before_chart
             # Written in the SAME session/commit as the Theme-row changes above, not via jobs.py's own
             # `_set_step`/`_mark_done` (those only ever touch a still-"running" job, guarding against a
             # watchdog that already failed it out from under this thread - writing `result` here, before
@@ -1014,6 +1076,40 @@ def look_inside_other(
             "Try again."
         ),
     )
+
+
+@router.post("/datasets/{dataset_id}/themes/look-inside-other", status_code=202)
+def look_inside_other(
+    dataset_id: int,
+    body: LookInsideOtherRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+    embedding_client: EmbeddingClient = Depends(get_embedding_client),
+    claude_client: ClaudeClient = Depends(get_claude_client),
+    jev_client: JevClient = Depends(get_jev_client),
+):
+    """"Look inside Other" (docs/TODO.md, 2026-10-21): re-clusters a column's "Other" answers, labels and
+    consolidates what it finds against the column's own known themes, classifies every Other answer
+    against the combined set via Jev, and updates `Theme` rows accordingly - see
+    `app/text_pipeline/other_classify.py`'s own docstring for the full mechanism. Same
+    validate-cheap-things-synchronously-then-run-in-a-background-job shape as `build_themes` above,
+    sharing its `_SLOTS` concurrency pool (this is the same class of heavy embed+Claude+Jev work, not a
+    separate budget)."""
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    clean_df, plan = _load_clean_df(ds, db)
+    column = body.column
+    if column not in plan.columns:
+        raise HTTPException(422, "Unknown column.")
+    _refuse_while_report_builds(db, ds.id, column)
+    try:
+        prep = _plan_look_inside(db, ds, column)
+    except _LookInsideRefused as e:
+        raise HTTPException(e.status, e.message) from e
+
+    if not _SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
+    job = create_job(db, ds.id, column, "look_inside_other")
+    _start_look_inside(job, ds.id, column, clean_df, plan, prep, embedding_client, claude_client, jev_client)
     return {"job_id": job.id, "status": "running"}
 
 
@@ -1350,7 +1446,12 @@ def themes_chart(
     rows = _stored_themes(db, ds.id, column)
     if not rows:
         raise HTTPException(404, "No themes have been built yet for this column. Build themes first.")
+    return _themes_chart_payload(ds, rows, column)
 
+
+def _themes_chart_payload(ds: Dataset, rows: list[Theme], column: str) -> dict:
+    """The treemap fragment `themes_chart` returns, also snapshotted by Look inside Other before it
+    changes anything (its "before" chart)."""
     total = sum(t.size for t in rows)
     nodes = theme_nodes(rows, total)
     question = question_for(ds, column)

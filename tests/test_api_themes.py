@@ -35,7 +35,7 @@ from app.api_upload import current_user
 from app.db import Base, get_db
 from app.main import app
 from app.text_pipeline import FakeEmbeddingClient, FakeJevClient
-from app.text_pipeline.jev_sentiment import ChoiceAnswer
+from app.text_pipeline.jev_sentiment import ChoiceAnswer, JevNotConfigured
 from app.text_pipeline.other_classify import NONE_OF_THESE
 from app.text_pipeline.labeling import FakeClaudeClient as FakeLabelingClaudeClient
 from tests.job_test_support import BlockingClient, wait_for_job
@@ -1102,6 +1102,9 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
     job = look_inside_other_job(env, did, timeout=30)
     assert job["status"] == "done", job
     assert job["error"] is None
+    # The themes chart as it was before the run, shown above the updated one (user flow, 2026-10-25).
+    before = job["result"].pop("before_chart")
+    assert "Other" in before["chart_html"] and before["chart_width"] > 0
     # Stage 3 (docs/TODO.md, 2026-10-21): the job's own `result` carries the real Known/New/Still-in-Other
     # counts the animated flow's results panel needs - written in the same commit as the Theme-row changes,
     # not reconstructed from a second query.
@@ -1111,7 +1114,6 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
         # Inside Other panel fields (docs/REPORT_UI_REWORK.md Phase 1): Other held 3 before, 5 + 3 answered.
         "other_before_count": 3, "answered_total": 8, "known_gains": [{"label": "Cost", "count": 3}],
         "sub_theme_gains": [],
-        "report_updated": False,  # no report had been built for this column, so there was none to refresh
     }
     # Live progress was written during the matching step and ends complete.
     assert job["progress"]["done"] == job["progress"]["total"] == 3
@@ -1156,31 +1158,6 @@ def _build_report(env, did):
     assert job["status"] == "done", job
 
 
-def _report_id(env, did):
-    with env.Session() as s:
-        from app.models import Report
-        return [r.id for r in s.query(Report).filter(Report.dataset_id == did).all()]
-
-
-def test_look_inside_other_refreshes_the_report_it_changed(env):
-    """User report, 2026-10-25: Look inside showed the new themes, but the rest of the report kept its old
-    findings. Its last step ("Updating the report") now rebuilds the findings from the changed themes."""
-    install_look_inside_other_fakes(jev_choice_result=ChoiceAnswer(choice="Cost", confidence=0.9, probabilities={}))
-    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_reply_with_headlines)
-    did = _seed_cost_and_other(env)
-    _build_report(env, did)
-
-    job = look_inside_other_job(env, did, timeout=30)
-    assert job["status"] == "done", job
-    assert job["result"]["report_updated"] is True
-    assert "report_error" not in job["result"]
-    assert len(_report_id(env, did)) == 1
-    # Cost grew from 5 to 8 answers: the old report would read as stale (see the next test); this one was
-    # written from the new themes.
-    report = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
-    assert report["stale"] is False
-
-
 def test_report_is_stale_when_its_themes_changed_even_if_none_was_deleted(env):
     """A theme that only grew (Look inside, or any later edit) leaves no finding about a deleted theme,
     so the old orphan check missed it. The stored themes signature catches it."""
@@ -1195,29 +1172,6 @@ def test_report_is_stale_when_its_themes_changed_even_if_none_was_deleted(env):
         cost.size = 6
         cost.answer_refs = [0, 1, 2, 3, 4, 13]
         s.commit()
-    assert env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()["stale"] is True
-
-
-def test_look_inside_other_still_succeeds_when_the_report_refresh_fails(env, monkeypatch):
-    """The theme changes are already committed when the report refresh runs; if it fails (Claude down,
-    say) the run still finishes, says the report was not updated, and the report shows as stale."""
-    import app.api_report as api_report
-
-    install_look_inside_other_fakes(jev_choice_result=ChoiceAnswer(choice="Cost", confidence=0.9, probabilities={}))
-    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_reply_with_headlines)
-    did = _seed_cost_and_other(env)
-    _build_report(env, did)
-
-    def broken(*args, **kwargs):
-        raise RuntimeError("Claude is down")
-
-    monkeypatch.setattr(api_report, "build_findings", broken)
-
-    job = look_inside_other_job(env, did, timeout=30)
-    assert job["status"] == "done", job
-    assert job["result"]["report_updated"] is False
-    assert job["result"]["report_error"]
-    assert job["result"]["known_added"] == 3  # the themes did change
     assert env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()["stale"] is True
 
 
@@ -1939,3 +1893,85 @@ def test_other_result_charts_build_an_icicle_only_when_a_new_theme_has_sub_theme
             {"label": "Accessible spaces", "size": 15, "sentiment": 0.0, "tone": {"neg": 20, "neu": 60, "pos": 20}}]
     with_subs = [theme(1, "Parking", 40, subs), theme(2, "Elevators", 30)]
     assert set(_build_other_result_charts(with_subs)) == {"icicle"}
+
+
+# ---------------------------------------------------------------- automatic Look inside after a theme build
+# User decision, 2026-10-25: when Other holds more than AUTO_LOOK_INSIDE_OTHER_SHARE of the answers, the
+# theme build starts Look inside Other on its own.
+
+def _df_with_noise() -> pd.DataFrame:
+    """theme_df plus 10 answers that share no topic, so the build leaves an Other group (5 of 36 here)."""
+    rnd = random.Random(1)
+    words = ["zebra", "quartz", "violin", "lagoon", "maple", "comet", "walrus", "tundra", "nickel", "pepper",
+             "orbit", "cactus"]
+    extra = [" ".join(rnd.sample(words, 3)) + f" {i}" for i in range(10)]
+    return pd.concat([theme_df(), pd.DataFrame({"Respondent ID": range(100, 110), Q: extra})],
+                     ignore_index=True).astype(object)
+
+
+def _install_auto_fakes(jev=True):
+    install_fakes()
+
+    def factory():
+        if not jev:
+            raise JevNotConfigured("no key")
+        return FakeJevClient(("pos", 0.8), choice_result=ChoiceAnswer(choice=NONE_OF_THESE, confidence=0.9,
+                                                                       probabilities={}))
+    app.dependency_overrides[get_jev_client_factory] = lambda: factory
+
+
+def test_theme_build_starts_look_inside_when_other_is_over_the_threshold(env, monkeypatch):
+    import app.api_themes as api_themes
+    monkeypatch.setattr(api_themes, "AUTO_LOOK_INSIDE_OTHER_SHARE", 10.0)  # this fixture's Other is ~14%
+    _install_auto_fakes()
+    did = upload_csv(env, _df_with_noise())
+    clean_and_apply(env, did)
+
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    auto = job["result"]["auto_look_inside"]
+    assert auto["other_share"] > 10 and "skipped" not in auto
+    look = wait_for_job(env.client, did, auto["job_id"], timeout=30)
+    assert look["kind"] == "look_inside_other" and look["status"] == "done", look
+    assert look["result"]["before_chart"]["chart_html"]
+    latest = env.client.get(f"/api/datasets/{did}/jobs/latest",
+                            params={"column": Q, "kind": "look_inside_other"}).json()
+    assert latest["id"] == auto["job_id"]
+
+
+def test_theme_build_does_not_start_look_inside_at_or_under_the_threshold(env):
+    _install_auto_fakes()  # real threshold, 20%: this fixture's Other is ~14%
+    did = upload_csv(env, _df_with_noise())
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    assert not (job["result"] or {}).get("auto_look_inside")
+
+
+def test_theme_build_says_why_look_inside_did_not_start_without_a_jev_key(env, monkeypatch):
+    import app.api_themes as api_themes
+    monkeypatch.setattr(api_themes, "AUTO_LOOK_INSIDE_OTHER_SHARE", 10.0)
+    _install_auto_fakes(jev=False)
+    did = upload_csv(env, _df_with_noise())
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    auto = job["result"]["auto_look_inside"]
+    assert "TYPESAFE_API_KEY" in auto["skipped"] and "job_id" not in auto
+
+
+def test_rebuilding_themes_drops_the_previous_look_inside_result(env):
+    """A Look inside result describes the themes it looked at; after a rebuild the page must not show it."""
+    install_look_inside_other_fakes(jev_choice_result=ChoiceAnswer(choice="Cost", confidence=0.9, probabilities={}))
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="Cost", description="About pricing.", size=5, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4])
+    seed_theme(env, did, label="Other", description="x", size=3, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[13, 14, 15])
+    assert look_inside_other_job(env, did, timeout=30)["status"] == "done"
+
+    install_fakes()
+    assert build_themes_job(env, did, timeout=30)["status"] == "done"
+    r = env.client.get(f"/api/datasets/{did}/jobs/latest", params={"column": Q, "kind": "look_inside_other"})
+    assert r.status_code == 404 or r.json() is None

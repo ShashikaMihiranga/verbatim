@@ -21,6 +21,7 @@ work finishes" is identical in both - that part is written once, here.
 """
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -30,6 +31,8 @@ from sqlalchemy.orm import Session
 
 from . import db as _db
 from .models import Job
+
+log = logging.getLogger("verbatim.jobs")
 
 
 def _utc_iso(value: datetime) -> str:
@@ -160,6 +163,7 @@ def start_job(
     *,
     deadline_seconds: float | None = None,
     deadline_message: str | None = None,
+    then: Callable[[], None] | None = None,
 ) -> threading.Thread:
     """Starts `work` in a daemon thread and returns immediately - the caller (the HTTP route) returns its
     202 response right after calling this, never waiting on the thread.
@@ -183,6 +187,10 @@ def start_job(
     completion in the background regardless (its result is then discarded by `_mark_done`/`_mark_failed`'s
     own "only touch a still-running job" guard above). This at least gives a caller a definite, honest
     answer ("took too long") instead of a job stuck at "running" forever if some inner step truly hangs.
+
+    `then`, when given, runs on the same thread after a successful `work`, once the job is marked done and
+    its slot released - so it can start a follow-up job that needs the same slot (the theme build's
+    automatic Look inside Other). Its own errors are logged, never turned into this job's failure.
     """
     job_id = job.id
 
@@ -200,6 +208,11 @@ def start_job(
             _mark_done(job_id)
         finally:
             slots.release()
+        if then is not None:
+            try:
+                then()
+            except Exception:  # noqa: BLE001 - a follow-up must never undo the finished job
+                log.exception("follow-up after job %s failed", job_id)
 
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()

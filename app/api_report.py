@@ -589,19 +589,6 @@ def _report_inputs(db: Session, ds: Dataset, column: str) -> dict[str, Any]:
     return inputs
 
 
-def refresh_report(db: Session, dataset_id: int, column: str, claude_client: ClaudeClient) -> bool:
-    """Rebuilds the column's report from its current themes, inside a job that already changed them
-    (Look inside Other). One Claude call, the same as the Rebuild report button. Returns False, doing
-    nothing, when the column has no report yet; raises whatever `build_findings` raises."""
-    ds = db.get(Dataset, dataset_id)
-    if ds is None or _latest_report_for_column(db, dataset_id, column) is None:
-        return False
-    report = build_findings(ds, column, db, claude_client, cleaning_report=_cleaning_report_for(ds),
-                            **_report_inputs(db, ds, column))
-    _render_report(db, ds, column, report)
-    return True
-
-
 def _parse_filter_date(value: str | None, param_name: str) -> date | None:
     if value is None:
         return None
