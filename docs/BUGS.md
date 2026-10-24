@@ -19,6 +19,58 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Open
 
+- [ ] **BUG-041 — Region findings compare against the wrong baseline, so they are false (dataset 12)**
+  - Found: 2026-10-25, Claude, from the user's dataset 12 screenshot. Three findings say "privacy, safety,
+    and layout design for patient care" is almost never mentioned in regions 9, 11 and 3 ("about a thirtieth
+    as often as overall").
+  - Cause: only 24,961 of 40,000 rows have a Region. The theme has 1,351 answers but only 39 of them have a
+    Region. The heatmap's "overall 3.4%" is the theme's share of *all* answers; each region cell is its share
+    of that region's answers. Among rows that have a Region the theme is 0.16% overall, so no region is
+    unusual. `build_segment_data` takes `SegmentRow.overall` from `ThemeNode.share` (docstring: "never a
+    value recomputed from this subset"), which is wrong when many rows have no group.
+  - Fix: proposed - compute `overall` over rows that have a group (`app/findings_structured.py`), and add a
+    test with missing groups. Same check for score and date (`build_score_data`, `build_trend_data`).
+- [ ] **BUG-042 — The same theme gets several near-identical findings (one per region)**
+  - Found: 2026-10-25, Claude, dataset 12: three heatmap findings, same theme and chart, only the
+    highlighted cell differs.
+  - Fix: proposed - at most one segment finding per theme (keep the strongest). Recheck after BUG-041,
+    which removes these three anyway.
+- [ ] **BUG-043 — With 120 themes, the treemap shows 7 and folds 113 into "Other 50.7%"; Inside Other
+  then says Other is 0%**
+  - Found: 2026-10-25, user (screenshot) and Claude, dataset 12. The treemap's Other = 12 unthemed answers
+    + 113 real themes that have no colour (`other_breakdown.hidden_real_share` 50.7). Inside Other only
+    counts the 12 unthemed answers ("0% of all answers. It was 1.7% before"), so the two sections
+    contradict each other.
+  - Fix: needs a user decision - e.g. call the treemap block "113 more themes" instead of "Other", and/or
+    show the folded themes in Inside Other's "See all 120 themes". Also why 120 themes: see BUG-048.
+- [ ] **BUG-044 — The overview draws the icicle on desktop for dataset 12, with rotated, broken labels**
+  - Found: 2026-10-25, user (screenshot). `_prefers_icicle` picks the icicle when the treemap can't fit;
+    labels then rotate and break mid-word ("Temperat ure", "Privac y"), sub-themes hang below, there is a
+    large empty area under the biggest theme, and no "Look inside ↓" hint.
+  - Fix: proposed - in the report, keep the treemap on desktop and show tiny themes as labelled slivers;
+    no mid-word breaks.
+- [ ] **BUG-045 — Known themes in Inside Other show "+0%" for real gains**
+  - Found: 2026-10-25, dataset 12: 18 answers out of 39,718 rounds to 0.0%, printed as "+0%".
+  - Fix: proposed - print the answer count when the share rounds to 0 (e.g. "+18").
+- [ ] **BUG-046 — "Done. Everything is updated above." while the report is stale**
+  - Found: 2026-10-25, dataset 12: Look inside finished after the report was built; the findings are still
+    the old ones (stale banner at the top).
+  - Fix: proposed - when the report is stale say "Done. Rebuild the report to update the findings."
+- [ ] **BUG-047 — While the report loads (about 6 s on dataset 12), the page shows the theme-editing view
+  with "Build report"**
+  - Found: 2026-10-25, user (second screenshot) and Claude. `GET /report` takes 5.7 s; until it returns the
+    page shows the treemap, theme card, a 121-checkbox merge list and "Ready to build the report".
+  - Fix: proposed - show a loading line for the report instead of the editing view; make the merge list
+    a search box rather than 121 checkboxes.
+- [ ] **BUG-048 — Dataset 12 has 120 themes, many of them junk ("No comment provided", "Survey not
+  applicable or irrelevant", "Non-substantive or referential response")**
+  - Found: 2026-10-25, Claude. Theme build gave 46 clusters; splits and repeated Look inside runs added the
+    rest. Look inside creates new themes from non-answers.
+  - Fix: needs a user decision; ties in with BUG-032.
+- [ ] **BUG-049 — A heatmap opened scrolled sideways, with its theme-name column cut off**
+  - Found: 2026-10-25, Claude, dataset 12 at 1568px: the first heatmap's scroll box was at its end
+    (32 of 32px), hiding the left labels.
+  - Cause: not found yet (no code scrolls it). Needs a repro.
 - [ ] **BUG-031 — Dataset 12's report still shows findings for deleted themes**
   - Found: 2026-10-24, Claude, dataset 12 report. Leftover from BUG-022, which stops it happening again.
   - Cause: the report was built while a theme rebuild was running (BUG-022).
