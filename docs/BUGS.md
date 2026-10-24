@@ -59,7 +59,7 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
   - Found: 2026-10-25, user's real run on dataset 11 (job 47). All 314 answers failed with
     `Jev returned HTTP 402` (payment required: the Jev account looks out of credit).
   - Cause: `classify_other_answers` logged "EVERY row failed" but the job still finished as done.
-  - Fix: `<pending>`; when every answer fails the job fails before anything is applied, with the reason
+  - Fix: `55d6ebd`; when every answer fails the job fails before anything is applied, with the reason
     and a hint ("…Jev returned HTTP 402 (payment required: check the Jev account's credit)."). The page shows
     it with the Look inside button. · Test:
     `test_look_inside_other_fails_with_the_real_reason_when_every_answer_fails`.
