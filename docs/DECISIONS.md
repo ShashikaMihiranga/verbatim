@@ -3039,3 +3039,12 @@ message, and a freshly loaded report page showed the theme progress and a disabl
 test row was then deleted. Note: the follow-up check that a build is allowed again started a real report
 build for dataset 11 (one Claude call, done cleanly) - it should have been checked without starting one.
 Dataset 12 still needs Rebuild report (user's call).
+
+## 2026-10-24 (REPORT-UI-DOC: hand-off document written before any UI code)
+
+`docs/REPORT_UI_REWORK.md` is the single place to resume the report UI rework (for Claude or Codex): how to
+resume, status table, the user's four decisions, text-budget and one-question-per-chart rules, target page
+order, the Inside Other spec mapped from `gen_otherflow.py` to real data, the data contract (result fields,
+`Job.progress` and where to hook it), phases `REPORT-UI-1`..`5` with scope, tasks, acceptance and tests,
+known traps, and verification commands. Phase 0 (the user restoring 34919df and releasing UI-REPORT-07) is
+still pending; the pointer from `docs/UI_FIXES.md` waits for it because that file is in UI-REPORT-07's scope.
