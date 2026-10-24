@@ -3123,3 +3123,10 @@ User request: the Other strip at the top of the Inside Other flow moves from the
 design puts it, over the treemap's Other block) to the middle of the flow, so the ribbons fan out to both
 sides and the panel looks balanced. `insideOtherGeometry.ts`: `OX = (W - OW) / 2`; test checks the centre
 and that every ribbon starts on Other's edge.
+
+## 2026-10-25 (BUG-040 fixed: a Look inside run where every answer fails now fails)
+
+User approved. When Jev rejects every Other answer (job 47 on dataset 11: HTTP 402 for all 314), the job
+now fails before anything is applied, with the reason and a hint for 402 (credit) and 401/403 (API key).
+Partial failures keep the old behaviour: the run finishes and the page shows "N answers could not be
+checked and stayed in Other." Test: `test_look_inside_other_fails_with_the_real_reason_when_every_answer_fails`.

@@ -671,11 +671,24 @@ def _theme_build_error(e: BaseException) -> str | None:
     return None
 
 
+def _all_rows_failed_message(n: int, sample_error: str | None) -> str:
+    """Why a Look inside run checked nothing, in words the report page can show as-is."""
+    reason = (sample_error or "no reason given").removeprefix("JevError: ").rstrip(".")
+    hint = ""
+    if "HTTP 402" in reason:
+        hint = " (payment required: check the Jev account's credit)"
+    elif "HTTP 401" in reason or "HTTP 403" in reason:
+        hint = " (check the Jev API key)"
+    return (f"none of the {n:,} answers in Other could be checked, so nothing was changed. "
+            f"{reason}{hint}.")
+
+
 def _look_inside_other_error(e: BaseException) -> str | None:
     """Same shape as `_theme_build_error`, for the "Look inside Other" job. `JevError` here means the
     one-off question-building/consolidation step failed before any per-answer classification started
     (`classify_other_answers` itself never raises - a single row's `JevError` is caught per-row and
-    recorded in `OtherClassification.failed_rows`, never fails the whole job)."""
+    recorded in `OtherClassification.failed_rows`; only when EVERY row fails does `_work` raise a
+    `JevError` itself, with `_all_rows_failed_message`)."""
     if isinstance(e, LabelingError):
         return f"Finding new themes failed: {e}"
     if isinstance(e, JevError):
@@ -888,6 +901,10 @@ def look_inside_other(
             set_progress(job.id, {"done": done, "total": total, "known": known, "new": new, "still_other": still})
 
         classification = classify_other_answers(rows, texts, criteria, jev_client, on_progress=_progress)
+        if rows and len(classification.failed_rows) == len(rows):
+            # Every call failed: a systemic problem (key, credit, outage), not "nothing matched". Fail the
+            # job before anything is applied, with the real reason (docs/BUGS.md BUG-040).
+            raise JevError(_all_rows_failed_message(len(rows), classification.sample_error))
         step("Updating the report")
         vec_by_row = dict(zip(rows, vectors))
         with _db.SessionLocal() as job_db:

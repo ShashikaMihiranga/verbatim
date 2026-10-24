@@ -142,6 +142,7 @@ class OtherClassification:
     by_row: dict[int, str] = field(default_factory=dict)
     confidence_by_row: dict[int, float] = field(default_factory=dict)
     failed_rows: list[int] = field(default_factory=list)  # a row whose Jev call raised, text never lost
+    sample_error: str | None = None  # the first failure's message, e.g. "JevError: Jev returned HTTP 402."
 
 
 def classify_other_answers(
@@ -200,6 +201,7 @@ def classify_other_answers(
                 if now - last_report >= progress_interval or done == total:
                     last_report = now
                     on_progress(done, total, out.by_row, out.failed_rows)
+    out.sample_error = sample_error
     if out.failed_rows:
         level = log.error if len(out.failed_rows) == len(row_indexes) else log.warning
         level(

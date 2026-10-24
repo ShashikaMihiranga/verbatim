@@ -1258,6 +1258,36 @@ def test_apply_other_classification_below_minimum_new_theme_folds_back_into_othe
         }
 
 
+def test_look_inside_other_fails_with_the_real_reason_when_every_answer_fails(env):
+    """BUG-040 (docs/BUGS.md): Jev answering HTTP 402 for every row used to finish as "done" with
+    "No new themes found". Now the job fails with the reason and nothing is applied."""
+    from app.text_pipeline.jev_sentiment import JevError
+
+    class OutOfCreditJev(FakeJevClient):
+        def classify_choice(self, *args, **kwargs):
+            raise JevError("Jev returned HTTP 402.")
+
+    install_look_inside_other_fakes()
+    app.dependency_overrides[get_jev_client] = lambda: OutOfCreditJev(("pos", 0.8))
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="Cost", description="About pricing.", size=5, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4])
+    other_id = seed_theme(env, did, label="Other", description="x", size=3, sentiment=0.0,
+                          tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[13, 14, 15])
+
+    job = look_inside_other_job(env, did, timeout=30)
+    assert job["status"] == "failed", job
+    assert job["error"] == (
+        "Jev classification failed: none of the 3 answers in Other could be checked, so nothing was "
+        "changed. Jev returned HTTP 402 (payment required: check the Jev account's credit)."
+    )
+    assert job["result"] is None
+    with env.Session() as s:
+        from app.models import Theme
+        assert sorted(s.get(Theme, other_id).answer_refs) == [13, 14, 15]
+
+
 def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other(env):
     did = upload_csv(env, theme_df())
     clean_and_apply(env, did)
