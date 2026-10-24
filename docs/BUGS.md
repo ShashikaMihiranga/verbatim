@@ -25,11 +25,6 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
     harder to theme, not what they talk about.
   - Fix: **needs a user decision**: drop Other from segment findings, or keep it reworded ("harder to
     group"). Not changed.
-- [ ] **BUG-051 — A barcode column ("ean") is used as the region/group column on dataset 1**
-  - Found: 2026-10-25, Claude, same local check. Dataset 1's heatmap groups are EAN values such as
-    "848719000000.0", so its findings read "in 848719000000.0". `looks_like_identifier` does not catch it.
-  - Fix: proposed - treat EAN/UPC/SKU/barcode-named or long-digit columns as identifiers when picking the
-    segment column. Not started.
 - [ ] **BUG-031 — Dataset 12's report still shows findings for deleted themes**
   - Found: 2026-10-24, Claude, dataset 12 report. Leftover from BUG-022, which stops it happening again.
   - Cause: the report was built while a theme rebuild was running (BUG-022).
@@ -41,6 +36,17 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
   - 2026-10-25: investigated. The pill is a count-weighted average of each theme's stored sentiment; per-answer sentiment is not stored (DECISIONS 2026-09-25). Exact values need Jev calls or a stored per-answer column. **User decision**; behaviour unchanged.
 
 ## Fixed
+
+- [x] **BUG-051 — A barcode column ("ean") is used as the region/group column on dataset 1**
+  - Found: 2026-10-25, Claude, local check of the BUG-050 tests. Dataset 1's heatmap groups were EAN values
+    such as "848719000000.0", so its findings read "in 848719000000.0".
+  - Cause: `looks_like_identifier` only knew id/uuid/sku names and was only applied to `numeric` columns;
+    `ean`, `upc` and `manufacturerNumber` were confirmed as `segment`.
+  - **Fixed:** (this commit). Identifier names now include ean/upc/gtin/isbn/asin/barcode/"...Number", and
+    the check also drops `segment` columns. Any segment whose values are mostly 8+ digit codes is skipped
+    too, whatever its name (`looks_like_code_values`). Dataset 1 now groups by `manufacturer`. Tests:
+    `test_identifier_columns_are_never_used_as_numbers`, `test_looks_like_code_values_spots_barcodes_not_groups`,
+    `test_build_structured_context_skips_a_barcode_segment_for_the_next_real_one_bug_051`.
 
 - [x] **BUG-050 — Region/group findings have no significance test, so chance gaps can become findings**
   - Found: 2026-10-25, Claude, review of the BUG-041/042 fix against survey-crosstab practice.

@@ -215,3 +215,7 @@ def test_identifier_columns_are_never_used_as_numbers():
 
     assert all(looks_like_identifier(n) for n in ('Clothing_ID', 'customer id', 'orderId', 'SKU', 'ID'))
     assert not any(looks_like_identifier(n) for n in ('Age', 'Rating', 'Paid', 'Liquid', 'Valid', 'Width'))
+    # BUG-051: product codes are identifiers too, and "number of ..." is still a quantity.
+    assert all(looks_like_identifier(n) for n in ('ean', 'upc', 'asins', 'GTIN', 'barcode', 'manufacturerNumber',
+                                                   'Order number'))
+    assert not any(looks_like_identifier(n) for n in ('Number of children', 'Region', 'brand', 'Clean', 'Lupcake'))

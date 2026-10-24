@@ -3168,3 +3168,11 @@ scikit-learn) is pinned in requirements.txt. Follow-ups logged: BUG-051 (barcode
 BUG-052 (findings about "Other" - user decision); score-band and trend findings still use bare thresholds
 and should get the same treatment later.
 
+## 2026-10-25 (BUG-051: barcode columns are never groups)
+
+User said "Yes fix BUG-051". Identifier detection (`looks_like_identifier`) now covers product codes (ean,
+upc, gtin, isbn, asin, barcode, names ending "Number") and applies to `segment` columns as well as
+`numeric`. A second, value-based check (`looks_like_code_values`: most distinct values are 8+ digits)
+skips code-valued segments under any name, in both segment loops of `build_structured_context`. Kept
+short years ("2024") and names like "Number of children" as real data. Dataset 1's heatmap moves from
+`ean` to `manufacturer`; its report changes only after a rebuild.

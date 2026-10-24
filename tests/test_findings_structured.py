@@ -1544,3 +1544,34 @@ def test_ratio_phrase_says_never_for_a_zero_share():
 
     assert _ratio_phrase("Cost", "North", 0.0) == "North never mentions Cost."
     assert _ratio_phrase("Cost", "North", 0.5) == "North mentions Cost about half as often as the average respondent."
+
+
+def test_looks_like_code_values_spots_barcodes_not_groups():
+    from app.findings_structured import looks_like_code_values
+
+    assert looks_like_code_values(["848719000000.0", "841667000000.0"])  # dataset 1's "ean" (BUG-051)
+    assert looks_like_code_values(["00012345678", "00012345679", "Other"])
+    assert not looks_like_code_values(["North", "South"])
+    assert not looks_like_code_values(["2024", "2025"])  # years are short, a real grouping
+    assert not looks_like_code_values([])
+
+
+def test_build_structured_context_skips_a_barcode_segment_for_the_next_real_one_bug_051():
+    """Dataset 1: a column holding EAN barcodes ("Product code" here) was confirmed as a segment and won the heatmap,
+    so findings read "in 848719000000.0". It must be skipped, and the next segment candidate used."""
+    n = 300
+    clean_df = pd.DataFrame({
+        "Product code": [848719000000.0 if i < 150 else 841667000000.0 for i in range(n)],
+        "Region": ["North" if i < 170 else "South" for i in range(n)],
+    })
+    themes = [
+        make_theme("A", 150, 0.3, list(range(0, 150))),
+        make_theme("B", 150, -0.1, list(range(150, 300))),
+    ]
+    nodes = theme_nodes(themes, total_answered=300)
+    columns = {"score": [], "segment": ["Product code", "Region"], "date": []}
+
+    context = build_structured_context(clean_df, None, themes, nodes, columns, floor=30)
+
+    assert context.segment_column_name == "Region"
+    assert {g.label for g in context.segment.groups} == {"North", "South"}

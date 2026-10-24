@@ -1027,20 +1027,34 @@ def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]
     }
     for c in cols:
         if c.kind in result and not (c.stats or {}).get("off"):
-            if c.kind == "numeric" and looks_like_identifier(c.name):
-                continue  # e.g. "Clothing_ID": a label stored as a number, not a quantity to band or average
+            if c.kind in ("numeric", "segment") and looks_like_identifier(c.name):
+                continue  # e.g. "Clothing_ID", "ean": a label or code, not a quantity or a group (BUG-051)
             result[c.kind].append(c.name)
     return result
 
 
-_ID_NAME = re.compile(r"(?:^|[^a-z0-9])(?:id|ids|uuid|guid|sku|identifier)$")
+_ID_NAME = re.compile(
+    r"(?:^|[^a-z0-9])(?:id|ids|uuid|guid|sku|identifier|ean|upc|gtin|isbn|asin|asins|barcode|number)$"
+)
+_CODE_VALUE = re.compile(r"\d{8,}(?:\.0+)?")  # barcode-like: 8+ digits, maybe read in as a float
+
+
+def looks_like_code_values(values) -> bool:
+    """True when most distinct values are long digit strings (EAN/UPC barcodes such as "848719000000.0",
+    order or account numbers). Groups like that are labels nobody can read, never a meaningful segment,
+    whatever the column is called (BUG-051)."""
+    distinct = {str(v).strip() for v in values}
+    if not distinct:
+        return False
+    return sum(bool(_CODE_VALUE.fullmatch(v)) for v in distinct) / len(distinct) > 0.5
 
 
 def looks_like_identifier(name: str) -> bool:
-    """True for column names that name an identifier ("Clothing_ID", "customer id", "orderId", "SKU").
+    """True for column names that name an identifier ("Clothing_ID", "customer id", "orderId", "SKU", and
+    product codes: "ean", "upc", "asins", "manufacturerNumber" - BUG-051).
     The profiler can type such a column "numeric" because its values are digits, which made the report
     band product IDs ("1-861") as if they were a measure."""
-    return bool(_ID_NAME.search(name.strip().lower()) or re.search(r"[a-z](?:Id|ID)$", name.strip()))
+    return bool(_ID_NAME.search(name.strip().lower()) or re.search(r"[a-z](?:Id|ID|Number)$", name.strip()))
 
 
 # -------------------------------------------------------------------- build_structured_context
@@ -1145,6 +1159,8 @@ def build_structured_context(
                 # WHOLE report response's JSON serialization, not just the segment/heatmap block - see
                 # docs/DECISIONS.md)
             raw_seg[r] = v
+        if looks_like_code_values(raw_seg.values()):
+            continue  # barcode/ID values under an innocent name - see looks_like_code_values (BUG-051)
         # Cap to the 8 largest groups by row count before ever calling build_segment_data - a cosmetic cap
         # for heatmap grid readability, not a suppression rule (see B1's module docstring).
         counts: dict[str, int] = {}
@@ -1277,6 +1293,8 @@ def build_structured_context(
             if v is None or (isinstance(v, float) and math.isnan(v)):
                 continue
             raw_grp[r] = v
+        if looks_like_code_values(raw_grp.values()):
+            continue  # BUG-051, as above
         found = False
         for date_col in columns.get("date", []):
             parsed_by_row: dict[int, date] = {}
