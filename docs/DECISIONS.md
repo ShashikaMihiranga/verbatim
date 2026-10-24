@@ -3064,3 +3064,24 @@ when the box has no room (dataset 12's capped Other is a ~54px column, so Phase 
 Tests: result fields in 5 updated tests, progress throttling, icicle-only-with-sub-themes, report-only
 hint; backend 904, frontend 117 (restored report-ui test counted), tsc clean, lint 6. Migration upgrade,
 downgrade and upgrade run on dev.db.
+
+## 2026-10-25 (REPORT-UI-2 done: the Inside Other panel, built to the Other-Flow design)
+
+Per `docs/REPORT_UI_REWORK.md` Phase 2. `LookInsideOther.tsx`, `LookInsideOtherRibbons.tsx`,
+`LookInsideOtherCharts.tsx` (and their tests) are replaced by `InsideOther.tsx` + `InsideOtherFlow.tsx`,
+drawing a pure view model (`insideOtherModel.ts`) and ribbon geometry (`insideOtherGeometry.ts`). Same props,
+so `Themes.tsx` is untouched. The panel now stays visible in every state: ribbons from Other to known themes,
+new themes and Still in Other (widths from real counts, minimum 3.6px, moving dots only while running and
+never under reduced motion), three numbered columns aligned with the leaves, the four-step rail, and when
+done a banner ("Done. k new themes found. Other went from y% to x%."), "new" chips, and one chart per
+question with no tabs. Live counts during "Matching answers to themes" come from `job.progress`; answers not
+matched yet count as Still in Other. Older results without the Phase 1 fields show totals only.
+
+Decision taken while building: the server `rank` chart is dropped from the done state. It compared each new
+theme's tone against a placeholder overall average of 0.00, so every bar read "Milder than average" under
+"What should we fix first?" - misleading. It is replaced by React bars, "New themes, biggest first",
+coloured by each new theme's own tone split with the share and tone printed next to the bar. The backend
+builds only `icicle` now (`_OTHER_RESULT_CHART_IDS`). On phones (under 640px) the flow and its helper line
+hide and the columns stack; every number stays. Checked live on dataset 11 with a test Job row (running,
+then done), deleted afterwards; no console errors, no horizontal overflow. Backend 904, frontend 120, tsc
+clean, lint 6.

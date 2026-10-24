@@ -155,70 +155,98 @@
   .rp-filters { flex-direction: column; align-items: stretch; }
 }
 
-/* "Look inside Other" Stage 3 (docs/TODO.md, 2026-10-21) - LookInsideOther.tsx. First animation anywhere
-   in this codebase (confirmed by repo-wide search before this stage started) - @keyframes/prefers-reduced-
-   motion are both new here, not carried over from an existing pattern. */
-@keyframes lio-blink { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+/* "Inside Other" (InsideOther.tsx), built to the Other-Flow design - docs/REPORT_UI_REWORK.md Phase 2.
+   Dividers, not cards; one heading, one status line, one helper line; every number printed. */
+@keyframes io-blink { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+@keyframes io-pulse { 0%, 100% { opacity: .9; } 50% { opacity: .25; } }
 
-.lio { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--line); }
-.lio-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.lio-title { font-size: 22px; font-weight: 600; }
-.lio-cta {
-  display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 18px; border-radius: 19px;
-  border: 1.5px solid var(--accent); background: var(--surface); font: inherit; font-size: 14px;
+.io { margin-top: 44px; padding-top: 30px; border-top: 1px solid var(--line); }
+.io-head { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.io-title { margin: 0; font-size: 30px; font-weight: 600; }
+.io-cta {
+  display: inline-flex; align-items: center; gap: 8px; height: 50px; padding: 0 26px; border-radius: 25px;
+  border: 1.5px solid var(--accent); background: var(--surface); font: inherit; font-size: 15.5px;
   font-weight: 600; color: var(--accent); cursor: pointer; transition: background .2s, color .2s;
 }
-.lio-cta:hover { background: var(--accent); color: var(--on-accent); }
+.io-cta:hover, .io-cta:focus-visible { background: var(--accent); color: var(--on-accent); }
+.io-status { display: flex; align-items: center; gap: 10px; min-height: 28px; margin: 12px 0 0; font-size: 17px; }
+.io-live-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; animation: io-blink 1s ease-in-out infinite; }
+.io-help { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.io-warn { margin: 8px 0 0; font-size: 13px; color: var(--neg); }
 
-.lio-failed { margin-top: 16px; }
+.io-flow { display: block; width: 100%; height: auto; margin-top: 12px; overflow: visible; }
+.io-flow-source { font-size: 13px; font-weight: 600; fill: var(--ink); }
+.io-flow-n { font-size: 12px; font-weight: 600; }
+.io-flow-still { font-size: 13.5px; font-weight: 600; fill: var(--ink); }
+.io-leaf-ring { animation: io-pulse 1.4s ease-in-out infinite; }
 
-.lio-running { margin-top: 20px; }
-.lio-status { display: flex; align-items: center; gap: 10px; font-size: 15px; }
-.lio-live-dot {
-  width: 9px; height: 9px; border-radius: 50%; background: var(--accent); display: inline-block;
-  animation: lio-blink 1s ease-in-out infinite;
+.io-cols { display: grid; grid-template-columns: 36.1% 36.1% 27.8%; margin-top: 6px; }
+.io-col { padding-right: 28px; min-width: 0; }
+.io-col-still { padding-right: 0; }
+.io-col-known { border-top: 3px solid var(--t1); padding-top: 16px; }
+.io-col-new { border-top: 3px solid var(--accent); padding-top: 16px; }
+.io-col-still { border-top: 3px solid var(--other); padding-top: 16px; }
+.io-col-title { margin: 0; font-size: 20px; font-weight: 600; }
+.io-col-note { margin: 2px 0 0; font-size: 13.5px; color: var(--muted); }
+.io-col-n { margin: 8px 0 0; font-size: 44px; font-weight: 300; line-height: 1.15; }
+.io-col-n span { font-size: 15px; font-weight: 400; color: var(--muted); }
+.io-rows { list-style: none; margin: 12px 0 0; padding: 0; }
+.io-row { display: flex; align-items: center; gap: 10px; min-height: 36px; border-top: 1px solid var(--line); }
+.io-chip {
+  width: 22px; height: 22px; border-radius: 50%; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 12px; font-weight: 600;
 }
+.io-row-name { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+.io-row-track { width: 90px; height: 8px; border-radius: 4px; background: var(--line); flex: none; overflow: hidden; display: block; }
+.io-row-bar { display: block; height: 8px; border-radius: 4px; }
+.io-row-n { width: 52px; flex: none; text-align: right; font-size: 14px; font-weight: 600; }
+.io-still-track { width: 100%; margin-top: 10px; }
+.io-more { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
 
-/* Stage 3b (docs/TODO.md, fixed 2026-10-23): real per-theme ribbons (LookInsideOtherRibbons.tsx),
-   replacing the earlier single generic dashed strip. Ribbon WIDTH is each known theme's real current
-   share - honest, already-known data; the flowing-dash motion (`stroke-dasharray`+`stroke-dashoffset`,
-   the SVG-path equivalent of `lio-flowdash`'s own background-position trick) is a pure activity
-   indicator, same honesty line `.lio-flow-dash` already drew. */
-.lio-ribbons { margin-top: 16px; }
-.lio-ribbon { stroke-dasharray: 10 8; animation: lio-ribbonflow .6s linear infinite; }
-.lio-ribbon-new { stroke-dasharray: 4 6; }
-@keyframes lio-ribbonflow { to { stroke-dashoffset: -18; } }
+.io-steps { display: flex; list-style: none; margin: 44px 0 0; padding: 30px 0 0; border-top: 1px solid var(--line); }
+.io-step { display: flex; align-items: center; flex: 1; min-width: 0; }
+.io-step:last-child { flex: none; }
+.io-step-dot {
+  width: 26px; height: 26px; border-radius: 50%; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 12px; font-weight: 600; border: 1px solid var(--line); color: var(--muted);
+}
+.io-step[data-state="running"] .io-step-dot { border: 2px solid var(--accent); color: var(--accent); }
+.io-step[data-state="done"] .io-step-dot { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.io-step-text { display: flex; flex-direction: column; margin-left: 10px; }
+.io-step-label { font-size: 15px; color: var(--muted); }
+.io-step[data-state="running"] .io-step-label, .io-step[data-state="done"] .io-step-label { color: var(--ink); font-weight: 600; }
+.io-step-state { font-size: 12.5px; color: var(--muted); }
+.io-step-bar { flex: 1; height: 4px; margin: 0 20px; border-radius: 2px; background: var(--line); overflow: hidden; min-width: 24px; }
+.io-step-bar span { display: block; height: 4px; background: var(--accent); transition: width .4s; }
 
-.lio-steps { display: flex; align-items: center; margin-top: 24px; }
-.lio-step { display: flex; align-items: center; flex: 1; }
-.lio-step:last-child { flex: none; }
-.lio-step-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
-.lio-step[data-state="active"] .lio-step-dot { background: var(--accent); animation: lio-blink 1.2s ease-in-out infinite; }
-.lio-step[data-state="done"] .lio-step-dot { background: var(--accent); }
-.lio-step-label { font-size: 13px; color: var(--muted); margin-left: 10px; white-space: nowrap; }
-.lio-step[data-state="active"] .lio-step-label, .lio-step[data-state="done"] .lio-step-label { color: var(--ink); font-weight: 500; }
-.lio-step-bar { flex: 1; height: 3px; border-radius: 2px; background: var(--line); margin: 0 12px; overflow: hidden; }
-.lio-step-bar[data-filled="true"] { background: var(--accent); }
+.io-results { margin-top: 26px; padding-top: 24px; border-top: 1px solid var(--line); }
+.io-banner { display: flex; align-items: center; gap: 14px; }
+.io-check {
+  width: 34px; height: 34px; border-radius: 50%; flex: none; background: var(--accent); color: var(--on-accent);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 600;
+}
+.io-banner-text { margin: 0; font-size: 20px; font-weight: 500; }
+.io-chips { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; margin: 16px 0 0; padding: 0; }
+.io-newchip {
+  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px 0 7px; border-radius: 18px;
+  border: 1px solid var(--line); background: var(--bg); font-size: 14px; font-weight: 500;
+}
+.io-newbadge {
+  height: 22px; padding: 0 8px; border-radius: 11px; background: var(--accent); color: var(--on-accent);
+  font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center;
+}
+.io-newshare { color: var(--muted); font-weight: 400; }
+.io-chart { margin-top: 36px; }
+.io-chart-title { margin: 0 0 14px; font-size: 20px; font-weight: 600; }
+.io-gains { list-style: none; margin: 0; padding: 0; }
+.io-gain { display: grid; grid-template-columns: minmax(0, 30%) 1fr auto; align-items: center; gap: 16px; min-height: 44px; }
+.io-gain-name { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.io-gain-track { height: 28px; border-radius: 6px; background: color-mix(in srgb, var(--line) 55%, transparent); overflow: hidden; }
+.io-gain-track span { display: block; height: 100%; border-radius: 6px; }
+.io-gain-n { font-size: 14px; color: var(--muted); white-space: nowrap; }
+.io-gain-n strong { color: var(--ink); font-weight: 600; }
 
-.lio-results { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin-top: 24px; }
-.lio-col { padding-right: 24px; }
-.lio-col-head { border-top: 3px solid var(--line); padding-top: 14px; }
-.lio-col-title { font-size: 17px; font-weight: 600; }
-.lio-col-note { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.lio-col-n { font-size: 36px; font-weight: 300; line-height: 1.2; margin-top: 8px; }
-.lio-col-n span { font-size: 14px; color: var(--muted); font-weight: 400; }
-.lio-col-rows { margin-top: 10px; }
-.lio-row { display: flex; align-items: center; gap: 10px; min-height: 32px; border-top: 1px solid var(--line); }
-.lio-row-name { flex: 1; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
-.lio-row-bar-wrap { width: 70px; height: 7px; border-radius: 4px; background: var(--line); flex: none; overflow: hidden; }
-.lio-row-bar { display: block; height: 7px; border-radius: 4px; }
-.lio-row-n { width: 36px; text-align: right; font-size: 13px; font-weight: 600; flex: none; }
-
-/* Stage 3b (docs/TODO.md, fixed 2026-10-23) - ThemeChart.tsx's own `highlightOtherRunning` prop: a
-   pulsing ring + overlaid label baked onto the treemap's real `[data-theme="Other"]` block while a
-   "look inside Other" job runs, matching the mockup's own ring-on-the-Other-block affordance rather
-   than only a separate CTA section below the chart. `box-shadow` (not `outline`/`border`) so the ring
-   doesn't shift the block's own layout or get clipped by `overflow:hidden` on a sibling. */
+/* Kept from the old panel: ThemeChart.tsx rings the treemap's Other block while a run is going. */
 @keyframes lio-other-ring-pulse { 0%, 100% { box-shadow: 0 0 0 3px var(--accent); } 50% { box-shadow: 0 0 0 3px transparent; } }
 .lio-other-ring { animation: lio-other-ring-pulse 1.4s ease-in-out infinite; border-radius: 6px; }
 .lio-other-label {
@@ -227,21 +255,20 @@
   pointer-events: none;
 }
 
-/* Stage 3c (docs/TODO.md, fixed 2026-10-23): the second tab switcher for newly-found themes
-   (LookInsideOtherCharts.tsx) - reuses `.rp-tabs`/`.rp-tab` (ThemeChartTabs.tsx's own tab bar styling)
-   unchanged, only the wrapper margin and the Arc tab's explanatory note are new here. */
-.lio-charts { margin-top: 28px; }
-.lio-arc-note { font-size: 14px; color: var(--muted); max-width: 520px; line-height: 1.5; }
-
 @media (prefers-reduced-motion: reduce) {
-  .lio-ribbon, .lio-live-dot, .lio-step[data-state="active"] .lio-step-dot, .lio-other-ring { animation: none; }
+  .io-live-dot, .io-leaf-ring, .lio-other-ring { animation: none; }
+  .io-step-bar span { transition: none; }
 }
 
 @media (max-width: 640px) {
-  .lio-results { grid-template-columns: 1fr; gap: 20px; }
-  .lio-col { padding-right: 0; }
-  .lio-steps { flex-wrap: wrap; row-gap: 12px; }
-  .lio-step-bar { display: none; }
+  .io-flow, .io-help { display: none; } /* the columns carry every number on phones */
+  .io-cols { grid-template-columns: 1fr; gap: 24px; }
+  .io-col { padding-right: 0; }
+  .io-steps { flex-direction: column; gap: 14px; }
+  .io-step-bar { display: none; }
+  .io-title { font-size: 26px; }
+  .io-col-n { font-size: 36px; }
+  .io-gain { grid-template-columns: 1fr; gap: 6px; }
 }
 .rp-chart-compact { display: none; }
 .rp-responsive-chart { container-type: inline-size; }

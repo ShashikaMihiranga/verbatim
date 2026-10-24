@@ -24,7 +24,7 @@ only when its acceptance criteria and tests pass.**
 | bug | `RACE-GUARD-01` | Report build and theme rebuild can't overlap | [x] done, `182c891` |
 | doc | `REPORT-UI-DOC` | This document | [x] done |
 | 1 | `REPORT-UI-1` | Backend data for Inside Other, live progress, honest step names, treemap Other labels | [x] done |
-| 2 | `REPORT-UI-2` | Inside Other UI (flow, three columns, step rail, done state, charts) | [ ] |
+| 2 | `REPORT-UI-2` | Inside Other UI (flow, three columns, step rail, done state, charts) | [x] done |
 | 3 | `REPORT-UI-3` | Page order and text trim; overview without tabs | [ ] |
 | 4 | `REPORT-UI-4` | Visual / interaction / accessibility gate at 1280, 888 and 390px | [ ] |
 | 5 | `REPORT-UI-5` | Follow-ups (audit finding variants; catch-all new theme), user approval needed | [ ] |
@@ -297,31 +297,69 @@ python3 tools/taskboard.py release UI-REPORT-07 --agent user --message "Restored
 
 ### Phase 2 — `REPORT-UI-2`: Inside Other UI
 
+**Evaluation (2026-10-25, before building)**
+- Today: `LookInsideOther.tsx` (181 lines), `LookInsideOtherRibbons.tsx` (72) and `LookInsideOtherCharts.tsx`
+  (66), mounted once in `Report.tsx` as `<LookInsideOther job onStart allThemes>` and fed by `Themes.tsx`.
+- **Ribbons:** shown only while running; their widths are theme shares, not job counts.
+- **Done state:** totals only. Known themes is a single number.
+- **Tabs:** label a bar chart "Sankey" and add an apologetic Arc tab.
+- **Data now available** (Phase 1):
+  - `job.progress` (live, step 3)
+  - `job.result.{known_gains, other_before_count, answered_total, new_themes, still_other_count, charts.rank, charts.icicle?}`
+  - `report.all_themes` (real themes, largest first, without Other; index < 7 ⇒ treemap colour `--t{i+1}`)
+- **Older runs lack the new fields.** Render totals only, and omit "It was y% before".
+
+**Approach**
+- Keep the same props (`job`, `onStart`, `allThemes`) so `Themes.tsx` is untouched. Only `Report.tsx`'s
+  import and mount change.
+- Put every number and state in **one pure view-model function**, `insideOtherModel(job, allThemes)` in
+  `insideOtherModel.ts`, unit-tested in the node environment. The components only draw it.
+- **Known leaves:** the top 7 known themes by count, plus "N more" in the column. **New leaves:** the top 6.
+- **Live counts (step 3):** known and new counts come from `progress`. Still in Other =
+  `(total − done) + progress.still_other`, because unprocessed answers are still in Other.
+- **Done:** everything comes from `result`.
+- **Source of the flow:** a labelled Other strip at the top right of the flow, where the treemap's Other
+  block sits in the design. Phase 3 places the section directly under the treemap; exact alignment to the
+  treemap's live DOM is not attempted (it moves with layout and filters).
+- **Reduced motion:** SMIL `animateMotion` can't be stopped by CSS, so the moving dots render only when
+  `matchMedia('(prefers-reduced-motion: reduce)')` is false. CSS stops the pulses.
+- **"See all N themes":** stays in `OtherExploration` until Phase 3 retires it, to avoid showing two lists.
+
 **Scope**
-- New `frontend/src/InsideOther.tsx` (plus `InsideOtherFlow.tsx`, `InsideOtherColumns.tsx`,
-  `InsideOtherSteps.tsx` if that keeps files small), CSS in `report.css`
-- `jobsApi.ts` types
-- Delete `LookInsideOther.tsx`, `LookInsideOtherRibbons.tsx` and `LookInsideOtherCharts.tsx` and their
-  tests once the new ones cover them
-- `Report.tsx` (mount point only, in this phase)
+- New: `frontend/src/InsideOther.tsx`, `insideOtherModel.ts`, `InsideOtherFlow.tsx`, `inside-other.test.tsx`
+  (node), `inside-other-model.test.ts` (node)
+- `report.css`: replace the `.lio-*` panel rules, but keep `.lio-other-ring` / `.lio-other-label` (used by
+  `ThemeChart`)
+- `Report.tsx`: import and mount only
+- Delete `LookInsideOther.tsx`, `LookInsideOtherRibbons.tsx`, `LookInsideOtherCharts.tsx` and their three
+  test files
 
 **Tasks**
-- [ ] Header, status, helper line, button states.
-- [ ] Flow SVG: idle / running (from `job.progress`) / done (from `job.result`), reduced motion.
-- [ ] Three columns with numbered rows, "It was y% before this run", "See all N themes".
-- [ ] Step rail with step 3 progress.
-- [ ] Done banner, chips, and the result charts laid out without tabs (gains, rank, icicle only when
-      sub-themes exist).
-- [ ] Failure state: one line showing `job.error`, plus "Look inside" again.
-- [ ] Keep the existing warning for `failed_classification_count > 0`, shortened to one line.
+- [x] `insideOtherModel`: state (idle / running / done / failed), step index from `job.step`, leaves with
+      counts, colours and numbers, shares before and after, banner text, legacy-result fallback.
+- [x] Flow SVG (viewBox 1328×316): ribbon widths `count × usable / sourceTotal` (minimum 3.6), Still in
+      Other takes the remainder, numbered leaf circles, moving dots and pulsing rings only while running.
+- [x] Header: "Inside Other", button ("Look inside →" / hidden while running / "Look inside again"),
+      status line with a live dot and `aria-live`, one helper line.
+- [x] Three columns (36 / 36 / 28%): Known themes ("+N answers", numbered rows, mini bar, "+x.x%"); New
+      themes found ("N answers, k themes", rows, share); Still in Other ("N answers", "x% of all answers. It
+      was y% before this run.", bar).
+- [x] Step rail: the four step names; Done / Running / Waiting; step 3's bar follows `done / total`.
+- [x] Done: banner "Done. k new themes found. Other went from y% to x%." with "new" chips; then, without
+      tabs, "What each known theme gained" (React bars from `known_gains`), "New themes, biggest first"
+      (React bars coloured by each new theme's own tone; replaces the server `rank` chart, see the change
+      log), and the server `icicle` chart only when the result includes it.
+- [x] Failed: one line with `job.error`, plus the button. Classification failures: one short line.
+- [x] Phones (under 640px): the flow hides and the columns stack. Every number stays.
 
-**Acceptance and tests** (vitest with the `// @vitest-environment jsdom` docblock)
-- Each state renders correctly.
-- Ribbon widths are proportional to counts, with the 3.6px minimum.
-- Live counts update when `job.progress` changes.
-- No Arc, `othergrowth` or `sentsun`.
-- Reduced motion removes the animations.
-- No horizontal overflow at 390px.
+**Acceptance and tests**
+- Model unit tests: live counts from progress; the Still-in-Other formula; legacy result; colours follow
+  `allThemes` order; the 7/6 caps with "N more".
+- Component tests: each state's text and structure; no "Sankey", "Arc" or `sentsun`; ribbon count and
+  minimum width; the dots switch off for reduced motion.
+- Full suites green, tsc clean, lint not above 6 warnings.
+- Live: a test `Job` row (with progress, then done with a result) on dataset 11 renders running and done
+  correctly; screenshots at 1280 and 390px.
 
 ### Phase 3 — `REPORT-UI-3`: page order and text trim
 
@@ -390,8 +428,8 @@ python3 tools/taskboard.py release UI-REPORT-07 --agent user --message "Restored
 ## Verification commands
 
 ```
-.venv/bin/python -m pytest -q                         # backend: all pass (901 at 182c891)
-cd frontend && npm test -- --run                      # frontend: all pass (110 at 182c891)
+.venv/bin/python -m pytest -q                         # backend: all pass (904 after REPORT-UI-2)
+cd frontend && npm test -- --run                      # frontend: all pass (120 after REPORT-UI-2)
 cd frontend && npx tsc --noEmit                       # clean
 cd frontend && npm run lint                           # 6 existing warnings, no new ones
 ```
@@ -415,3 +453,18 @@ cd frontend && npm run lint                           # 6 existing warnings, no 
     (`[data-theme="Other"]` in the overview fragment) to make that link visually.
   - Live counts can fold slightly at the end: new groups smaller than `MIN_OTHER_NEW_THEME_SIZE` go back into
     Other in the final result. The done state reads `job.result`.
+- 2026-10-25 — Phase 2 (`REPORT-UI-2`) done.
+  - New: `InsideOther.tsx`, `InsideOtherFlow.tsx`, `insideOtherModel.ts`, `insideOtherGeometry.ts` (ribbon
+    maths, kept out of the component file for fast refresh), `inside-other.test.tsx`,
+    `inside-other-model.test.ts`. Deleted: the three `LookInsideOther*` components and their tests.
+  - **Change from the plan: no server `rank` chart in the done state.** It compared each new theme's tone
+    against an overall average of 0.00 and read "Milder than average" for every bar, under the title "What
+    should we fix first?". It is replaced by React bars, "New themes, biggest first", coloured by each new
+    theme's own tone split with the number printed ("34 answers · 55% negative"). The backend now builds
+    only `icicle` (`_OTHER_RESULT_CHART_IDS = ("icicle",)`).
+  - The flow's Other strip sits at the top right of the flow, not on the treemap's live Other block. Phase 3
+    places the section directly under the treemap.
+  - Phones (under 640px): the flow and its helper line hide; the columns stack. No horizontal overflow.
+  - Checked live on dataset 11 with a test `Job` row (running with progress 140/314, then done with a
+    result); the row was deleted afterwards. A real run is still Phase 4 and needs the user's OK (paid).
+  - "See all N themes" still lives in `OtherExploration`; Phase 3 moves it under Still in Other.

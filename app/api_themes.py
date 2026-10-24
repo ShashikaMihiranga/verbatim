@@ -601,10 +601,11 @@ def _apply_other_classification(
     }
 
 
-# One question per chart (docs/REPORT_UI_REWORK.md): rank = which new themes are biggest and how they
-# sound; icicle = what's inside them (only built when a new theme has sub-themes). "othergrowth" was a
-# bar chart shown under a "Sankey" label, and "sentsun" repeated the tone the rank chart already shows.
-_OTHER_RESULT_CHART_IDS = ("rank", "icicle")
+# One question per chart (docs/REPORT_UI_REWORK.md): only the icicle ("what's inside the new themes"), and
+# only when a new theme has sub-themes. The panel draws "which new themes are biggest and how they sound"
+# itself from `new_themes[].tone`: the server rank chart compared tone against a placeholder 0.00 average
+# here. "othergrowth" was a bar chart shown under a "Sankey" label; "sentsun" repeated the same tone.
+_OTHER_RESULT_CHART_IDS = ("icicle",)
 
 
 def _build_other_result_charts(theme_rows: list[Theme]) -> dict[str, dict]:

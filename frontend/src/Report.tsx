@@ -3,7 +3,7 @@ import { AnswerList } from './Themes'
 import type { Job } from './jobsApi'
 import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse, ReportThemeChartVariant } from './reportApi'
 import type { ThemeCard } from './themesApi'
-import LookInsideOther from './LookInsideOther'
+import InsideOther from './InsideOther'
 import OtherExploration from './OtherExploration'
 import QuestionContext from './QuestionContext'
 import { parseContextData } from './questionContextData'
@@ -195,7 +195,7 @@ export default function ReportView({
       {report.other_breakdown && <p className="rp-method-note">Other is a catch-all bucket, not a single topic. Check its breakdown before interpreting differences between groups.</p>}
 
       {onLookInsideOther && (report.other_breakdown !== null || lookInsideOtherJob) && (
-        <LookInsideOther job={lookInsideOtherJob ?? null} onStart={onLookInsideOther} allThemes={report.all_themes} />
+        <InsideOther job={lookInsideOtherJob ?? null} onStart={onLookInsideOther} allThemes={report.all_themes} />
       )}
 
       {sharedViews.length > 0 && <Divider id="report-explore">

@@ -1,0 +1,211 @@
+import { useMemo } from 'react'
+import InsideOtherFlow from './InsideOtherFlow'
+import { prefersReducedMotion } from './insideOtherGeometry'
+import { insideOtherModel, STEPS, type InsideOtherModel, type Leaf } from './insideOtherModel'
+import type { Job } from './jobsApi'
+import type { ReportThemeSummary } from './reportApi'
+import ThemeChart from './ThemeChart'
+
+// "Inside Other", built to the Other-Flow design (docs/REPORT_UI_REWORK.md, Phase 2): ribbons from Other
+// to where its answers went, three columns of real numbers, the four real steps, and when done, one chart
+// per question. Live counts while running come from job.progress; the finished picture from job.result.
+
+const fmt = (n: number) => n.toLocaleString('en-US')
+
+function Arrow() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3 8h9M8.5 4.5 12 8l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function Rows({ items, largest, value }: { items: Leaf[]; largest: number; value: (l: Leaf) => string }) {
+  return (
+    <ol className="io-rows">
+      {items.map((l, i) => (
+        <li key={l.label} className="io-row">
+          <span className="io-chip" style={{ background: l.color, color: l.onColor }}>{i + 1}</span>
+          <span className="io-row-name">{l.label}</span>
+          <span className="io-row-track" aria-hidden="true">
+            <span className="io-row-bar" style={{ width: `${largest ? (l.count / largest) * 100 : 0}%`, background: l.color }} />
+          </span>
+          <span className="io-row-n">{value(l)}</span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function Columns({ m }: { m: InsideOtherModel }) {
+  const share = (l: Leaf) => (l.share !== null ? `${l.share}%` : fmt(l.count))
+  const largestKnown = Math.max(0, ...m.known.map((l) => l.count))
+  const largestNew = Math.max(0, ...m.newThemes.map((l) => l.count))
+  const showNumbers = m.phase === 'running' || m.phase === 'done'
+  return (
+    <div className="io-cols">
+      <section className="io-col io-col-known" aria-label="Known themes">
+        <h4 className="io-col-title">Known themes</h4>
+        <p className="io-col-note">Answers that match a theme already in the chart</p>
+        <p className="io-col-n">{showNumbers ? `+${fmt(m.knownTotal)}` : '+0'} <span>answers</span></p>
+        <Rows items={m.known} largest={largestKnown} value={(l) => (l.share !== null ? `+${l.share}%` : `+${fmt(l.count)}`)} />
+        {m.knownMore > 0 && <p className="io-more">and {m.knownMore} more</p>}
+      </section>
+      <section className="io-col io-col-new" aria-label="New themes found">
+        <h4 className="io-col-title">New themes found</h4>
+        <p className="io-col-note">Patterns no known theme covered</p>
+        <p className="io-col-n">
+          {fmt(showNumbers ? m.newTotal : 0)} <span>answers, {m.newThemes.length + m.newMore} theme{m.newThemes.length + m.newMore === 1 ? '' : 's'}</span>
+        </p>
+        <Rows items={m.newThemes} largest={largestNew} value={share} />
+        {m.newMore > 0 && <p className="io-more">and {m.newMore} more</p>}
+      </section>
+      <section className="io-col io-col-still" aria-label="Still in Other">
+        <h4 className="io-col-title">Still in Other</h4>
+        <p className="io-col-note">Varied answers that don't repeat enough to group</p>
+        <p className="io-col-n">{m.still !== null ? fmt(m.still) : '–'} <span>answers</span></p>
+        {m.otherNowPct !== null && (
+          <p className="io-col-note">
+            {m.otherNowPct}% of all answers.{m.otherBeforePct !== null && ` It was ${m.otherBeforePct}% before this run.`}
+          </p>
+        )}
+        {m.otherNowPct !== null && m.otherBeforePct ? (
+          <span className="io-row-track io-still-track" aria-hidden="true">
+            <span className="io-row-bar" style={{ width: `${Math.min(100, (m.otherNowPct / m.otherBeforePct) * 100)}%`, background: 'var(--other)' }} />
+          </span>
+        ) : null}
+      </section>
+    </div>
+  )
+}
+
+function Steps({ m }: { m: InsideOtherModel }) {
+  return (
+    <ol className="io-steps" aria-label="Step by step">
+      {STEPS.map((label, i) => {
+        const state = i < m.stepIndex ? 'done' : i === m.stepIndex ? 'running' : 'waiting'
+        const fill = state === 'done' ? 100 : state === 'running' && i === 2 ? Math.round(m.matchingProgress * 100) : 0
+        return (
+          <li key={label} className="io-step" data-state={state}>
+            <span className="io-step-dot">{state === 'done' ? 'ok' : i + 1}</span>
+            <span className="io-step-text">
+              <span className="io-step-label">{label}</span>
+              <span className="io-step-state">{state === 'done' ? 'Done' : state === 'running' ? 'Running' : 'Waiting'}</span>
+            </span>
+            {i < STEPS.length - 1 && (
+              <span className="io-step-bar" aria-hidden="true"><span style={{ width: `${fill}%` }} /></span>
+            )}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+// Colour a new theme by how its answers sound (its own tone split), never against an assumed average.
+function toneOf(l: Leaf): { color: string; text: string } {
+  if (!l.tone) return { color: l.color, text: '' }
+  const { neg, neu, pos } = l.tone
+  if (neg >= pos && neg >= neu) return { color: 'var(--neg)', text: `${Math.round(neg)}% negative` }
+  if (pos >= neg && pos >= neu) return { color: 'var(--pos)', text: `${Math.round(pos)}% positive` }
+  return { color: 'var(--neu)', text: `${Math.round(neu)}% neutral` }
+}
+
+function Results({ m }: { m: InsideOtherModel }) {
+  const largest = Math.max(0, ...m.known.map((l) => l.count))
+  const largestNew = Math.max(0, ...m.newThemes.map((l) => l.count))
+  return (
+    <div className="io-results">
+      <div className="io-banner">
+        <span className="io-check" aria-hidden="true">✓</span>
+        <p className="io-banner-text">{m.banner}</p>
+      </div>
+      {m.newThemes.length > 0 && (
+        <ul className="io-chips" aria-label="New themes">
+          {m.newThemes.map((l) => (
+            <li key={l.label} className="io-newchip">
+              <span className="io-newbadge">new</span>
+              {l.label}
+              {l.share !== null && <span className="io-newshare">{l.share}%</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {m.known.length > 0 && (
+        <section className="io-chart">
+          <h4 className="io-chart-title">What each known theme gained</h4>
+          <ul className="io-gains">
+            {m.known.map((l) => (
+              <li key={l.label} className="io-gain">
+                <span className="io-gain-name">{l.label}</span>
+                <span className="io-gain-track"><span style={{ width: `${largest ? (l.count / largest) * 100 : 0}%`, background: l.color }} /></span>
+                <span className="io-gain-n">
+                  {l.share !== null && <strong>+{l.share}%</strong>} {fmt(l.count)} answers
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {m.newThemes.length > 0 && (
+        <section className="io-chart">
+          <h4 className="io-chart-title">New themes, biggest first</h4>
+          <ul className="io-gains">
+            {m.newThemes.map((l) => {
+              const tone = toneOf(l)
+              return (
+                <li key={l.label} className="io-gain">
+                  <span className="io-gain-name">{l.label}</span>
+                  <span className="io-gain-track"><span style={{ width: `${largestNew ? (l.count / largestNew) * 100 : 0}%`, background: tone.color }} /></span>
+                  <span className="io-gain-n">
+                    {l.share !== null && <strong>{l.share}%</strong>} {fmt(l.count)} answers{tone.text && ` · ${tone.text}`}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      )}
+      {m.charts.icicle && (
+        <section className="io-chart">
+          <ThemeChart fragment={m.charts.icicle} title="What's inside the new themes" />
+        </section>
+      )}
+    </div>
+  )
+}
+
+export default function InsideOther({
+  job, onStart, allThemes = [],
+}: {
+  job: Job | null
+  onStart: () => void
+  allThemes?: ReportThemeSummary[]
+}) {
+  const m = useMemo(() => insideOtherModel(job, allThemes), [job, allThemes])
+  const reducedMotion = useMemo(() => prefersReducedMotion(), [])
+  return (
+    <section className="io" aria-labelledby="io-title">
+      <div className="io-head">
+        <h3 id="io-title" className="io-title">Inside Other</h3>
+        {m.phase !== 'running' && (
+          <button type="button" className="io-cta" onClick={onStart}>
+            {m.phase === 'done' ? 'Look inside again' : 'Look inside'} <Arrow />
+          </button>
+        )}
+      </div>
+      <p className="io-status" aria-live="polite">
+        {m.phase === 'running' && <span className="io-live-dot" aria-hidden="true" />}
+        {m.phase === 'failed' ? m.error ?? m.status : m.status}
+      </p>
+      <p className="io-help">Each ribbon is a group of answers. Wider ribbon, more answers.</p>
+      {m.failedCount > 0 && (
+        <p className="io-warn">{fmt(m.failedCount)} answer{m.failedCount === 1 ? '' : 's'} could not be checked and stayed in Other.</p>
+      )}
+      <InsideOtherFlow model={m} reducedMotion={reducedMotion} />
+      <Columns m={m} />
+      {m.phase !== 'idle' && <Steps m={m} />}
+      {m.phase === 'done' && m.banner && <Results m={m} />}
+    </section>
+  )
+}

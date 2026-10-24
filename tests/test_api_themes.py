@@ -1162,9 +1162,9 @@ def test_look_inside_other_end_to_end_finds_real_new_themes_with_charts(env):
         assert set(entry["tone"]) == {"neg", "neu", "pos"}
 
     charts = result.get("charts") or {}
-    # One question per chart (docs/REPORT_UI_REWORK.md): rank always; icicle only if a new theme has
-    # sub-themes. "othergrowth" (a bar chart labelled "Sankey") and "sentsun" (repeated tone) are gone.
-    assert "rank" in charts and set(charts) <= {"rank", "icicle"}
+    # One question per chart (docs/REPORT_UI_REWORK.md): only the icicle, and only if a new theme has
+    # sub-themes. The panel draws the ranked, tone-coloured list itself from new_themes[].tone.
+    assert set(charts) <= {"icicle"}
     new_names = {nt["label"] for nt in result["new_themes"]}
     for chart in charts.values():
         assert chart["chart_html"]
@@ -1692,9 +1692,9 @@ def test_other_result_charts_build_an_icicle_only_when_a_new_theme_has_sub_theme
         return t
 
     flat = [theme(1, "Parking", 40), theme(2, "Elevators", 30)]
-    assert set(_build_other_result_charts(flat)) == {"rank"}
+    assert set(_build_other_result_charts(flat)) == set()
 
     subs = [{"label": "Distance from lots", "size": 20, "sentiment": 0.0, "tone": {"neg": 20, "neu": 60, "pos": 20}},
             {"label": "Accessible spaces", "size": 15, "sentiment": 0.0, "tone": {"neg": 20, "neu": 60, "pos": 20}}]
     with_subs = [theme(1, "Parking", 40, subs), theme(2, "Elevators", 30)]
-    assert set(_build_other_result_charts(with_subs)) == {"rank", "icicle"}
+    assert set(_build_other_result_charts(with_subs)) == {"icicle"}
