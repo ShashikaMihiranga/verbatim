@@ -81,7 +81,9 @@
 .rp-chart-spacer { height: 16px !important; }
 .rp-chart[data-presentation="finding"] .rp-chart-question { display: none; }
 .rp-focus-label { padding: 0 !important; margin: 8px 0 0; font-size: 14px; color: var(--muted); }
-.rp-chart-scroll { container-type: inline-size; }
+/* overflow-anchor: none - the browser must never shift this box sideways (or the page) to keep a node in
+   place while the chart's own DOM settles after load (BUG-049); ThemeChart.tsx keeps it at its start. */
+.rp-chart-scroll { container-type: inline-size; overflow-anchor: none; }
 .rp-chart-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .rp-heatmap-grid { min-width: var(--rp-grid-min, 460px); grid-template-columns: minmax(140px,180px) repeat(var(--rp-group-count, 3), minmax(96px,1fr)) !important; }
 .rp-heatmap-grid > div { overflow-wrap: anywhere; }

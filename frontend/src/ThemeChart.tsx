@@ -106,13 +106,22 @@ export default function ThemeChart({ fragment, title, onThemeSelect, selectedThe
     }
   }, [fragment.chart_html, fragment.chart_id])
 
+  // A chart always opens at its start (BUG-049: dataset 12's first heatmap was found scrolled to its end,
+  // hiding the theme-name column). Runs after the DOM adaptation above, which moves nodes and changes the
+  // grid's minimum width, so nothing that layout change does can leave the box scrolled.
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollLeft = 0
+  }, [fragment.chart_html, fragment.chart_id])
+
   // .rp-chart-scroll's own scrollLeft is browser-owned state that outlives a resize: if a viewer scrolls
   // this chart while the window is narrow (more of the chart's fixed pixel width needs scrolling), then
   // widens the window, the browser clamps the stale scrollLeft to the new, smaller max-scroll instead of
   // resetting it to 0 - so the chart stays shifted and its own left edge (title, first cell, first stat)
   // renders clipped even though the chart may now fit almost entirely. A ResizeObserver on the scroll
   // container resets scrollLeft to 0 whenever its size changes, so widening the window always shows the
-  // chart's start, matching what a viewer actually expects from "I made the window bigger."
+  // chart's start, matching what a viewer actually expects from "I made the window bigger." The chart itself
+  // is observed too: its width settles after first paint (Jost loading, the heatmap's grid minimum), and
+  // that late change must not leave the box scrolled either (BUG-049).
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -120,6 +129,7 @@ export default function ThemeChart({ fragment, title, onThemeSelect, selectedThe
       el.scrollLeft = 0
     })
     observer.observe(el)
+    if (ref.current) observer.observe(ref.current)
     return () => observer.disconnect()
   }, [fragment.chart_html])
 

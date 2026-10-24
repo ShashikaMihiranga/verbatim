@@ -278,6 +278,50 @@ describe('ThemeChart', () => {
     expect(scrollDiv.scrollLeft).toBe(0)
   })
 
+  // BUG-049: dataset 12's first heatmap opened scrolled to its end, hiding its theme-name column.
+  const heatmap = (note: string) => ({
+    chart_id: 'heatmap', chart_width: 1180, chart_height: 700,
+    chart_html: `<div style="padding:56px 48px"><div style="display:grid;grid-template-columns:minmax(160px,220px) repeat(2,minmax(0,1fr))">
+      <div></div><div>18-34</div><div>35+</div>
+      <div>Cost</div><div style="outline:2px solid var(--ink)">40%<div style="position:absolute;left:50%">${note}</div></div><div>20%</div>
+    </div></div>`,
+  })
+
+  it('a heatmap opens at scrollLeft 0, and a new fragment resets a scrolled box', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={heatmap('Cost is high')} />)
+    })
+    const scrollDiv = container.querySelector('.rp-chart-scroll') as HTMLElement
+    expect(scrollDiv.scrollLeft).toBe(0)
+    expect(container.querySelector('.rp-selected-explanation')?.textContent).toBe('Cost is high')
+    scrollDiv.scrollLeft = 32
+    act(() => {
+      root.render(<ThemeChart fragment={heatmap('Cost is higher')} />)
+    })
+    expect(scrollDiv.scrollLeft).toBe(0)
+  })
+
+  it('nothing takes focus when a heatmap renders, so the page never scrolls to it', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={heatmap('Cost is high')} />)
+    })
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('resets scrollLeft when the chart content itself changes size after load', () => {
+    act(() => {
+      root.render(<ThemeChart fragment={fragment()} />)
+    })
+    const scrollDiv = container.querySelector('.rp-chart-scroll') as HTMLElement
+    const observer = FakeResizeObserver.instances[0]
+    expect(observer.observe).toHaveBeenCalledWith(container.querySelector('.rp-chart'))
+    scrollDiv.scrollLeft = 32
+    act(() => {
+      observer.callback([], observer as unknown as ResizeObserver)
+    })
+    expect(scrollDiv.scrollLeft).toBe(0)
+  })
+
   it('disconnects the resize observer on unmount', () => {
     act(() => {
       root.render(<ThemeChart fragment={fragment()} />)
