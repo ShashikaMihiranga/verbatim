@@ -226,6 +226,19 @@ export default function Themes() {
     }
   }
 
+  // Same as refreshThemes, but takes the column explicitly: the page-load effect's closure runs before
+  // `column` state is set, so a refresh captured there would see null and do nothing.
+  async function reloadAfterThemeRebuild(col: string) {
+    try {
+      setThemes((await getThemes(id, col)).themes)
+      setThemesJob(null)
+      setReport(null) // the rebuild invalidated the old report on the server
+      setReport(await getReport(id, col, filters))
+    } catch {
+      /* no report after a rebuild is the expected state: the page offers "Build report" */
+    }
+  }
+
   async function refreshReport() {
     if (!column) return
     try {
@@ -348,6 +361,17 @@ export default function Themes() {
             if (job) stopThemesPoll = watch(job, setThemesJob, () => void refreshThemes())
           } catch {
             /* no job either; show the build trigger */
+          }
+        } else {
+          // Themes exist, but a rebuild may be running (reload, or a second tab). Resume it so the report
+          // buttons stay disabled until it finishes: a report built mid-rebuild reads the old themes.
+          try {
+            const job = await getLatestJob(id, col, 'themes')
+            if (job && job.status === 'running') {
+              stopThemesPoll = watch(job, setThemesJob, () => void reloadAfterThemeRebuild(col))
+            }
+          } catch {
+            /* no theme job */
           }
         }
 
@@ -586,7 +610,7 @@ export default function Themes() {
           {report.stale && (
             <div className="report-stale" role="status">
               <span>The themes changed after this report was built, so some findings describe themes that no longer exist.</span>
-              <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={reportRunning}>
+              <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning}>
                 {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
               </button>
             </div>
@@ -602,7 +626,7 @@ export default function Themes() {
           />
           <div className="foot report-foot">
             <div className="report-foot-group">
-              <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning}>
+              <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning}>
                 {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
               </button>
               <button type="button" className="btn quiet" onClick={() => setManageThemes(true)}>
@@ -722,7 +746,7 @@ export default function Themes() {
                 <div className="jp-failed">
                   <div className="big">Building the report didn't work</div>
                   <p className="err" role="alert">{reportJob.error}</p>
-                  <button type="button" className="btn" onClick={() => void buildTheReport()}>
+                  <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={themesRunning}>
                     Try again
                   </button>
                 </div>
@@ -733,7 +757,7 @@ export default function Themes() {
                     We will pick the strongest, best-supported findings from these themes, write one plain
                     sentence for each, and choose the chart that shows it best.
                   </p>
-                  <button type="button" className="btn" onClick={() => void buildTheReport()}>
+                  <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={themesRunning}>
                     Build report
                   </button>
                 </div>

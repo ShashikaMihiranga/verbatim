@@ -22,7 +22,7 @@ work finishes" is identical in both - that part is written once, here.
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy import select
@@ -56,6 +56,33 @@ StepFn = Callable[[str], None]
 # requests, so they need their own hook into that same per-test engine. `app/api_themes.py` and
 # `app/api_report.py` follow the same `from . import db as _db` / `_db.SessionLocal()` pattern for exactly
 # this reason.
+
+
+# Jobs that rewrite a column's Theme rows, and the age after which a still-"running" row is treated as
+# abandoned. There is no startup sweep and report jobs have no watchdog, so a crash or restart can leave a
+# row "running" forever; without an age cap the guard below would then block that column permanently.
+THEME_JOB_KINDS = ("themes", "look_inside_other", "split_theme")
+THEME_JOB_MAX_AGE = timedelta(minutes=60)
+REPORT_JOB_MAX_AGE = timedelta(minutes=15)
+
+
+def blocking_job(db: Session, dataset_id: int, column: str, kinds: tuple[str, ...],
+                 max_age: timedelta) -> Job | None:
+    """A running job of one of `kinds` for this dataset + column started within `max_age`, else None.
+
+    Used to refuse work that would race it: a report built while themes are being rebuilt reads the old
+    themes and goes stale the moment the rebuild commits (dataset 12, 2026-10-24: report job 11:32:31-
+    11:32:45 inside themes job 11:30:59-11:35:07)."""
+    now = datetime.now(timezone.utc)
+    rows = db.scalars(
+        select(Job).where(Job.dataset_id == dataset_id, Job.column_name == column,
+                          Job.kind.in_(kinds), Job.status == "running").order_by(Job.id.desc())
+    ).all()
+    for job in rows:
+        started = job.created_at if job.created_at.tzinfo else job.created_at.replace(tzinfo=timezone.utc)
+        if now - started <= max_age:
+            return job
+    return None
 
 
 def create_job(db: Session, dataset_id: int, column: str, kind: str) -> Job:

@@ -55,7 +55,7 @@ from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, theme_nodes
-from .jobs import create_job, start_job
+from .jobs import REPORT_JOB_MAX_AGE, blocking_job, create_job, start_job
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
     AnswerScore,
@@ -692,6 +692,7 @@ def build_themes(
     column = body.column
     if column not in plan.columns:
         raise HTTPException(422, "Unknown column.")
+    _refuse_while_report_builds(db, ds.id, column)
 
     jev_client: JevClient | None = None
     if body.use_jev_sentiment:
@@ -802,6 +803,7 @@ def look_inside_other(
     column = body.column
     if column not in plan.columns:
         raise HTTPException(422, "Unknown column.")
+    _refuse_while_report_builds(db, ds.id, column)
 
     confirmed = (ds.profile or {}).get("confirmed") or {}
     question = (confirmed.get("question") or "").strip()
@@ -899,6 +901,13 @@ def look_inside_other(
     return {"job_id": job.id, "status": "running"}
 
 
+def _refuse_while_report_builds(db: Session, dataset_id: int, column: str) -> None:
+    """409 while a report job for this column is running: changing themes under it would leave the new
+    report describing themes that no longer exist."""
+    if blocking_job(db, dataset_id, column, ("report",), REPORT_JOB_MAX_AGE) is not None:
+        raise HTTPException(409, "A report is being built for this column. Try again when it finishes.")
+
+
 def _invalidate_report_for_edit(db: Session, dataset_id: int, column: str) -> None:
     """Theme editing (docs/TODO.md, fixed 2026-10-22: rename/merge/split). A rename/merge/split changes
     what a theme IS, which makes every stored `Finding.sentence` for this column (plain-English prose
@@ -934,6 +943,7 @@ def rename_theme(
     theme = db.get(Theme, theme_id)
     if theme is None or theme.dataset_id != ds.id:
         raise HTTPException(404, "Theme not found.")
+    _refuse_while_report_builds(db, ds.id, theme.column_name)
 
     theme.label = body.label.strip()
     if body.description is not None:
@@ -967,6 +977,7 @@ def merge_themes(
     crosses to an external model), and deletes the absorbed rows (cascading any `Finding.theme_id`
     pointing at one to `NULL` - handled by `_invalidate_report_for_edit` below regardless)."""
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    _refuse_while_report_builds(db, ds.id, body.column)
     rows = list(db.scalars(
         select(Theme).where(
             Theme.dataset_id == ds.id, Theme.column_name == body.column, Theme.id.in_(body.theme_ids),
@@ -1118,6 +1129,7 @@ def split_theme(
     theme = db.get(Theme, theme_id)
     if theme is None or theme.dataset_id != ds.id:
         raise HTTPException(404, "Theme not found.")
+    _refuse_while_report_builds(db, ds.id, theme.column_name)
     column = theme.column_name
     if not column:
         raise HTTPException(409, "This theme has no column recorded; cannot split it.")

@@ -66,7 +66,7 @@ from .findings_structured import (
     pick_structured_columns,
     resolve_filter_rows,
 )
-from .jobs import create_job, start_job
+from .jobs import THEME_JOB_KINDS, THEME_JOB_MAX_AGE, blocking_job, create_job, start_job
 from .models import Column, Dataset, Finding, Report, Theme, User
 from .report_medium import comparison_groups, complete_numeric_grid, finding_views, numeric_explorations, theme_views
 from .report_focus import STRUCTURED_KINDS, focus_finding, reveal_folded_theme
@@ -523,6 +523,9 @@ def build_report(
     message text a caller used to receive in the HTTP body. See docs/DECISIONS.md for why 202, not 200."""
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
     column = body.column
+    # A report read from themes that are mid-rebuild is stale the moment the rebuild commits.
+    if blocking_job(db, ds.id, column, THEME_JOB_KINDS, THEME_JOB_MAX_AGE) is not None:
+        raise HTTPException(409, "Themes are still being rebuilt for this column. Build the report when that finishes.")
 
     themes = list(db.scalars(
         select(Theme).where(Theme.dataset_id == ds.id, Theme.column_name == column).order_by(Theme.id)

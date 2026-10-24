@@ -1603,3 +1603,68 @@ def test_rebuilding_themes_drops_the_report_built_on_the_old_ones(env):
     with env.Session() as s:
         columns = [r.content["column"] for r in s.scalars(_select(Report).where(Report.dataset_id == did))]
     assert columns == ["Some other column"]  # only this column's report is dropped
+
+
+# ---------------------------------------------------------------- build-race guard (RACE-GUARD-01)
+# Live on dataset 12 (2026-10-24) a report job ran inside a themes rebuild, read the old themes, and was
+# stale the moment the rebuild committed. Work that would race is now refused with a 409, both ways.
+
+def _running_job_row(env, did, kind, age_minutes=0):
+    from datetime import datetime, timedelta, timezone
+    from app.models import Job
+    with env.Session() as s:
+        job = Job(dataset_id=did, column_name=Q, kind=kind, status="running", step="Working",
+                  created_at=datetime.now(timezone.utc) - timedelta(minutes=age_minutes))
+        s.add(job)
+        s.commit()
+
+
+def test_report_build_is_refused_while_themes_are_really_being_rebuilt(env):
+    blocking = BlockingClient(FakeEmbeddingClient(), "embed")
+    app.dependency_overrides[get_embedding_client] = lambda: blocking
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_fake_claude_reply)
+    app.dependency_overrides[get_jev_client_factory] = lambda: (lambda: FakeJevClient(("pos", 0.8)))
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+
+    started = env.client.post(f"/api/datasets/{did}/themes/build", json={"column": Q})
+    assert started.status_code == 202, started.text
+    assert blocking.reached.wait(timeout=5)
+
+    refused = env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q})
+    assert refused.status_code == 409, refused.text
+    assert "still being rebuilt" in refused.json()["detail"]
+
+    blocking.released.set()
+    assert wait_for_job(env.client, did, started.json()["job_id"], timeout=5)["status"] == "done"
+    assert env.client.post(f"/api/datasets/{did}/report/build", json={"column": Q}).status_code == 202
+
+
+def test_theme_changes_are_refused_while_a_report_is_building(env):
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    assert build_themes_job(env, did)["status"] == "done"
+    ids = [t["id"] for t in env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]]
+    _running_job_row(env, did, "report")
+    app.dependency_overrides[get_jev_client] = lambda: FakeJevClient(("pos", 0.8))  # look-inside needs one
+
+    attempts = {
+        "rebuild": env.client.post(f"/api/datasets/{did}/themes/build", json={"column": Q}),
+        "look inside": env.client.post(f"/api/datasets/{did}/themes/look-inside-other", json={"column": Q}),
+        "rename": env.client.patch(f"/api/datasets/{did}/themes/{ids[0]}", json={"label": "Renamed"}),
+        "merge": env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": ids[:2]}),
+        "split": env.client.post(f"/api/datasets/{did}/themes/{ids[0]}/split"),
+    }
+    for name, r in attempts.items():
+        assert r.status_code == 409, (name, r.status_code, r.text)
+        assert "report is being built" in r.json()["detail"], name
+
+
+def test_a_running_row_left_behind_by_a_crash_does_not_block_forever(env):
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    assert build_themes_job(env, did)["status"] == "done"
+    _running_job_row(env, did, "report", age_minutes=120)  # far past the 15-minute report cap
+    assert env.client.post(f"/api/datasets/{did}/themes/build", json={"column": Q}).status_code == 202

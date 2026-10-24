@@ -3016,3 +3016,26 @@ still_other}` during the Jev matching step, returned by `job_dict`. Dropped from
 chart. Dataset 12's look-inside put 5,833 of 6,041 new answers into one broad theme ("Office Layout and
 Facility Condition"): likely Jev classification against a broad merged label with no size or confidence
 cap (`app/text_pipeline/other_classify.py`, `merging.py`) - investigate only with the user's OK.
+
+## 2026-10-24 (RACE-GUARD-01 done: report and theme builds can no longer overlap)
+
+Implements decision 2 of the entry above. `app/jobs.py:blocking_job` finds a running job of given kinds
+for a dataset + column started within an age cap (`THEME_JOB_MAX_AGE` 60 min, `REPORT_JOB_MAX_AGE` 15 min).
+`build_report` returns 409 "Themes are still being rebuilt for this column. Build the report when that
+finishes." while a themes / look_inside_other / split_theme job runs; `build_themes`, `look_inside_other`,
+`split_theme`, `merge_themes` and `rename_theme` return 409 "A report is being built for this column. Try
+again when it finishes." while a report job runs (`_refuse_while_report_builds`). `Themes.tsx` disables
+all four report-build buttons while themes run, and on page load resumes a running themes job even when
+themes already exist (`reloadAfterThemeRebuild` takes the column explicitly; the load effect's closure
+runs before `column` state is set).
+
+Tests (`tests/test_api_themes.py`): a real themes build held mid-run refuses a report build, which then
+succeeds once it finishes; all five theme-changing routes refuse while a report job runs; a `running` row
+older than the cap does not block (confirmed to fail when the cap is removed). The first two fail on the
+old route code. Backend 901 passed; frontend 110, tsc clean, lint unchanged (6).
+
+Live on the real backend: with a fresh running themes row for dataset 11 the API answered 409 with the
+message, and a freshly loaded report page showed the theme progress and a disabled Rebuild report. The
+test row was then deleted. Note: the follow-up check that a build is allowed again started a real report
+build for dataset 11 (one Claude call, done cleanly) - it should have been checked without starting one.
+Dataset 12 still needs Rebuild report (user's call).
