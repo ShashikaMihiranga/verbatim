@@ -108,6 +108,7 @@ class ConsolidatedCandidates:
 
 def label_and_consolidate(
     result: ClusterResult, question: str, client: ClaudeClient, *, for_other: bool = False,
+    existing_themes: dict[str, str | None] | None = None,
 ) -> ConsolidatedCandidates:
     """Labels every raw candidate cluster `recluster_other` found with ONE batched Claude call
     (`label_clusters_with_retry`, completely unchanged - same retry-once-on-a-malformed-reply behaviour
@@ -123,8 +124,11 @@ def label_and_consolidate(
         candidate is dropped before merging, so it can never become a theme, and its rows come back in
         `non_answer_rows`.
       - BUG-032: merges never chain (`apply_merges(allow_chains=False)`), so one broad label cannot
-        swallow a run of narrower candidates and leave Jev only that broad label to choose."""
-    labels = label_clusters_with_retry(result, question, client, flag_non_answers=for_other)
+        swallow a run of narrower candidates and leave Jev only that broad label to choose.
+    `existing_themes` (label -> description) lets the same Claude call place a candidate inside an
+    existing theme (`ThemeLabel.parent_theme`); the caller turns those into sub-themes."""
+    labels = label_clusters_with_retry(result, question, client, flag_non_answers=for_other,
+                                       existing_themes=existing_themes)
     real_labels = [l for l in labels if l.cluster_id != OTHER_CLUSTER_ID]  # drop any synthesized "Other"
     non_answer_ids = {l.cluster_id for l in real_labels if l.non_answer}
     non_answer_rows = [m.row for c in result.clusters if c.id in non_answer_ids for m in c.members]

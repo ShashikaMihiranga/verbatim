@@ -238,3 +238,15 @@ def test_apply_merges_without_chains_still_merges_same_label_clusters():
     labels = [_label(0, "Fit", 5), _label(1, "fit ", 4), _label(2, "Price", 3)]
     _res, new_labels = apply_merges(result, labels, allow_chains=False)
     assert [(l.label, l.size) for l in new_labels] == [("Fit", 9), ("Price", 3)]
+
+
+def test_apply_merges_keeps_the_biggest_labels_parent_theme():
+    """Look inside Other places a group inside an existing theme (`parent_theme`); merging candidates must
+    not drop that placement."""
+    result = ClusterResult(column="Q", clusters=[_cluster(0, 5), _cluster(1, 3), _cluster(2, 4)], noise=[], total_answers=12)
+    labels = [_label(0, "Delivery delays", 5, merge_with=[1]), _label(1, "Late parcels", 3), _label(2, "Colour", 4)]
+    labels[0].parent_theme = "Shipping"
+    _, merged = apply_merges(result, labels, allow_chains=False)
+    by_label = {l.label: l for l in merged}
+    assert by_label["Delivery delays"].parent_theme == "Shipping"
+    assert by_label["Colour"].parent_theme is None

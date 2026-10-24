@@ -424,6 +424,7 @@ def _apply_other_classification(
     failed_count: int = 0,
     low_confidence_count: int = 0,
     non_answer_count: int = 0,
+    parent_by_label: dict[str, str] | None = None,
 ) -> dict | None:
     """Writes "Look inside Other"'s results: UPDATES, not `_write_theme_rows`'s full delete-and-replace
     (that would also wipe every untouched known theme). `by_row` is `other_classify.OtherClassification
@@ -463,6 +464,11 @@ def _apply_other_classification(
     `low_confidence_count` (BUG-032) and `non_answer_count` (BUG-048) are reported the same way: rows the
     caller already left out of `by_row` or set to `NONE_OF_THESE`, so they stay in Other here.
 
+    `parent_by_label` (new label -> existing theme label, user decision 2026-10-25): a new group that is a
+    narrower part of an existing theme. Its matched answers join that theme and, when there are at least
+    `MIN_OTHER_NEW_THEME_SIZE` of them, also become a sub-theme inside it (merged into a same-named one).
+    Reported as `sub_theme_gains` and counted in `known_added`/`known_gains`.
+
     Returns a small summary dict (Stage 3, docs/TODO.md 2026-10-21/23: the animated flow's own
     Known/New/Still-in-Other results panel and its own result-chart tabs need these real numbers, not a
     second query reconstructing them after the fact) - `{"known_added": int, "new_themes": [{"label",
@@ -485,6 +491,7 @@ def _apply_other_classification(
 
     matched_known: dict[str, list[int]] = {}
     matched_new: dict[str, list[int]] = {}
+    matched_sub: dict[str, list[int]] = {}  # new label placed inside an existing theme -> its rows
     still_other: list[int] = []
     for row in other.answer_refs or []:
         choice = by_row.get(row, NONE_OF_THESE)
@@ -492,6 +499,8 @@ def _apply_other_classification(
             still_other.append(row)
         elif choice in known_by_label:
             matched_known.setdefault(choice, []).append(row)
+        elif choice in new_label_descriptions and (parent_by_label or {}).get(choice) in known_by_label:
+            matched_sub.setdefault(choice, []).append(row)
         elif choice in new_label_descriptions:
             matched_new.setdefault(choice, []).append(row)
         else:  # a choice that is neither a known label nor one we asked Jev to use - treat as unclassifiable
@@ -507,6 +516,14 @@ def _apply_other_classification(
             out[row] = AnswerScore(row=row, text=text, polarity=polarity, tone=tone)
         return out
 
+    # Sub-theme answers join their parent like any known-theme match; the sub-theme entry is added below.
+    sub_theme_gains: list[dict] = []
+    for label, new_rows in sorted(matched_sub.items(), key=lambda kv: -len(kv[1])):
+        parent = parent_by_label[label]
+        matched_known.setdefault(parent, []).extend(new_rows)
+        sub_theme_gains.append({"label": label, "parent": parent, "count": len(new_rows),
+                                "is_sub_theme": len(new_rows) >= MIN_OTHER_NEW_THEME_SIZE})
+
     known_added = 0
     for label, new_rows in matched_known.items():
         theme = known_by_label[label]
@@ -517,6 +534,22 @@ def _apply_other_classification(
         theme.tone = tone
         theme.sentiment = sentiment
         known_added += len(new_rows)
+
+    for label, new_rows in matched_sub.items():
+        if len(new_rows) < MIN_OTHER_NEW_THEME_SIZE:
+            continue  # too few for a sub-theme of its own; the answers still joined the parent above
+        parent = known_by_label[parent_by_label[label]]
+        subs = [dict(s) for s in (parent.sub_themes or [])]
+        existing = next((s for s in subs if s.get("label") == label), None)
+        refs = sorted(set(existing.get("answer_refs") or []) | set(new_rows)) if existing else sorted(new_rows)
+        sub_tone, sub_sentiment = _aggregate_tone(refs, _scores_for(refs))
+        entry = {"label": label, "description": new_label_descriptions[label], "size": len(refs),
+                 "sentiment": sub_sentiment, "tone": sub_tone, "answer_refs": refs}
+        if existing:
+            subs[subs.index(existing)] = entry
+        else:
+            subs.append(entry)
+        parent.sub_themes = subs  # a new list, so SQLAlchemy sees the JSON change
 
     column_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
     column_id = column_row.id if column_row else None
@@ -604,6 +637,7 @@ def _apply_other_classification(
         "other_before_count": other_before_count, "answered_total": answered_total,
         "known_gains": [{"label": label, "count": len(rows)}
                         for label, rows in sorted(matched_known.items(), key=lambda kv: -len(kv[1]))],
+        "sub_theme_gains": sub_theme_gains,
     }
 
 
@@ -886,8 +920,13 @@ def look_inside_other(
         reclustered = recluster_other(rows, texts, vectors)
 
         step("Naming new themes")
-        candidates = label_and_consolidate(reclustered, question, claude_client, for_other=True)
+        candidates = label_and_consolidate(reclustered, question, claude_client, for_other=True,
+                                           existing_themes=known_themes)
         criteria, new_label_descriptions = build_classification_question(known_themes, candidates)
+        # A new group Claude placed inside an existing theme becomes that theme's sub-theme (user decision,
+        # 2026-10-25), not a new main theme.
+        parent_by_label = {l.label: l.parent_theme for l in candidates.labels
+                           if l.parent_theme in known_themes and l.label not in known_themes}
         # Non-answers ("no comment", "n/a") never go to Jev: missing from `by_row`, they stay in Other
         # (BUG-048), and cannot be pulled into a known theme either.
         non_answer_rows = set(candidates.non_answer_rows)
@@ -903,6 +942,7 @@ def look_inside_other(
             new: dict[str, int] = {}
             still = len(failed)
             for choice in by_row.values():
+                choice = parent_by_label.get(choice, choice)  # a sub-theme's answers count for its parent
                 if choice in known_themes:
                     known[choice] = known.get(choice, 0) + 1
                 elif choice in new_label_descriptions:
@@ -928,6 +968,7 @@ def look_inside_other(
                 failed_count=len(classification.failed_rows),
                 low_confidence_count=len(classification.low_confidence_rows),
                 non_answer_count=len(non_answer_rows),
+                parent_by_label=parent_by_label,
             )
             # Result-chart fragments (Stage 3a, docs/TODO.md 2026-10-23): built in the SAME session,
             # right after the new Theme rows exist with real ids - re-queries by label rather than

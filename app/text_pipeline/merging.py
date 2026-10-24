@@ -130,7 +130,7 @@ def _merge_one_level(
         biggest = label_by_id[biggest_id]
         new_labels.append(ThemeLabel(
             cluster_id=new_id, label=biggest.label, description=biggest.description,
-            size=len(members), merge_with=[], note=biggest.note,
+            size=len(members), merge_with=[], note=biggest.note, parent_theme=biggest.parent_theme,
         ))
     return new_clusters, new_labels
 
@@ -197,6 +197,7 @@ def apply_sub_merges(
             cid: ThemeLabel(
                 cluster_id=lbl.cluster_id, label=lbl.label, description=lbl.description, size=lbl.size,
                 merge_with=[m for m in lbl.merge_with if m in valid_ids], note=lbl.note,
+                parent_theme=lbl.parent_theme,
             )
             for cid, lbl in label_by_id.items()
         }

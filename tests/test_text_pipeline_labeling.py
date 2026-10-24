@@ -18,6 +18,7 @@ from app.text_pipeline.labeling import (
     MAX_TOKENS,
     MAX_TOKENS_CEILING,
     NON_ANSWER_SYSTEM,
+    PARENT_SYSTEM,
     OTHER_CLUSTER_ID,
     OTHER_LABEL,
     SYSTEM,
@@ -258,6 +259,40 @@ def test_missing_non_answer_field_means_false_and_a_bad_one_raises():
     ]}))
     with pytest.raises(LabelingError):
         label_clusters(make_result(clusters), QUESTION, bad, flag_non_answers=True)
+
+
+def test_existing_themes_asks_for_a_parent_and_keeps_only_real_ones():
+    """Look inside Other (user decision 2026-10-25): the same labelling call says when a new group belongs
+    inside an existing theme. A parent that is not an existing theme is dropped, never invented."""
+    clusters = [make_cluster(0, ["parcel was late"]), make_cluster(1, ["love the colour"]),
+                make_cluster(2, ["the app crashed"])]
+    client = FakeClaudeClient(json.dumps({"themes": [
+        {"cluster_id": 0, "label": "Delivery delays", "description": "x", "merge_with": [], "note": None,
+         "parent_theme": "Shipping"},
+        {"cluster_id": 1, "label": "Colour", "description": "y", "merge_with": [], "note": None, "parent_theme": None},
+        {"cluster_id": 2, "label": "App crashes", "description": "z", "merge_with": [], "note": None,
+         "parent_theme": "Made-up theme"},
+    ]}))
+    existing = {"Shipping": "About delivery.", "Price": None}
+
+    labels = label_clusters(make_result(clusters), QUESTION, client, existing_themes=existing)
+
+    assert client.calls[0]["system"] == SYSTEM + PARENT_SYSTEM
+    sent = json.loads(client.calls[0]["prompt"])
+    assert sent["existing_themes"] == [{"label": "Shipping", "description": "About delivery."},
+                                       {"label": "Price", "description": ""}]
+    assert [l.parent_theme for l in labels] == ["Shipping", None, None]
+
+
+def test_without_existing_themes_no_parent_is_asked_or_kept():
+    clusters = [make_cluster(0, ["parcel was late"])]
+    client = FakeClaudeClient(json.dumps({"themes": [
+        {"cluster_id": 0, "label": "Delivery delays", "description": "x", "merge_with": [], "note": None,
+         "parent_theme": "Shipping"},
+    ]}))
+    labels = label_clusters(make_result(clusters), QUESTION, client)
+    assert "existing_themes" not in json.loads(client.calls[0]["prompt"])
+    assert labels[0].parent_theme is None
 
 
 # ---------------------------------------------------------------- missing API key

@@ -103,6 +103,17 @@ NON_ANSWER_SYSTEM = (
     "content is short, vague, general, or a complaint about the survey itself."
 )
 
+# Appended to SYSTEM only for "Look inside Other" when the column already has themes (user decision,
+# 2026-10-25): a new group that is really a narrower part of an existing theme becomes a sub-theme inside
+# it ("Delivery delays" under "Shipping") instead of a new main theme beside it.
+PARENT_SYSTEM = (
+    ' You are also given "existing_themes", the themes already found for this question. Give every entry '
+    'a "parent_theme" field: the exact label of ONE existing theme when this cluster is a narrower, more '
+    "specific part of it (someone reading that theme's description would expect these answers inside it), "
+    "or null when the cluster is a topic of its own. Do not pick a parent only because the topics are "
+    "related or mentioned together, and never invent a label that is not in the list."
+)
+
 SUB_SYSTEM = (
     "You help summarise open-ended survey answers that an automatic algorithm has already grouped into "
     "sub-clusters WITHIN a larger parent theme. You are given the survey question and, for each "
@@ -244,14 +255,21 @@ def _representative_texts(cluster: Cluster, n: int) -> list[str]:
     return [m.text for m in members[:n]]
 
 
-def _build_prompt(clusters: list[Cluster], question: str, samples_per_cluster: int) -> str:
-    payload = {
+def _build_prompt(
+    clusters: list[Cluster], question: str, samples_per_cluster: int,
+    existing_themes: dict[str, str | None] | None = None,
+) -> str:
+    payload: dict[str, Any] = {
         "survey_question": question,
         "clusters": [
             {"cluster_id": cluster.id, "sample_answers": _representative_texts(cluster, samples_per_cluster)}
             for cluster in clusters
         ],
     }
+    if existing_themes:
+        payload["existing_themes"] = [
+            {"label": label, "description": description or ""} for label, description in existing_themes.items()
+        ]
     return json.dumps(payload)
 
 
@@ -272,7 +290,9 @@ def _extract_json(text: str) -> Any:
         raise LabelingError(f"Claude's reply was not valid JSON: {e}", text) from e
 
 
-def _parse_response(text: str, expected_ids: set[int]) -> dict[int, dict[str, Any]]:
+def _parse_response(
+    text: str, expected_ids: set[int], parent_names: set[str] | None = None,
+) -> dict[int, dict[str, Any]]:
     """Strictly validate the parsed reply against `expected_ids` (the cluster ids we actually sent).
     Never trusts a field it has not checked the type of; raises `LabelingError` (with the raw text) on
     any structural problem rather than letting a malformed value reach a caller."""
@@ -318,6 +338,13 @@ def _parse_response(text: str, expected_ids: set[int]) -> dict[int, dict[str, An
         if not isinstance(non_answer, bool):
             raise LabelingError(f"Claude's reply had an invalid non_answer for cluster {cluster_id}.", text)
 
+        # Only asked for with PARENT_SYSTEM. A name that is not an existing theme is ignored (the cluster
+        # stays a topic of its own) rather than failing the batch over one loose reply.
+        parent = item.get("parent_theme")
+        parent = parent.strip() if isinstance(parent, str) else None
+        if parent_names is None or parent not in parent_names:
+            parent = None
+
         by_id[cluster_id] = {
             "label": label.strip()[:120],
             "description": description.strip()[:400],
@@ -325,6 +352,7 @@ def _parse_response(text: str, expected_ids: set[int]) -> dict[int, dict[str, An
             "merge_with": sorted({m for m in merge_with if m in expected_ids and m != cluster_id}),
             "note": note.strip()[:240] if isinstance(note, str) and note.strip() else None,
             "non_answer": non_answer,
+            "parent_theme": parent,
         }
 
     missing = expected_ids - by_id.keys()
@@ -353,6 +381,7 @@ def label_clusters(
     samples_per_cluster: int = DEFAULT_SAMPLES_PER_CLUSTER,
     *,
     flag_non_answers: bool = False,
+    existing_themes: dict[str, str | None] | None = None,
 ) -> list[ThemeLabel]:
     """Label every cluster in `result.clusters` with one batched call to `client` (SPEC.md: "One
     batched call for all clusters" - never one call per cluster), plus a locally-synthesized "Other"
@@ -367,18 +396,21 @@ def label_clusters(
     not valid JSON, missing an entry for a cluster id it was given, or a field of the wrong type.
 
     `flag_non_answers=True` (Look inside Other) also asks for `NON_ANSWER_SYSTEM`'s per-cluster flag,
-    returned as `ThemeLabel.non_answer`.
+    returned as `ThemeLabel.non_answer`. `existing_themes` (label -> description, Look inside Other) also
+    asks for `PARENT_SYSTEM`'s per-cluster parent, returned as `ThemeLabel.parent_theme`.
     """
     labels: list[ThemeLabel] = []
 
     if result.clusters:
         expected_ids = {cluster.id for cluster in result.clusters}
-        prompt = _build_prompt(result.clusters, question, samples_per_cluster)
+        prompt = _build_prompt(result.clusters, question, samples_per_cluster, existing_themes)
         max_tokens = _max_tokens_for(len(result.clusters))
         log.info("Theme labeling: %d clusters, max_tokens=%d", len(result.clusters), max_tokens)
         system = SYSTEM + NON_ANSWER_SYSTEM if flag_non_answers else SYSTEM
+        if existing_themes:
+            system += PARENT_SYSTEM
         raw_response = client.complete(system, prompt, max_tokens=max_tokens)
-        parsed = _parse_response(raw_response, expected_ids)
+        parsed = _parse_response(raw_response, expected_ids, set(existing_themes) if existing_themes else None)
         for cluster in result.clusters:
             item = parsed[cluster.id]
             labels.append(
@@ -390,6 +422,7 @@ def label_clusters(
                     merge_with=item["merge_with"],
                     note=item["note"],
                     non_answer=flag_non_answers and item["non_answer"],
+                    parent_theme=item["parent_theme"],
                 )
             )
 
@@ -433,6 +466,7 @@ def label_clusters_with_retry(
     samples_per_cluster: int = DEFAULT_SAMPLES_PER_CLUSTER,
     *,
     flag_non_answers: bool = False,
+    existing_themes: dict[str, str | None] | None = None,
 ) -> list[ThemeLabel]:
     """`label_clusters`, retried once on `LabelingError` before giving up - see
     `_retry_on_labeling_error`'s own docstring for why. This is the one real top-level theme labeling
@@ -440,7 +474,8 @@ def label_clusters_with_retry(
     sub-themes" rather than failing the build - see `app/api_themes.py::_work`), so it is the call this
     retry matters most for."""
     return _retry_on_labeling_error(
-        lambda: label_clusters(result, question, client, samples_per_cluster, flag_non_answers=flag_non_answers),
+        lambda: label_clusters(result, question, client, samples_per_cluster, flag_non_answers=flag_non_answers,
+                               existing_themes=existing_themes),
         what="Theme labeling",
     )
 

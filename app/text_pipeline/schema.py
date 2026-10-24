@@ -45,6 +45,7 @@ class ThemeLabel:
     merge_with: list[int]  # ids of other clusters Claude thinks are really the same theme as this one; [] if none
     note: str | None  # e.g. a flag that this cluster looks like two sub-themes and could be split; None if nothing to add
     non_answer: bool = False  # Claude says these answers don't answer the question ("no comment"); only asked for by Look inside Other
+    parent_theme: str | None = None  # an existing theme this cluster is a narrower part of; only asked for by Look inside Other
 
 
 @dataclass

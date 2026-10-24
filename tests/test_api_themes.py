@@ -1110,6 +1110,7 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
         "low_confidence_count": 0, "non_answer_count": 0,
         # Inside Other panel fields (docs/REPORT_UI_REWORK.md Phase 1): Other held 3 before, 5 + 3 answered.
         "other_before_count": 3, "answered_total": 8, "known_gains": [{"label": "Cost", "count": 3}],
+        "sub_theme_gains": [],
         "report_updated": False,  # no report had been built for this column, so there was none to refresh
     }
     # Live progress was written during the matching step and ends complete.
@@ -1355,8 +1356,63 @@ def test_apply_other_classification_extends_a_known_theme(env):
         assert summary == {
             "known_added": 2, "new_themes": [], "still_other_count": 0, "failed_classification_count": 0,
             "low_confidence_count": 0, "non_answer_count": 0,
-            "other_before_count": 2, "answered_total": 7, "known_gains": [{"label": "Cost", "count": 2}],
+            "other_before_count": 2, "answered_total": 7, "known_gains": [{"label": "Cost", "count": 2}], "sub_theme_gains": [],
         }
+
+
+def test_apply_other_classification_places_a_new_group_inside_an_existing_theme(env):
+    """User decision 2026-10-25: a new group Claude placed inside an existing theme ("Price increases"
+    inside "Cost") adds its answers to that theme and becomes its sub-theme - not a new main theme. A
+    placed group too small for a sub-theme still gives its answers to the parent."""
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    big = list(range(13, 13 + MIN_OTHER_NEW_THEME_SIZE))
+    small = [26] if 26 not in big else [40]
+    known_id, other_id = _seed_known_and_other(env, did, other_refs=big + small)
+    by_row = {**{r: "Price increases" for r in big}, **{r: "Hidden fees" for r in small}}
+    row_text = {r: "prices went up again" for r in big + small}
+
+    with env.Session() as s:
+        from app.models import Theme
+        from sqlalchemy import select
+        summary = _apply_other_classification(
+            s, did, Q, other_id, by_row,
+            {"Price increases": "Prices going up.", "Hidden fees": "Surprise charges."}, row_text,
+            parent_by_label={"Price increases": "Cost", "Hidden fees": "Cost"},
+        )
+        cost = s.get(Theme, known_id)
+        assert cost.size == 5 + len(big) + len(small)
+        assert set(big + small) <= set(cost.answer_refs)
+        assert [st["label"] for st in cost.sub_themes] == ["Price increases"]
+        assert cost.sub_themes[0]["size"] == len(big) and cost.sub_themes[0]["answer_refs"] == sorted(big)
+        labels = {t.label for t in s.scalars(select(Theme).where(Theme.dataset_id == did)).all()}
+        assert labels == {"Cost"}  # no new main theme; Other emptied and removed
+        assert summary["new_themes"] == []
+        assert summary["known_added"] == len(big) + len(small)
+        assert summary["sub_theme_gains"] == [
+            {"label": "Price increases", "parent": "Cost", "count": len(big), "is_sub_theme": True},
+            {"label": "Hidden fees", "parent": "Cost", "count": len(small), "is_sub_theme": False},
+        ]
+
+
+def test_apply_other_classification_grows_a_same_named_sub_theme(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    rows = list(range(13, 13 + MIN_OTHER_NEW_THEME_SIZE))
+    known_id, other_id = _seed_known_and_other(env, did, other_refs=rows)
+    from app.models import Theme
+    with env.Session() as s:
+        cost = s.get(Theme, known_id)
+        cost.sub_themes = [{"label": "Price increases", "description": "old", "size": 2, "sentiment": 0.0,
+                            "tone": {"neg": 0, "neu": 100, "pos": 0}, "answer_refs": [0, 1]}]
+        s.commit()
+    with env.Session() as s:
+        _apply_other_classification(
+            s, did, Q, other_id, {r: "Price increases" for r in rows}, {"Price increases": "Prices going up."},
+            {r: "prices went up" for r in rows}, parent_by_label={"Price increases": "Cost"},
+        )
+        subs = s.get(Theme, known_id).sub_themes
+        assert len(subs) == 1 and subs[0]["answer_refs"] == sorted([0, 1] + rows)
 
 
 def test_apply_other_classification_creates_a_new_theme_above_the_minimum(env):
@@ -1408,7 +1464,7 @@ def test_apply_other_classification_below_minimum_new_theme_folds_back_into_othe
         assert summary == {
             "known_added": 0, "new_themes": [], "still_other_count": len(too_few), "failed_classification_count": 0,
             "low_confidence_count": 0, "non_answer_count": 0,
-            "other_before_count": len(too_few), "answered_total": 5 + len(too_few), "known_gains": [],
+            "other_before_count": len(too_few), "answered_total": 5 + len(too_few), "known_gains": [], "sub_theme_gains": [],
         }
 
 
@@ -1457,7 +1513,7 @@ def test_apply_other_classification_none_of_these_and_missing_rows_stay_in_other
         assert summary == {
             "known_added": 0, "new_themes": [], "still_other_count": 3, "failed_classification_count": 1,
             "low_confidence_count": 0, "non_answer_count": 0,
-            "other_before_count": 3, "answered_total": 8, "known_gains": [],
+            "other_before_count": 3, "answered_total": 8, "known_gains": [], "sub_theme_gains": [],
         }
     with env.Session() as s:
         from app.models import Theme
