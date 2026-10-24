@@ -193,7 +193,7 @@ export default function ReportView({
       {onLookInsideOther && (report.other_breakdown !== null || lookInsideOtherJob) && (
         <InsideOther
           job={lookInsideOtherJob ?? null} onStart={onLookInsideOther}
-          allThemes={report.all_themes} breakdown={report.other_breakdown}
+          allThemes={report.all_themes} breakdown={report.other_breakdown} reportStale={report.stale ?? false}
         />
       )}
 

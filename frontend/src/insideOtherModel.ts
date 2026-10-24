@@ -48,6 +48,14 @@ export interface InsideOtherModel {
 
 const pct = (part: number, whole: number | null) => (whole ? Math.round((part / whole) * 1000) / 10 : null)
 
+// A share that rounds to 0.0% would print a real gain as "+0%" (BUG-045: 18 of 39,718 answers), so a
+// leaf only shows its share when it is at least 0.1%; otherwise it shows the answer count.
+export const hasShare = (l: Leaf): l is Leaf & { share: number } => l.share !== null && l.share >= 0.1
+
+export function shareOrCount(l: Leaf, sign = ''): string {
+  return hasShare(l) ? `${sign}${l.share}%` : `${sign}${l.count.toLocaleString('en-US')}`
+}
+
 function knownColor(label: string, realThemes: string[]): { color: string; onColor: string } {
   // Same colour the theme has in the treemap: the first 7 real themes (largest first) get --t1..--t7.
   const i = realThemes.indexOf(label)
@@ -87,6 +95,8 @@ export function insideOtherModel(
   job: Job | null,
   allThemes: ReportThemeSummary[],
   breakdown: ReportOtherBreakdown | null = null,
+  // The report's findings were built before this run (BUG-046): the run updated the themes, not them.
+  reportStale = false,
 ): InsideOtherModel {
   const realThemes = allThemes.map((t) => t.name)
   // Before a run (or after a failed one) everything in Other is still there: the report's own count.
@@ -143,7 +153,7 @@ export function insideOtherModel(
     phase: 'done',
     stepIndex: STEPS.length,
     matchingProgress: 1,
-    status: 'Done. Everything is updated above.',
+    status: reportStale ? 'Done. Rebuild the report to update the findings.' : 'Done. Everything is updated above.',
     known: known.shown, knownMore: known.more,
     // Older runs have no per-theme breakdown; the total is still real.
     knownTotal: r.known_added,

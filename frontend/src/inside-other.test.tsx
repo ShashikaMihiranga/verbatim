@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import InsideOther from './InsideOther'
 import InsideOtherFlow from './InsideOtherFlow'
-import { flowRibbons, OW, OX, W } from './insideOtherGeometry'
+import { flowRibbons, leafY, LY, OW, OX, W } from './insideOtherGeometry'
 import { insideOtherModel } from './insideOtherModel'
 import type { Job, LookInsideOtherResult } from './jobsApi'
 import type { ReportThemeSummary } from './reportApi'
@@ -60,6 +60,31 @@ describe('InsideOther', () => {
     for (const gone of ['Sankey', 'Arc', 'Sunburst']) expect(html).not.toContain(gone)
   })
 
+  it('a gain too small to show as a share prints the answer count, never "+0%" (BUG-045)', () => {
+    const big: LookInsideOtherResult = {
+      ...done, answered_total: 39718,
+      known_gains: [{ label: 'Cost', count: 18 }, { label: 'Charging', count: 400 }],
+      new_themes: [{ label: 'Parking access', count: 12, sentiment: 0, tone: { neg: 10, neu: 80, pos: 10 } }],
+    }
+    const html = render(job({ status: 'done', step: 'Done', result: big }))
+    expect(html).not.toContain('+0%')
+    expect(html).not.toMatch(/>0%</)
+    expect(html).toContain('+18') // the column and the gains chart
+    expect(html).toContain('<strong>+18</strong> answers')
+    expect(html).toContain('+1%') // 400 of 39,718 still prints as a share
+    expect(html).toContain('<strong>+1%</strong> 400 answers')
+    expect(html).toContain('<span class="io-newshare">12</span>')
+  })
+
+  it('done while the report is stale asks for a rebuild instead of "Everything is updated" (BUG-046)', () => {
+    const doneJob = job({ status: 'done', step: 'Done', result: done })
+    const fresh = renderToStaticMarkup(<InsideOther job={doneJob} onStart={vi.fn()} allThemes={themes} />)
+    expect(fresh).toContain('Done. Everything is updated above.')
+    const stale = renderToStaticMarkup(<InsideOther job={doneJob} onStart={vi.fn()} allThemes={themes} reportStale />)
+    expect(stale).toContain('Done. Rebuild the report to update the findings.')
+    expect(stale).not.toContain('Everything is updated above')
+  })
+
   it('failed: shows the real error and offers the button again', () => {
     const html = render(job({ status: 'failed', error: 'Jev returned HTTP 401.' }))
     expect(html).toContain('Jev returned HTTP 401.')
@@ -90,6 +115,19 @@ describe('InsideOtherFlow', () => {
 
   it('idle draws only the Still in Other ribbon', () => {
     expect(flowRibbons(insideOtherModel(null, themes)).map((r) => r.key)).toEqual(['still'])
+  })
+
+  it('idle is compact: a short band straight below Other, not a tall empty ribbon area (BUG-035)', () => {
+    const idle = insideOtherModel(null, themes)
+    const [still] = flowRibbons(idle)
+    expect(still.x).toBeCloseTo(OX + OW / 2)
+    expect(leafY(idle)).toBeLessThan(LY / 2)
+    const html = renderToStaticMarkup(<InsideOtherFlow model={idle} reducedMotion={false} />)
+    expect(html).toContain(`viewBox="0 0 ${W} ${leafY(idle) + 56}"`)
+    // Running and done keep the full flow.
+    const doneModel = insideOtherModel(job({ status: 'done', step: 'Done', result: done }), themes)
+    expect(leafY(doneModel)).toBe(LY)
+    expect(flowRibbons(doneModel).at(-1)!.x).toBeGreaterThan(OX + OW)
   })
 
   it('reduced motion: no moving dots even while running', () => {

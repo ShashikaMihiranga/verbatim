@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import InsideOtherFlow from './InsideOtherFlow'
 import { prefersReducedMotion } from './insideOtherGeometry'
-import { insideOtherModel, STEPS, type InsideOtherModel, type Leaf } from './insideOtherModel'
+import { hasShare, insideOtherModel, shareOrCount, STEPS, type InsideOtherModel, type Leaf } from './insideOtherModel'
 import type { Job } from './jobsApi'
 import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
 import ThemeChart from './ThemeChart'
@@ -38,7 +38,6 @@ function Rows({ items, largest, value }: { items: Leaf[]; largest: number; value
 }
 
 function Columns({ m, allThemesToggle }: { m: InsideOtherModel; allThemesToggle?: ReactNode }) {
-  const share = (l: Leaf) => (l.share !== null ? `${l.share}%` : fmt(l.count))
   const largestKnown = Math.max(0, ...m.known.map((l) => l.count))
   const largestNew = Math.max(0, ...m.newThemes.map((l) => l.count))
   const showNumbers = m.phase === 'running' || m.phase === 'done'
@@ -48,7 +47,7 @@ function Columns({ m, allThemesToggle }: { m: InsideOtherModel; allThemesToggle?
         <h4 className="io-col-title">Known themes</h4>
         <p className="io-col-note">Answers that match a theme already in the chart</p>
         <p className="io-col-n">{showNumbers ? `+${fmt(m.knownTotal)}` : '+0'} <span>answers</span></p>
-        <Rows items={m.known} largest={largestKnown} value={(l) => (l.share !== null ? `+${l.share}%` : `+${fmt(l.count)}`)} />
+        <Rows items={m.known} largest={largestKnown} value={(l) => shareOrCount(l, '+')} />
         {m.knownMore > 0 && <p className="io-more">and {m.knownMore} more</p>}
       </section>
       <section className="io-col io-col-new" aria-label="New themes found">
@@ -57,7 +56,7 @@ function Columns({ m, allThemesToggle }: { m: InsideOtherModel; allThemesToggle?
         <p className="io-col-n">
           {fmt(showNumbers ? m.newTotal : 0)} <span>answers, {m.newThemes.length + m.newMore} theme{m.newThemes.length + m.newMore === 1 ? '' : 's'}</span>
         </p>
-        <Rows items={m.newThemes} largest={largestNew} value={share} />
+        <Rows items={m.newThemes} largest={largestNew} value={(l) => shareOrCount(l)} />
         {m.newMore > 0 && <p className="io-more">and {m.newMore} more</p>}
       </section>
       <section className="io-col io-col-still" aria-label="Still in Other">
@@ -153,7 +152,7 @@ function Results({ m }: { m: InsideOtherModel }) {
             <li key={l.label} className="io-newchip">
               <span className="io-newbadge">new</span>
               {l.label}
-              {l.share !== null && <span className="io-newshare">{l.share}%</span>}
+              <span className="io-newshare">{shareOrCount(l)}</span>
             </li>
           ))}
         </ul>
@@ -167,7 +166,7 @@ function Results({ m }: { m: InsideOtherModel }) {
                 <span className="io-gain-name">{l.label}</span>
                 <span className="io-gain-track"><span style={{ width: `${largest ? (l.count / largest) * 100 : 0}%`, background: l.color }} /></span>
                 <span className="io-gain-n">
-                  {l.share !== null && <strong>+{l.share}%</strong>} {fmt(l.count)} answers
+                  {hasShare(l) ? <><strong>+{l.share}%</strong> {fmt(l.count)} answers</> : <><strong>+{fmt(l.count)}</strong> answers</>}
                 </span>
               </li>
             ))}
@@ -185,7 +184,7 @@ function Results({ m }: { m: InsideOtherModel }) {
                   <span className="io-gain-name">{l.label}</span>
                   <span className="io-gain-track"><span style={{ width: `${largestNew ? (l.count / largestNew) * 100 : 0}%`, background: tone.color }} /></span>
                   <span className="io-gain-n">
-                    {l.share !== null && <strong>{l.share}%</strong>} {fmt(l.count)} answers{tone.text && ` · ${tone.text}`}
+                    {hasShare(l) && <strong>{l.share}%</strong>} {fmt(l.count)} answers{tone.text && ` · ${tone.text}`}
                   </span>
                 </li>
               )
@@ -203,14 +202,15 @@ function Results({ m }: { m: InsideOtherModel }) {
 }
 
 export default function InsideOther({
-  job, onStart, allThemes = [], breakdown = null,
+  job, onStart, allThemes = [], breakdown = null, reportStale = false,
 }: {
   job: Job | null
   onStart: () => void
   allThemes?: ReportThemeSummary[]
   breakdown?: ReportOtherBreakdown | null
+  reportStale?: boolean // findings built before this run: the done line asks for a rebuild
 }) {
-  const m = useMemo(() => insideOtherModel(job, allThemes, breakdown), [job, allThemes, breakdown])
+  const m = useMemo(() => insideOtherModel(job, allThemes, breakdown, reportStale), [job, allThemes, breakdown, reportStale])
   const reducedMotion = useMemo(() => prefersReducedMotion(), [])
   const [showAll, setShowAll] = useState(false)
   // The full list only adds something when real themes are folded into Other; otherwise it repeats the treemap.
