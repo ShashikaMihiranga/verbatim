@@ -2487,3 +2487,99 @@ above); `binned_grid` against the EV fixture (dataset 11/12 have no two-numeric-
 exercise it with) - confirmed the sentiment gradient reads correctly both left-to-right (higher income,
 less negative) and bottom-to-top (older, less negative), and re-confirmed via a zoomed screenshot after
 the contrast fix that every cell's count is legible against its own background tint.
+
+## 2026-10-24 (Session handoff: chart-block stream paused mid-batch-4, Codex task board discovered)
+
+User is now running Codex alongside this Claude Code session and asked to pause, document, and compact
+before setting up a monitoring UI. This entry is the full handoff - read this plus the plan file
+(`.claude/plans/this-is-ai-based-deep-globe.md`, "Progress tracker" section) before resuming either the
+chart-block stream or anything else in this repo.
+
+**Committed and safe** (on `staging`, not pushed - same standing convention as always), in order:
+`929d04c` Stage 1 (46-block registry), `ffa8db9`/`cdc4cc3`/`24cd851`/`c0796c8`/`391241f` (reuse-group +
+top_phrases + context_header), `c90791e` batch 1 (theme_mix_over_time, tone_by_number, quotes,
+ranked_answers), `9582171` batch 2 (ranked_list, vs_average, trend_groups, trend_styled), `02e8cda` batch
+3 (theme_similarity, binned_grid - includes migration `9e394e995e75`, `Theme.map_x`/`map_y`). **14 of the
+46 blocks are done and tested; `co_mentions` is permanently excluded; `see_more` is blocked on the
+deferred Stage 2 (scoring/selection) and isn't counted either way.**
+
+**UNCOMMITTED right now - batch 4 (`answer_map`), roughly 70% done, NOT tested, NOT verified, do not
+assume it works**:
+- New migration `1ab09b2dd97c`: `Column.answer_positions` (JSON, `{"row": [x, y]}`) - applied locally
+  (`alembic upgrade head` already run against the local dev DB).
+- `app/api_themes.py`: `_pca_normalize_01` (extracted shared PCA-then-0..1-scale core, also now used by
+  the already-shipped `_project_centroids_2d`), `MAX_ANSWER_POSITIONS = 3000`, `_sample_answer_positions`
+  (bounded reproducible sample of real per-answer positions from embeddings already in memory - no new
+  embedding call). Wired into the real build pipeline's `_work` closure: computes positions after
+  `_write_theme_rows` and stores them on the matching `Column` row.
+- `app/chart_data.py`: `MapData` gained `points_by_theme: dict[str, list[tuple[float,float]]] = field(default_factory=dict)`
+  (defaulted, so every existing `MapData(...)` construction site needed zero changes).
+- `app/charts.py`: `f_map` now plots real points when `data.answer_map.points_by_theme` has them for a
+  theme, falling back to its original synthetic density-cloud-around-the-real-centre otherwise (the
+  pre-existing behavior, still used by the EV gallery and any theme with no real sample). Also fixed the
+  chart's own aria-label/caption text to stop claiming "about 50 answers per dot" when dots are real.
+- `app/api_report.py`: new `_answer_positions_for(db, dataset_id, column)` (decodes `Column.answer_positions`
+  back to `dict[int, tuple[float,float]]`), threaded into BOTH `build_report_data`/`build_findings` call
+  sites (the GET-report path and the build-job path).
+- `app/findings.py`: `build_report_data` gained `answer_positions` param, new `_build_answer_map` helper
+  (groups real positions by real theme via `ThemeNode.answer_refs`, excludes "Other", pulls `tip_text`/
+  `tip_note` from `quote_theme_texts` instead of plumbing a second per-row text source just for one
+  cosmetic tooltip). **`build_findings`'s own signature was just updated to accept `answer_positions` -
+  but the actual call to `build_report_data` inside `build_findings`'s body has NOT been updated yet to
+  pass it through.** This is the exact line execution stopped on.
+
+**Not started at all yet, for `answer_map`**: `app/report_blocks.py`'s `b31`/`answer_map` entry still has
+`chart_id="map"` (already set from Stage 1, that part's fine) but `needs()` is still `lambda data: False` -
+needs updating to check `bool(data.answer_map.points_by_theme)`. No golden file for `map` has been
+regenerated. No tests written for `_sample_answer_positions`/`_pca_normalize_01`/`_build_answer_map`/
+`_answer_positions_for`. `tests/test_app.py`'s `test_frame_count` does NOT need bumping this time (`map`
+was already registered in `FRAMES` before this batch). **Full test suite has not been run since these
+changes started** - likely passes (every new field/param has a safe default or is additive) but this is
+unverified, say so plainly if asked rather than assuming.
+
+**Next steps to finish `answer_map`** (in order): (1) finish wiring `answer_positions` through
+`build_findings`'s own `build_report_data(...)` call, (2) update `report_blocks.py`'s `answer_map` block,
+(3) run the full backend test suite and fix any fallout, (4) write unit tests for the 4 new functions
+above (follow the exact same pattern every other batch's DECISIONS entry in this file already
+demonstrates - e.g. batch 3's `_cluster_centroid`/`_project_centroids_2d` tests), (5) live-verify against
+dataset 11 (rebuild themes again, confirm `Column.answer_positions` actually gets populated and `f_map`
+renders real scattered points, not a synthetic cloud - screenshot it), (6) write the DECISIONS.md entry
+for batch 4 proper (this handoff entry is not that - replace/supplement it once batch 4 actually ships),
+(7) commit.
+
+**Remaining after `answer_map` (5)**: `region_map` (decided: a dot map, one circle per country at its real
+lat/long centroid, NOT a full political-boundary choropleth - needs a new "country" column-kind in the
+profiler plus a hand-maintained lat/long lookup table plus a new renderer - likely the single largest
+remaining item), `trend_grid`, `trend_aggregated`, `trend_errorbars`, `trend_sparse` (smaller trend
+variants, see the plan file's own notes on what each still needs).
+
+**New discovery this session, not yet acted on**: the user is now running Codex alongside this session.
+Codex (or the user, via Codex) added `AGENTS.md`, `docs/COLLABORATION.md`, and `tools/taskboard.py` - a
+shared local SQLite task board (`.agent-board/tasks.sqlite3`, git-ignored) for claiming file-scope
+ownership between agents before editing, specifically to prevent collisions like the one sitting in this
+repo's working tree right now. The board is currently EMPTY (`python3 tools/taskboard.py list` shows 0
+tasks everywhere) - `docs/COLLABORATION.md` itself explicitly says "The existing chart changes remain
+unassigned until their author confirms ownership and scope," referring to exactly the uncommitted batch-4
+work above. **Before anyone (human or either agent) touches `app/api_themes.py`, `app/findings.py`,
+`app/api_report.py`, `app/charts.py`, `app/chart_data.py`, or `app/models.py` next, claim a task on the
+board for this scope** (`python3 tools/taskboard.py claim ... --agent claude` or `--agent codex`,
+whichever resumes it) so the two agents' real-time work doesn't collide the way this board exists to
+prevent. Read `docs/COLLABORATION.md` in full before claiming - it has the exact commands.
+
+**Not pushed**: `origin/staging` is at `02e8cda` (end of batch 3). Nothing beyond that has been pushed,
+matching the standing "push only on explicit confirmation" convention all session.
+
+## 2026-10-24 (task-board monitor: terminal, not a web dashboard)
+- User now runs Codex alongside this session and asked for three monitoring UIs: a task-board/todo
+  monitor, an agent-usage counter, and a weekly session monitor. Started on the first one (built and
+  live-verified a local `tools/taskboard_server.py` + `tools/taskboard_ui.html` web dashboard - stdlib
+  `http.server` reusing `taskboard.py`'s own `connect()`/`snapshot()`, a Kanban-by-status page styled with
+  Verbatim's own CSS tokens, polling every 3s), then the user asked whether the existing terminal `watch`
+  command would be simpler. **Decision: yes - dropped the web dashboard, use
+  `python3 tools/taskboard.py watch` (already built, in `docs/COLLABORATION.md`) instead.** It needs no new
+  code, no background server process to keep alive, and already does everything the dashboard did (live
+  refresh, per-status grouping, staleness via `UPDATE OLD`, recent activity). The two new dashboard files
+  were deleted, not committed - nothing shipped from this sub-stream.
+- Agent-usage counter and weekly session monitor are still next, per the user's own stated order - not
+  started; worth asking, when picking the next one up, whether it similarly belongs in the terminal rather
+  than a new web page.
