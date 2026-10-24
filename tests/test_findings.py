@@ -237,6 +237,22 @@ def test_pick_chart_tone_contrast_swaps_sentsun_for_diverge_when_tone_spread_is_
     assert pick_chart(tone, wide_data) == "sentsun"  # clears the bar - sentsun's own table default
 
 
+def test_pick_chart_trend_shift_swaps_trend_for_theme_mix_over_time_once_real_themes_reach_the_threshold():
+    """Stage 4 (chart-block stream, 2026-10-24): `theme_mix_over_time`'s own registry `needs()`
+    (app/report_blocks.py b44) requires 3+ real themes - `pick_chart` now wires that exact threshold as a
+    real gate for `trend_shift` findings, same pattern as the long_tail/tone_contrast swaps above."""
+    trend = Candidate("trend_shift", "x", 1, "X", count=1, score=1.0, numbers={})
+    ds = Dataset(project_id=1, filename="x.csv", file_hash="1" * 64, row_count=100, profile={})
+
+    few = [make_theme(1, "Cost", 50, 0.1), make_theme(2, "Range", 50, 0.1)]  # 2 real themes
+    few_data = build_report_data(ds, few, cleaning_report={}, question=QUESTION)
+    assert pick_chart(trend, few_data) == "trend"  # below the threshold - table default
+
+    enough = [make_theme(1, "Cost", 50, 0.1), make_theme(2, "Range", 50, 0.1), make_theme(3, "Charging", 50, 0.1)]
+    enough_data = build_report_data(ds, enough, cleaning_report={}, question=QUESTION)
+    assert pick_chart(trend, enough_data) == "themeMixOverTime"  # reaches the threshold
+
+
 # ==================================================================== theme_nodes (real sub-theme wiring)
 
 def test_theme_nodes_backward_compat_no_sub_themes_yields_empty_children():

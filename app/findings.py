@@ -108,6 +108,17 @@ MAX_CANDIDATES = 5  # SPEC.md section 5: "keep the top 3 to 5" - this is a cap, 
 SUB_THEME_SUNBURST_MIN = 3  # SPEC.md section 4's own "fewer than 3 sub-themes in total" wording
 TONE_SPREAD_SENTSUN_MIN = 0.05  # SPEC.md section 4's own "sentiment spread under 0.05" wording
 
+# Stage 4 (chart-block stream, 2026-10-24): a `trend_shift` finding's own gate ladder - more specific/
+# richer alternates checked first, `trend` (CHART_BY_KIND's table default) is the final fallback.
+# `theme_mix_over_time`'s own threshold, matching its registry `needs()` (app/report_blocks.py b44)
+# exactly: 3 or more real themes (the same "theme exists at all" shape `sub_theme_total`/`max_tone_spread`
+# above already reuse `report_data.themes` for). `trend_small_multiples`/`trend_sparse` are the ladder's
+# two higher-priority rungs (SPEC's own "more than 4 themes would tangle" / "some periods are missing"
+# cases) - not wired here yet: `trend_small_multiples` has no renderer yet, `trend_sparse` has neither a
+# renderer nor the per-period answer-count data `TrendData` would need to detect a gap at all (see
+# `docs/DECISIONS.md`'s Stage 4 entry and the plan file for the follow-up that adds both rungs).
+THEME_MIX_OVER_TIME_MIN_THEMES = 3
+
 CHART_BY_KIND = {
     "tone_contrast": "sentsun",  # table: "Sentiment sunburst or Marimekko", priority 4 - the TABLE-DEFAULT
                                  # chart; pick_chart below swaps this for "diverge" when real tone spread is
@@ -123,7 +134,8 @@ CHART_BY_KIND = {
                                       # is used instead: its renderer already exists, is tested, and matches
                                       # the mockup's visual style for "a number that moves with score". A
                                       # deliberate, documented SPEC.md deviation - see docs/DECISIONS.md.
-    "trend_shift": "trend",  # table: "Trend", priority 6 - matches SPEC.md section 4's row exactly
+    "trend_shift": "trend",  # table: "Trend", priority 6 - the TABLE-DEFAULT chart; pick_chart below swaps
+                             # this for "themeMixOverTime" once real themes reach THEME_MIX_OVER_TIME_MIN_THEMES
 }
 PRIORITY_BY_KIND = {
     "long_tail": 2, "dominant_theme": 3, "tone_contrast": 4, "segment_skew": 5, "score_correlation": 5,
@@ -861,8 +873,8 @@ def label_confidence(candidate: Candidate) -> str:
 
 def pick_chart(candidate: Candidate, report_data: "ReportData | None" = None) -> str:
     """Maps a finding kind to one of this stream's wired-up chart ids, per SPEC.md section 4's priority
-    table - `CHART_BY_KIND` for the simple one-kind-one-chart cases, plus two real skip-condition swaps
-    this stage (Stage 3) wires for real:
+    table - `CHART_BY_KIND` for the simple one-kind-one-chart cases, plus real skip-condition swaps this
+    stream wires for real (Stage 3, then Stage 4):
 
     - `long_tail` renders `sunburst` instead of the table-default `treemap` once real sub-themes reach
       `SUB_THEME_SUNBURST_MIN` (SPEC's own "skip when fewer than 3 sub-themes, use treemap" - applied the
@@ -873,6 +885,13 @@ def pick_chart(candidate: Candidate, report_data: "ReportData | None" = None) ->
       inner/outer ring split has nothing to show when every theme reads about the same, so this swaps to
       Diverge, SPEC's own documented alternate for "reasons with neutral or positive framing", rather than
       rendering a flat, uninformative sun).
+    - `trend_shift` renders `themeMixOverTime` instead of the table-default `trend` once a real report has
+      `THEME_MIX_OVER_TIME_MIN_THEMES` or more real themes (matching `theme_mix_over_time`'s own registry
+      `needs()`, `app/report_blocks.py` b44 - a single combined line chart undersells a trend with several
+      real themes moving; the stacked-share view shows the whole mix shifting, not just one line). This is
+      rung 3 of Stage 4's planned gate ladder (`trend_sparse` > `trend_small_multiples` >
+      `theme_mix_over_time` > `trend`) - the top two rungs are follow-up work, not wired yet (see
+      `docs/DECISIONS.md`'s Stage 4 entry for why).
 
     `report_data` is `None` for a caller with no `ReportData` yet available (kept optional, not required,
     so a direct/legacy call site still gets each kind's table-documented default) - every real call site in
@@ -885,6 +904,10 @@ def pick_chart(candidate: Candidate, report_data: "ReportData | None" = None) ->
         return "sunburst"
     if candidate.kind == "tone_contrast" and max_tone_spread(report_data) < TONE_SPREAD_SENTSUN_MIN:
         return "diverge"
+    if candidate.kind == "trend_shift":
+        real_theme_count = sum(1 for t in report_data.themes if t.color != "other")
+        if real_theme_count >= THEME_MIX_OVER_TIME_MIN_THEMES:
+            return "themeMixOverTime"
     return chart
 
 

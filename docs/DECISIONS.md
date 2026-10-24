@@ -2745,3 +2745,52 @@ dataset's tone spreads are all wide (0.64-0.77), so the sentsun-to-diverge swap 
 
 Full backend suite green (849 passed, same 5 pre-existing unrelated auth/security failures as every prior
 entry, confirmed unrelated via `git stash` in the batch-4 entry). No frontend files touched this entry.
+
+## 2026-10-24 (chart-block stream: Stage 4 item 1 - theme_mix_over_time wired as a trend_shift alternate)
+
+Investigated first (user's explicit request, same discipline as Stage 3): of Stage 4's 5 items,
+`tone_split` and `number_spread` turned out to already be fully done (`tone_split` is literally what
+Stage 3 just built - `diverge` already wired for `tone_contrast`; `number_spread` was already decided in
+an earlier batch to reuse `byScore`, already reachable). Only 3 genuinely need work: `theme_mix_over_time`
+(renderer exists, batch 1, just unwired), `trend_small_multiples` (no renderer yet), `trend_sparse` (no
+renderer AND no data - `build_trend_data` already drops under-30 periods before `TrendData` exists, so
+"N of M periods survived" isn't recorded anywhere today). Full write-up in the plan file
+(`.claude/plans/this-is-ai-based-deep-globe.md`), approved before execution.
+
+**Real scope conflict found before touching anything**: `tools/taskboard.py` showed Codex actively
+`in_progress` on `STAGE5-WIRE-01`, claiming `app/charts.py`/`app/api_report.py`/`frontend/src/Report.tsx`/
+`frontend/src/reportApi.ts` - all files this stage's remaining 2 items (`trend_small_multiples`,
+`trend_sparse`) would need. Re-scoped to a narrower task (`STAGE4-THEMEMIX-01`, only `app/findings.py`/
+`app/report_blocks.py`) covering just item 1, which needs neither `charts.py` nor `api_report.py` -
+`f_theme_mix_over_time` already exists and reads only `data.trend` (no `selected_theme` usage, confirmed
+by reading it - unlike sentsun/diverge/sunburst, no per-finding highlighting fix was needed here either).
+
+**What got built**: `app/findings.py`'s `pick_chart` gained a third real gate - `trend_shift` findings now
+render `themeMixOverTime` instead of the table-default `trend` once a report has 3 or more real themes
+(`THEME_MIX_OVER_TIME_MIN_THEMES`, matching `theme_mix_over_time`'s own registry `needs()`, b44, exactly).
+This is rung 3 of Stage 4's planned 4-rung gate ladder for `trend_shift` (`trend_sparse` >
+`trend_small_multiples` > `theme_mix_over_time` > `trend`) - the top two rungs stay follow-up work until
+Codex's `app/charts.py` claim clears, documented in `pick_chart`'s own docstring so a future reader isn't
+surprised the ladder is incomplete.
+
+**Tests**: `tests/test_findings.py` - one new test proving the 2-themes-vs-3-themes swap, built against a
+real `build_report_data()` call, same pattern as Stage 3's own tests.
+
+**Live-verified**, carefully avoiding the shared working tree's in-flight Codex changes (restarting the
+dev server was avoided - Codex was actively using it): ran the real pipeline directly in Python (not
+through `app/api_report.py`, which Codex is currently editing) against dataset 1's real 25 built themes
+and real `reviews.date` trend data - confirmed a real `trend_shift`-shaped `ReportData` (7 real theme
+nodes, past the threshold) resolves to `chart_id="themeMixOverTime"`, and that `render("themeMixOverTime",
+...)` produces real, correct HTML (7548 bytes, real theme names present). Dataset 1's own real
+`trend_shift` candidates didn't happen to clear their gate today (confirmed via `candidate_findings`) -
+not a bug, just this dataset's real numbers; the gate itself is proven correct independent of that.
+
+**Isolation note**: confirmed via `git status`/`git diff --stat` that only `app/findings.py` and
+`tests/test_findings.py` were touched and committed here - `app/api_report.py`, `app/charts.py`,
+`frontend/src/Report.tsx`, `frontend/src/reportApi.ts`, `frontend/src/ThemeChartTabs.tsx`,
+`frontend/src/report.css`, `tests/test_api_report.py`, `tests/test_app.py` all had real, uncommitted
+Codex changes sitting in this same working tree during this work (confirmed via `tools/taskboard.py show
+STAGE5-WIRE-01`) and were deliberately left untouched, not staged, not committed.
+
+Claimed/closed on the task board as `STAGE4-THEMEMIX-01`. `trend_small_multiples`/`trend_sparse` remain
+not started - blocked on `app/charts.py` until Codex's Stage 5 work clears that file.
