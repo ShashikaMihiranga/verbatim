@@ -531,11 +531,19 @@ def build_segment_data(
 
     Groups under `heatmap_group_floor` are dropped; if fewer than 2 groups survive, returns `None`. Rows
     are the `max_rows` largest themes from `nodes` (all of them if fewer exist). `SegmentRow.overall` is
-    the theme's real overall share (`ThemeNode.share`), never a value recomputed from this subset.
+    the theme's share of the answers in the SURVIVING groups pooled together - the same row universe the
+    cells are computed over - NOT `ThemeNode.share` (BUG-041, 2026-10-25: on dataset 12 only 24,961 of
+    40,000 rows had a Region and one theme's 1,351 answers had only 39 with a Region, so comparing each
+    region's 0.1-0.3% against the theme's 3.4% share of ALL answers produced three false "almost never
+    mentioned in region X" findings). Rows with no group value, rows in groups capped out by the caller and
+    rows in groups dropped by `heatmap_group_floor` are all excluded from the baseline, because none of them
+    appear in any cell: the baseline is then exactly the size-weighted average of the cells shown, so a
+    theme spread evenly across the shown groups always has a ratio of 1.
     `highlight` is the single (row, group) cell with the largest deviation from that row's overall share,
-    scored as `max(ratio, 1/ratio)` where `ratio = cell_value / overall` (a cell whose value is exactly 0
+    scored as `max(ratio, 1/ratio)` where `ratio = cell_share / overall` on the UNROUNDED shares (rounding
+    to 0.1 points first would turn 0.16% vs 0.1%/0.2% into a fake 2x skew); a cell whose share is exactly 0
     is treated as the most extreme possible deviation, since "never mentioned in this group at all" is
-    itself a strong signal); rows whose `overall` is 0 are skipped entirely to avoid dividing by zero.
+    itself a strong signal; rows whose overall share is 0 are skipped entirely to avoid dividing by zero.
     """
     group_totals: dict[str, int] = {}
     for v in raw_by_row.values():
@@ -559,19 +567,25 @@ def build_segment_data(
                 c[g] += 1
         counts[node.name] = c
 
+    grouped_total = sum(group_totals[g] for g in surviving_groups)
     rows: list[SegmentRow] = []
+    exact: list[tuple[float, list[float]]] = []  # unrounded (overall, cell shares) per row, for highlight
     for node in picked_nodes:
-        values = [round(100 * counts[node.name][g] / group_totals[g], 1) for g in surviving_groups]
-        rows.append(SegmentRow(theme=node.name, overall=node.share, values=values))
+        cell_shares = [100 * counts[node.name][g] / group_totals[g] for g in surviving_groups]
+        overall = 100 * sum(counts[node.name].values()) / grouped_total
+        exact.append((overall, cell_shares))
+        rows.append(SegmentRow(
+            theme=node.name, overall=round(overall, 1), values=[round(v, 1) for v in cell_shares],
+        ))
 
     best: tuple[int, int] | None = None
     best_score = -1.0
     best_ratio = 0.0
-    for ri, row in enumerate(rows):
-        if row.overall == 0:
+    for ri, (overall, cell_shares) in enumerate(exact):
+        if overall == 0:
             continue
-        for gi, v in enumerate(row.values):
-            ratio = v / row.overall
+        for gi, v in enumerate(cell_shares):
+            ratio = v / overall
             score = float("inf") if ratio == 0 else max(ratio, 1 / ratio)
             if score > best_score:
                 best_score = score
@@ -1322,6 +1336,7 @@ def resolve_filter_rows(
 
 SEGMENT_SKEW_RATIO_MIN = 1.5  # group-vs-overall share ratio (either direction) to raise a segment-skew candidate at all
 SEGMENT_SKEW_RATIO_SOLID = 2.0  # ratio needed (with the group-size floor below) to call it "Solid"
+_SEGMENT_SHARE_ROUNDING = 0.05  # half the 0.1-point step SegmentRow shares are rounded to (BUG-041)
 
 SCORE_SPREAD_MIN = 8.0  # percentage-point spread across score bands to raise a score-correlation candidate at all
 SCORE_SPREAD_SOLID = 15.0  # spread needed (with the band-size floor below) to call it "Solid"
@@ -1331,12 +1346,23 @@ TREND_SHIFT_SOLID = 12.0  # change needed (with the theme-size floor below) to c
 
 
 def segment_skew_candidates(segment: SegmentData, themes: list["Theme"], floor: int) -> list["Candidate"]:
-    """One candidate per surviving `(row, group)` heatmap cell whose group share diverges from that row's
+    """Considers every surviving `(row, group)` heatmap cell whose group share diverges from that row's
     theme's overall share by at least `SEGMENT_SKEW_RATIO_MIN`x in either direction - every cell, not just
-    `segment.highlight` (which is only the single most-extreme cell, kept for the chart's own hover UI).
+    `segment.highlight` (which is only the single most-extreme cell, kept for the chart's own hover UI) -
+    and returns at most one candidate per theme row (see below).
     Rows whose `overall` is 0 are skipped (nothing to divide by). `group.n < floor` is a defensive check
     only: every group in `segment.groups` already survived `build_segment_data`'s own stricter
     `heatmap_group_floor`, so this should never actually trigger in practice.
+
+    `SegmentRow.overall`/`.values` are rounded to 0.1 points, so for a rare theme the rounding alone can
+    fake a skew (true 0.16% overall vs 0.14% in a group reads as 0.2% vs 0.1%, "half as often"). The gate
+    therefore uses the LEAST extreme ratio the unrounded shares could have (each value moved up to
+    `_SEGMENT_SHARE_ROUNDING` towards the other) - a skew is only raised if it survives any rounding.
+    `ratio` in `numbers` stays the plain rounded-value ratio the sentence quotes.
+
+    At most one candidate per theme (BUG-042, 2026-10-25: dataset 12 got three near-identical findings for
+    one theme, same chart, only the highlighted region differing): the theme's strongest cell, by
+    `Candidate.score`, ties broken by the more extreme ratio.
 
     `Candidate.score` is the group-vs-overall percentage-point gap (`abs(group_share - overall_share)`),
     a bare percentage point with no size-bonus multiplier - the same shape `dominant_theme`'s `score=margin`
@@ -1346,22 +1372,30 @@ def segment_skew_candidates(segment: SegmentData, themes: list["Theme"], floor: 
     total = sum(t.size for t in themes)
     nodes_by_name = {n.name: n for n in theme_nodes(themes, total)}
     candidates: list[Candidate] = []
+    r = _SEGMENT_SHARE_ROUNDING
 
     for row in segment.rows:
         if row.overall == 0:
             continue
         node = nodes_by_name.get(row.theme)
         theme_id = node.theme_id if node is not None else None
+        best: tuple[float, float, Candidate] | None = None  # (score, extremity, candidate) for this theme
         for gi, group in enumerate(segment.groups):
             if group.n < floor:  # defensive - see docstring
                 continue
             cell_value = row.values[gi]
             ratio = cell_value / row.overall
-            gated = ratio >= SEGMENT_SKEW_RATIO_MIN or ratio <= 1 / SEGMENT_SKEW_RATIO_MIN
+            if ratio >= 1:
+                gated = max(cell_value - r, 0.0) / (row.overall + r) >= SEGMENT_SKEW_RATIO_MIN
+            else:
+                gated = (cell_value + r) / max(row.overall - r, 1e-9) <= 1 / SEGMENT_SKEW_RATIO_MIN
             if not gated:
                 continue
             gap_pp = abs(cell_value - row.overall)
-            candidates.append(Candidate(
+            extremity = float("inf") if ratio == 0 else max(ratio, 1 / ratio)
+            if best is not None and (gap_pp, extremity) <= best[:2]:
+                continue
+            best = (gap_pp, extremity, Candidate(
                 kind="segment_skew", id=f"segment_skew:{theme_id}:{gi}", theme_id=theme_id,
                 theme_name=row.theme, count=group.n, score=gap_pp,
                 numbers={
@@ -1370,6 +1404,8 @@ def segment_skew_candidates(segment: SegmentData, themes: list["Theme"], floor: 
                     "ratio": round(ratio, 3), "group_n": group.n,
                 },
             ))
+        if best is not None:
+            candidates.append(best[2])
     return candidates
 
 

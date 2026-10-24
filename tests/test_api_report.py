@@ -56,7 +56,9 @@ def test_build_multiple_findings_of_one_kind_does_not_repeat_the_same_chart(env)
     response = env.client.get(f'/api/datasets/{did}/report', params={'column': Q})
     assert response.status_code == 200, response.text
     blocks = [b for b in response.json()['blocks'] if b['kind'] == 'finding']
-    assert len(blocks) == 5  # Preserve the existing global cap and strongest-finding selection.
+    # 2 heatmap + 2 byScore: at most one segment-skew finding per theme (BUG-042), so each theme's two
+    # mirror-image A/B cells no longer both become findings.
+    assert len(blocks) == 4
     repeated = [[b for b in blocks if b['chart_id'] == chart] for chart in ('heatmap', 'byScore')]
     assert all(len(group) >= 2 for group in repeated)
     for group in repeated:

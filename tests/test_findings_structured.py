@@ -431,6 +431,58 @@ def test_build_segment_data_skips_rows_whose_overall_share_is_zero():
         assert data.rows[data.highlight[0]].theme != "A"
 
 
+def test_build_segment_data_overall_ignores_rows_with_no_group_bug_041():
+    """BUG-041 (dataset 12, scaled down): most of a theme's answers have no group value. Its share of ALL
+    answers (3.4%) must not be the baseline for cells that only count grouped rows (0.1-0.2%) - otherwise
+    every region reads as "almost never mentions" the theme. Rows 0-2999 are in R1/R2/R3 (1,000 each), rows
+    3000-3999 have no group at all."""
+    privacy_refs = [0, 1, 1000, 1001, 2000] + list(range(3000, 3130))  # 135 answers, only 5 grouped
+    privacy = set(privacy_refs)
+    themes = [
+        make_theme("Privacy", 135, 0.0, privacy_refs),
+        make_theme("Main", 3865, 0.0, [r for r in range(4000) if r not in privacy]),
+    ]
+    nodes = theme_nodes(themes, total_answered=4000)
+    assert next(n for n in nodes if n.name == "Privacy").share == pytest.approx(3.4)
+    raw_by_row = {r: f"R{r // 1000 + 1}" for r in range(3000)}
+
+    data = build_segment_data("Region", raw_by_row, nodes, floor=30)
+    row = next(r for r in data.rows if r.theme == "Privacy")
+    assert row.values == [0.2, 0.2, 0.1]  # R1, R2, R3 (equal sizes keep insertion order)
+    assert row.overall == 0.2  # 5 / 3000 grouped rows, not 135 / 4000
+    # 0.1 vs 0.2 is a rounding artefact of 0.1/0.2 vs 0.167, not a 2x skew - and the theme is spread evenly.
+    assert segment_skew_candidates(data, themes, floor=30) == []
+    # The chart's hover highlight still picks the most extreme cell, but on the true unrounded ratio
+    # (0.1% / 0.167% = 0.6x), not the old 0.1 / 3.4 = 0.0x.
+    assert data.highlight_text == "R3 mentions Privacy 0.6 times as often as the average respondent."
+
+
+def test_build_segment_data_real_skew_survives_ungrouped_rows_and_one_finding_per_theme():
+    """A theme that genuinely concentrates in one group is still found when many rows have no group, and
+    the baseline only counts the groups shown (a "Tiny" group below the heatmap floor is excluded from it
+    as well). Its three skewed cells yield ONE segment-skew candidate, the strongest (BUG-042)."""
+    skewed_refs = list(range(100)) + list(range(3000, 3510))  # 100 in R1, 500 ungrouped, 10 in Tiny
+    skewed = set(skewed_refs)
+    themes = [
+        make_theme("Skewed", 610, 0.0, skewed_refs),
+        make_theme("Main", 3390, 0.0, [r for r in range(4000) if r not in skewed]),
+    ]
+    nodes = theme_nodes(themes, total_answered=4000)
+    raw_by_row = {r: f"R{r // 1000 + 1}" for r in range(3000)}
+    raw_by_row.update({r: "Tiny" for r in range(3500, 3510)})
+
+    data = build_segment_data("Region", raw_by_row, nodes, floor=30)
+    assert [g.label for g in data.groups] == ["R1", "R2", "R3"]
+    row = next(r for r in data.rows if r.theme == "Skewed")
+    assert row.values == [10.0, 0.0, 0.0]
+    assert row.overall == 3.3  # 100 / 3000, ignoring both the ungrouped rows and Tiny
+
+    candidates = [c for c in segment_skew_candidates(data, themes, floor=30) if c.theme_name == "Skewed"]
+    assert len(candidates) == 1
+    assert candidates[0].numbers["group"] == "R1"  # 6.7-point gap beats R2/R3's 3.3
+    assert candidates[0].score == pytest.approx(6.7)
+
+
 # -------------------------------------------------------------------- build_frequency_data (chart-block
 # stream, 2026-10-24: ranked_answers/ranked_list)
 
@@ -1143,7 +1195,8 @@ def test_segment_skew_candidates_at_gate_and_just_below_gate():
     themes = [make_theme("A", 40, 0.0, list(range(40)))]
     at_gate = SegmentData(
         name="Segment", groups=[SegmentGroup("G1", 100)],
-        rows=[SegmentRow(theme="A", overall=40.0, values=[60.0])],  # ratio exactly 1.5
+        # 60.2 vs 40.0: even with both moved 0.05 towards each other (rounding), 60.15/40.05 > 1.5
+        rows=[SegmentRow(theme="A", overall=40.0, values=[60.2])],
     )
     candidates = segment_skew_candidates(at_gate, themes, floor=30)
     assert len(candidates) == 1
@@ -1152,12 +1205,12 @@ def test_segment_skew_candidates_at_gate_and_just_below_gate():
     assert c.theme_name == "A" and c.count == 100
     assert c.numbers == {
         "column": "Segment", "group": "G1", "theme": "A",
-        "group_share_pct": 60.0, "overall_share_pct": 40.0, "ratio": 1.5, "group_n": 100,
+        "group_share_pct": 60.2, "overall_share_pct": 40.0, "ratio": 1.505, "group_n": 100,
     }
 
     just_below = SegmentData(
         name="Segment", groups=[SegmentGroup("G1", 100)],
-        rows=[SegmentRow(theme="A", overall=40.0, values=[59.0])],  # ratio 1.475
+        rows=[SegmentRow(theme="A", overall=40.0, values=[60.1])],  # 60.05/40.05 just under 1.5
     )
     assert segment_skew_candidates(just_below, themes, floor=30) == []
 
@@ -1166,14 +1219,20 @@ def test_segment_skew_candidates_gate_fires_in_the_below_one_direction_too():
     themes = [make_theme("A", 40, 0.0, list(range(40)))]
     segment = SegmentData(
         name="Segment", groups=[SegmentGroup("G1", 100)],
-        rows=[SegmentRow(theme="A", overall=60.0, values=[40.0])],  # ratio = 40/60 = 0.667 = 1/1.5
+        rows=[SegmentRow(theme="A", overall=60.0, values=[39.8])],  # 39.85/59.95 just under 1/1.5
     )
     candidates = segment_skew_candidates(segment, themes, floor=30)
     assert len(candidates) == 1
-    assert candidates[0].numbers["ratio"] == pytest.approx(2 / 3, abs=1e-3)
+    assert candidates[0].numbers["ratio"] == pytest.approx(39.8 / 60, abs=1e-3)
+
+    at_rounding_edge = SegmentData(
+        name="Segment", groups=[SegmentGroup("G1", 100)],
+        rows=[SegmentRow(theme="A", overall=60.0, values=[40.0])],  # 2/3 rounded, but 40.05/59.95 is not
+    )
+    assert segment_skew_candidates(at_rounding_edge, themes, floor=30) == []
 
 
-def test_segment_skew_candidates_skips_zero_overall_rows_and_one_candidate_per_cell():
+def test_segment_skew_candidates_skips_zero_overall_rows_and_one_candidate_per_theme():
     themes = [make_theme("A", 0, 0.0, []), make_theme("B", 100, 0.0, list(range(100)))]
     segment = SegmentData(
         name="Segment", groups=[SegmentGroup("G1", 100), SegmentGroup("G2", 100)],
@@ -1183,8 +1242,11 @@ def test_segment_skew_candidates_skips_zero_overall_rows_and_one_candidate_per_c
         ],
     )
     candidates = segment_skew_candidates(segment, themes, floor=30)
-    assert len(candidates) == 2  # exactly one per qualifying (row, group) cell - both of B's cells here
-    assert all(c.theme_name == "B" for c in candidates)
+    # BUG-042: at most one per theme. Both of B's cells gap 30 points; the tie goes to the more extreme
+    # ratio (G2's 0.4, i.e. 2.5x, beats G1's 1.6x).
+    assert len(candidates) == 1
+    assert candidates[0].theme_name == "B" and candidates[0].numbers["group"] == "G2"
+
 
 
 def test_label_confidence_segment_skew_thresholds():
