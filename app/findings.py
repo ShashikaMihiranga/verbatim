@@ -857,14 +857,8 @@ def pick_chart(candidate: Candidate) -> str:
     """Maps a finding kind to one of this stream's small set of wired-up chart ids
     (`overview`, `treemap`, `rank`, `sentsun`, `quality`), per SPEC.md section 4's priority table - see
     `CHART_BY_KIND`'s comments for the fallback reasoning (sunburst's own stated skip condition, "fewer
-    than 3 sub-themes in total, use treemap", is always met while sub-themes are unpopulated).
-
-    Delegates to `app.report_blocks.pick_chart_candidates` (chart-block stream, 2026-10-24, Stage 2) -
-    today every kind has exactly one wired chart, so this is byte-identical to the old direct
-    `CHART_BY_KIND[candidate.kind]` lookup, now computed through the real scored-candidate-list engine."""
-    from .report_blocks import pick_chart_candidates
-
-    return pick_chart_candidates(candidate)[0][0]
+    than 3 sub-themes in total, use treemap", is always met while sub-themes are unpopulated)."""
+    return CHART_BY_KIND[candidate.kind]
 
 
 # ==================================================================== 5. write_headline
