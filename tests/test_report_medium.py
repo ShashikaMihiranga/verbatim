@@ -31,8 +31,12 @@ def test_thin_hierarchy_tabs_are_not_exposed_and_rich_hierarchy_has_compact_pair
     report = data()
     views = theme_views(report)
     assert views['sunburst']['compact_chart_id'] == 'icicle'
-    assert views['icicle']['chart_width'] == 390
-    assert 'font-size:14px' in views['icicle']['chart_html']
+    # One fragment carries both layouts; a container query shows the wide one at desktop widths (it used to
+    # be the 390px compact layout everywhere, a small column on a wide page) and the compact one on phones.
+    html = views['icicle']['chart_html']
+    assert views['icicle']['chart_width'] == 1180
+    assert 'vb-icicle-wide' in html and 'vb-icicle-compact' in html and '@container vbicicle (min-width:640px)' in html
+    assert 'font-size:14px' in html  # compact key keeps readable labels
     for t in report.themes:
         t.children = []
     assert 'sunburst' not in theme_views(report)
@@ -161,7 +165,10 @@ def test_numeric_grid_with_no_surviving_two_axis_comparison_is_omitted():
 def test_numeric_plus_score_uses_existing_grid_producer_and_current_answer_rows():
     report = data()
     report.binned_grid = BinnedGridData('', '', [], [], [])
-    report.themes[0].answer_refs = list(range(240))
+    # Two themes with different tone (-0.05 / -0.20) split unevenly across Spend, so cells really differ;
+    # with one theme every cell has the same tone and the grid is (correctly) withheld as flat.
+    report.themes[0].answer_refs = [r for r in range(240) if r % 4 < 3]
+    report.themes[1].answer_refs = [r for r in range(240) if r % 4 == 3]
     frame = pd.DataFrame({'Spend': [float(r % 4) for r in range(240)],
                           'Rating': [float((r // 4) % 2 * 10) for r in range(240)]})
     enriched = complete_numeric_grid(report, frame, {'numeric': ['Spend'], 'score': ['Rating']})
@@ -169,9 +176,28 @@ def test_numeric_plus_score_uses_existing_grid_producer_and_current_answer_rows(
     assert enriched.binned_grid.col_name == 'Rating'
     assert numeric_explorations(enriched)
     assert report.binned_grid.cells == []
-    only_one_value = replace(report, themes=[replace(report.themes[0], answer_refs=[r for r in range(240) if frame.at[r, 'Rating'] == 0])])
+    only_one_value = replace(report, themes=[replace(t, answer_refs=[r for r in t.answer_refs if frame.at[r, 'Rating'] == 0])
+                                             for t in report.themes])
     assert complete_numeric_grid(only_one_value, frame, {'numeric': ['Spend'], 'score': ['Rating']}) is only_one_value
 
 
 def test_no_alternatives_are_attached_to_unrelated_finding_kinds():
     assert finding_views(data(), 'tone_contrast', 'Cost') == {}
+
+
+def test_a_grid_whose_cells_all_read_about_the_same_is_not_shown():
+    # Found live on dataset 11: every cell read +0.50 to +0.52, so the grid told the reader nothing.
+    report = data()
+    report.binned_grid = BinnedGridData('Spend', 'Rating', ['Low', 'High'], ['Low', 'High'], [
+        BinCell(r, c, 200, 0.51) for r in ('Low', 'High') for c in ('Low', 'High')
+    ])
+    assert numeric_explorations(report) == []
+    report.binned_grid.cells[0] = BinCell('Low', 'Low', 200, 0.30)
+    assert numeric_explorations(report)
+
+
+def test_identifier_columns_are_never_used_as_numbers():
+    from app.findings_structured import looks_like_identifier
+
+    assert all(looks_like_identifier(n) for n in ('Clothing_ID', 'customer id', 'orderId', 'SKU', 'ID'))
+    assert not any(looks_like_identifier(n) for n in ('Age', 'Rating', 'Paid', 'Liquid', 'Valid', 'Width'))

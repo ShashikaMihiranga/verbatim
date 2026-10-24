@@ -27,6 +27,8 @@ scope here entirely - see the plan's B1 section.
 """
 from __future__ import annotations
 
+import re
+
 import calendar
 import math
 from dataclasses import dataclass
@@ -913,8 +915,20 @@ def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]
     }
     for c in cols:
         if c.kind in result and not (c.stats or {}).get("off"):
+            if c.kind == "numeric" and looks_like_identifier(c.name):
+                continue  # e.g. "Clothing_ID": a label stored as a number, not a quantity to band or average
             result[c.kind].append(c.name)
     return result
+
+
+_ID_NAME = re.compile(r"(?:^|[^a-z0-9])(?:id|ids|uuid|guid|sku|identifier)$")
+
+
+def looks_like_identifier(name: str) -> bool:
+    """True for column names that name an identifier ("Clothing_ID", "customer id", "orderId", "SKU").
+    The profiler can type such a column "numeric" because its values are digits, which made the report
+    band product IDs ("1-861") as if they were a measure."""
+    return bool(_ID_NAME.search(name.strip().lower()) or re.search(r"[a-z](?:Id|ID)$", name.strip()))
 
 
 # -------------------------------------------------------------------- build_structured_context

@@ -89,3 +89,9 @@
 .sh-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; flex-wrap: wrap; }
 .sh-row-url { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; color: var(--muted); }
 .sh-row-role { flex: none; font-size: 12px; color: var(--muted); padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
+
+/* Report footer: report actions and exports wrap as two groups, so a narrow row never leaves one
+   button stranded on its own line (the shared .foot is right-aligned with a 140px minimum per button). */
+.report-foot { justify-content: space-between; }
+.report-foot-group { display: flex; flex-wrap: wrap; gap: 12px; }
+.report-foot .btn { min-width: 0; padding: 0 20px; }

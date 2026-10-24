@@ -601,8 +601,11 @@ def _build_overview(nodes: list[ThemeNode], overall: float, total_rows: int, tot
         ("Average sentiment", f"{overall:+.2f}", ""),
     ]
     if answer_lengths:
-        _, typical_bin, typical_note = _length_bins(answer_lengths)
-        stats.insert(2, ("Typical length", f"{typical_bin} words", typical_note))
+        # Headline the real median, with the most common length band as context. It used to headline the
+        # band ("41+ words") and then contradict it underneath ("Typical length 57 words").
+        _, typical_bin, _ = _length_bins(answer_lengths)
+        median = round(statistics.median(answer_lengths))
+        stats.insert(2, ("Typical length", f"{median} words", f"median; most answers {typical_bin} words"))
 
     insights: list[str] = []
     if nodes:

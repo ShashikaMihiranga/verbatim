@@ -309,8 +309,8 @@ def test_treemap_html_sub_cell_label_line_count_is_derived_from_its_own_height()
     html = treemap_html(data, 1084, 580)
 
     sub_cell = re.search(
-        r'<span style="font-size:14px;font-weight:500;color:var\(--ink\);line-height:1.2;'
-        r'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;-webkit-line-clamp:(\d+);'
+        r'<span lang="en" style="font-size:14px;font-weight:500;color:var\(--ink\);line-height:1.2;'
+        r'overflow:hidden;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto;display:-webkit-box;-webkit-line-clamp:(\d+);'
         r'-webkit-box-orient:vertical">Zebra paint <span style="font-weight:600">',
         html)
     assert sub_cell, "no sub-cell label with a computed -webkit-line-clamp found for Zebra paint"
@@ -704,3 +704,54 @@ def test_report_sunburst_is_one_panel_not_the_gallery_two_state_demo():
     assert "Default, hover on" not in overview_html and "others dimmed" not in overview_html
 
     assert render_report_parts("treemap", EV) == render_parts("treemap", EV)  # every other chart unchanged
+
+
+# ---- report UI review fixes (2026-10-24, live on dataset 11)
+
+def _ev_copy():
+    import copy
+    from app.fixtures.ev_sample import EV
+    return copy.deepcopy(EV)
+
+
+def test_score_group_sentiment_pill_is_tinted_by_its_own_sign():
+    # Every pill used to be tinted --neg, so clearly positive groups (+0.50) showed red.
+    from app.charts import f_byscore
+    data = _ev_copy()
+    for b in data.score.bands:
+        b.sentiment = 0.5
+    html, _, _ = f_byscore(data)
+    assert "var(--pos)" in html and "color-mix(in srgb,var(--neg)" not in html
+
+
+def test_score_group_thin_segments_print_their_value_under_the_bar_not_clipped_inside():
+    from app.charts import f_byscore
+    data = _ev_copy()
+    html, _, _ = f_byscore(data)
+    thin = [(t.name, v) for b in data.score.bands for t, v in zip(data.themes, b.mix) if 0 < v < 5]
+    assert thin, "fixture needs at least one thin segment"
+    name, v = thin[0]
+    assert "Under 5%:" in html and f"{name} {v}%" in html
+
+
+def test_tone_split_bars_never_reach_the_label_column():
+    # A 72%-positive theme used to run its bar to x~1026, under the "negative / positive" labels.
+    from app.charts import f_diverge
+    from app.chart_data import ToneSplit
+    data = _ev_copy()
+    for t in data.themes:
+        t.tones = ToneSplit(5.0, 15.0, 80.0)
+    html, _, _ = f_diverge(data)
+    ends = [float(x) + float(w) for x, w in re.findall(r'<rect x="([\d.]+)" y="[\d.]+" width="([\d.]+)" height="32"', html)]
+    assert ends and max(ends) <= 930
+
+
+def test_sunburst_callout_for_a_small_left_hand_theme_sits_on_the_left():
+    # Live: "Overall satisfaction and compliments 77 (3.9%)" was drawn rightwards across the ring.
+    from app.charts import sunburst
+    data = _ev_copy()
+    for t in data.themes:
+        t.callout = None  # real reports have no hand-placed callout positions
+    html = sunburst(data, 640, 580, 380, 300, 245, 14, 12.5)
+    right_anchored = re.findall(r'transform:translate\(-100%,-50%\)[^>]*>([^<]*\(\d+(?:\.\d+)?%\))', html)
+    assert right_anchored, "expected at least one left-side callout anchored by its right edge"

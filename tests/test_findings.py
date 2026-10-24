@@ -831,3 +831,13 @@ def test_build_report_data_threads_real_answer_positions_into_answer_map():
         themes, cleaning_report={}, question=QUESTION, answer_positions={0: (0.2, 0.3), 1: (0.4, 0.5)},
     )
     assert data.answer_map.points_by_theme == {"Cost": [(0.2, 0.3), (0.4, 0.5)]}
+
+
+def test_overview_typical_length_headlines_the_real_median_not_the_busiest_band():
+    # Live on dataset 11 the overview said "41+ words" with "Typical length 57 words" right under it.
+    ds = Dataset(project_id=1, filename="x.csv", file_hash="1" * 64, row_count=5, profile={})
+    data = build_report_data(ds, [make_theme(1, "Cost", 5, 0.1)], cleaning_report={}, question=QUESTION,
+                             answer_lengths=[50, 55, 57, 60, 90])
+    stat = next(s for s in data.overview.stats if s[0] == "Typical length")
+    assert stat[1] == "57 words"
+    assert "41+" in stat[2]

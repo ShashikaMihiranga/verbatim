@@ -2882,3 +2882,50 @@ sentence, exports, every report view and rebuild).
 fragment the server produces, including quotes, `&` and `<>`); tsc clean; no new lint warnings. Live in
 the real report page for dataset 11: the dropdown changes the type, the correction survives a full
 reload, "Use Verbatim's guess" resets it (dataset profile back to `{}`), no console errors.
+
+## 2026-10-24 (report UI review: fixes)
+
+From a full click-through of `/report?dataset=11`. Claimed as `REPORT-BUGS-02`.
+
+**Not fixed by me - needs Codex/user:** the working copies of `frontend/src/{ThemeChart,FindingChartTabs,
+Report}.tsx` and `report.css` are byte-identical to their state before Codex's committed `34919df`, and
+`report-ui.test.tsx` is deleted - an exact rollback of that commit, sitting uncommitted under Codex's
+stalled `UI-REPORT-07`. That brings back the large blank gaps under charts (`minHeight: chart_height`)
+and the heatmap callout covering a group header. Restoring those files was blocked as interfering with
+another agent's claimed work, so it is left for the user/Codex: `git checkout HEAD -- frontend/src/
+ThemeChart.tsx frontend/src/FindingChartTabs.tsx frontend/src/Report.tsx frontend/src/report.css
+frontend/src/report-ui.test.tsx`.
+
+**Fixed:**
+- Score groups (`f_byscore`): the sentiment pill was always tinted `--neg`, so +0.50 groups showed red;
+  now tinted by sign (pos/neg/neutral within ±0.05). Shares under 5% were a clipped "3.1" inside a
+  sliver; they are now printed under the bar ("Under 5%: All other answers 3.1%").
+- Tone split (`f_diverge`): a fixed 5.2px/point scale ran wide bars into the "negative / positive"
+  column; scale now fits the free space, and in-bar labels are dropped from segments too thin to hold them
+  (negative/positive stay printed on the right; neutral keeps a smaller label).
+- Sunburst callouts: a small theme with no hand-placed callout used the sample "Other" placement (always
+  right of the wedge), so a left-hand wedge's label ran across the ring; it now sits on its own side and
+  wraps to the room there.
+- Treemap/icicle labels hyphenate ("satis-faction") instead of splitting a word with no hyphen
+  ("compliment s"); narrow cells use 13px.
+- Overview "Typical length" headlined the busiest band ("41+ words") over a contradicting note ("57
+  words"); it now headlines the median with the band as context.
+- Exploration grid: ID-named numeric columns (`looks_like_identifier`, e.g. "Clothing_ID") are no longer
+  used as quantities anywhere structured columns are picked; a grid whose cells all sit within 0.05 is
+  withheld (dataset 11's read +0.50 to +0.52 everywhere).
+- Icicle tab: was the 390px phone layout at every width; the fragment now carries both layouts and a
+  container query shows the full-width one at 640px+ (the frontend's own compact switch still works).
+- "See answers" (`AnswerList`): the first-page effect appended, so React's dev double-run listed every
+  answer twice (20 duplicate-key errors); it now replaces and ignores a cancelled run.
+- Report footer: buttons wrap as two groups (report actions / exports) instead of stranding "Export PDF".
+
+**Not a code bug:** "nn" inside answers ("for me.nnsecond of all") is in the uploaded source file itself
+(checked the raw upload) - line breaks were lost before upload. Not auto-repaired: guessing which "nn" was
+a newline could alter real text.
+
+**Needs a decision, not changed:** score-band sentiment barely moves (+0.50 vs +0.52) because it is
+estimated from theme averages, not per-answer scores.
+
+**Verified:** backend 891 passed (5 new regression tests confirmed to fail on the old code), frontend
+110 passed, tsc clean, lint back to its 6 existing warnings; live on dataset 11 with each fix screenshot-
+checked and no console errors.

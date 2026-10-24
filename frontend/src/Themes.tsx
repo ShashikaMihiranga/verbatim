@@ -118,7 +118,7 @@ export function AnswerList({ id, themeId, subIndex }: { id: number; themeId: num
   const [answers, setAnswers] = useState<ThemeAnswer[]>([])
   const [offset, setOffset] = useState(0)
   const [total, setTotal] = useState<number | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)  // the first page starts loading on mount
   const [error, setError] = useState('')
 
   async function loadMore() {
@@ -135,10 +135,28 @@ export function AnswerList({ id, themeId, subIndex }: { id: number; themeId: num
     setLoading(false)
   }
 
+  // First page REPLACES the list. React runs this effect twice in development; appending here loaded
+  // page one twice (each answer shown twice, duplicate-key warnings). The cancelled flag drops a
+  // superseded run's result.
   useEffect(() => {
-    void loadMore()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    let cancelled = false
+    getThemeAnswers(id, themeId, PAGE_SIZE, 0, subIndex)
+      .then((r) => {
+        if (cancelled) return
+        setAnswers(r.answers)
+        setTotal(r.total)
+        setOffset(r.answers.length)
+      })
+      .catch((e) => {
+        if (!cancelled) setError((e as Error).message)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [id, themeId, subIndex])
 
   return (
     <div className="th-answers">
@@ -574,29 +592,33 @@ export default function Themes() {
             lookInsideOtherJob={lookInsideOtherJob}
             onLookInsideOther={() => void startLookInsideOther()}
           />
-          <div className="foot">
-            <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning}>
-              {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
-            </button>
-            <button type="button" className="btn quiet" onClick={() => setManageThemes(true)}>
-              Manage themes
-            </button>
-            <button type="button" className="btn quiet" onClick={() => setShowShare(!showShare)}>
-              {showShare ? 'Hide sharing' : 'Share'}
-            </button>
-            {/* Export (docs/TODO.md, fixed 2026-10-22): no SVG option here - see app/export.py's own
-                module docstring for why that format is deliberately not offered. */}
-            {(['png', 'pptx', 'pdf'] as const).map((fmt) => (
-              <button
-                key={fmt}
-                type="button"
-                className="btn quiet"
-                disabled={exporting !== null}
-                onClick={() => void handleExport(fmt)}
-              >
-                {exporting === fmt ? 'Exporting...' : `Export ${fmt.toUpperCase()}`}
+          <div className="foot report-foot">
+            <div className="report-foot-group">
+              <button type="button" className="btn quiet" onClick={() => void buildTheReport()} disabled={reportRunning}>
+                {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
               </button>
-            ))}
+              <button type="button" className="btn quiet" onClick={() => setManageThemes(true)}>
+                Manage themes
+              </button>
+              <button type="button" className="btn quiet" onClick={() => setShowShare(!showShare)}>
+                {showShare ? 'Hide sharing' : 'Share'}
+              </button>
+            </div>
+            <div className="report-foot-group">
+              {/* Export (docs/TODO.md, fixed 2026-10-22): no SVG option here - see app/export.py's own
+                  module docstring for why that format is deliberately not offered. */}
+              {(['png', 'pptx', 'pdf'] as const).map((fmt) => (
+                <button
+                  key={fmt}
+                  type="button"
+                  className="btn quiet"
+                  disabled={exporting !== null}
+                  onClick={() => void handleExport(fmt)}
+                >
+                  {exporting === fmt ? 'Exporting...' : `Export ${fmt.toUpperCase()}`}
+                </button>
+              ))}
+            </div>
           </div>
           {showShare && column && <SharePanel datasetId={id} column={column} />}
         </>

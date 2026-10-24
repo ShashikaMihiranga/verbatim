@@ -238,11 +238,23 @@ def sunburst(data, W, H, cx, cy, R, fs_in, fs_out, selected=None, hover=None, ex
                     dy = (i - (n - 1) / 2) * lh
                     wt = 600 if i == n - 1 and n > 1 else 500
                     labels.append(chart_label(ex, ey + dy, W, H, ln, 14, wt, "var(--ink)", "end", opacity=op))
-            else:  # Other callout
-                shapes.append(f'<g style="opacity:{op}"><polyline points="{px:.1f},{py:.1f} {px + 14:.1f},{py - 30:.1f} {px + 26:.1f},{py - 30:.1f}" style="fill:none;stroke:var(--muted);stroke-width:1"/>'
-                               f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" style="fill:var(--other)"/></g>')
-                labels.append(chart_label(px + 32, py - 40, W, H, f"{name} {fmt(cnt)} ({share}%)", 14, 600, opacity=op))
-                labels.append(chart_label(px + 32, py - 22, W, H, notes[name], 13, 400, "var(--muted)", opacity=op))
+            else:  # small theme with no hand-placed callout (real data): label on the wedge's own side
+                # Used to always go to the right of the wedge (a design for the sample's "Other" slice);
+                # a small real theme on the LEFT half then had its label drawn across the ring.
+                left = math.sin(math.radians(mid)) < 0
+                dx = -1 if left else 1
+                room = (px - 40) if left else (W - px - 40)
+                lines = wrap(f"{name} {fmt(cnt)} ({share}%)", max(room, 80), 14) or [f"{name} {fmt(cnt)} ({share}%)"]
+                if notes.get(name):
+                    lines.append(notes[name])
+                top = py - 30 - (len(lines) - 1) * 9
+                shapes.append(f'<g style="opacity:{op}"><polyline points="{px:.1f},{py:.1f} {px + 14 * dx:.1f},{py - 30:.1f} {px + 26 * dx:.1f},{py - 30:.1f}" style="fill:none;stroke:var(--muted);stroke-width:1"/>'
+                               f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" style="fill:var(--{col})"/></g>')
+                for i, ln in enumerate(lines):
+                    is_note = bool(notes.get(name)) and i == len(lines) - 1
+                    labels.append(chart_label(px + 32 * dx, top + i * 18, W, H, ln, 13 if is_note else 14,
+                                              400 if is_note else 600, "var(--muted)" if is_note else "var(--ink)",
+                                              "end" if left else "start", opacity=op))
     labels.append(chart_label(cx, cy - csub * 0.9, W, H, fmt(data.answered), cfs, 300, "var(--ink)", "middle"))
     labels.append(chart_label(cx, cy + cfs * 0.45, W, H, "answered", csub, 400, "var(--muted)", "middle"))
     shapes.append("</svg>")
@@ -439,7 +451,12 @@ def f_other_growth(data: ReportData):
 # ---------- diverge ----------
 def f_diverge(data: ReportData):
     DIV = [(t.name, *t.tones) for t in data.themes]
-    s = 5.2; cx = 600; rh = 60; y0 = 64
+    cx = 600; rh = 60; y0 = 64
+    # Scale to the room actually free on each side of the centre line (names end ~250, the
+    # "negative / positive" column starts ~930). A fixed 5.2px per point pushed a 72%-positive bar
+    # into that column.
+    reach = max([max(ng + nu / 2, ps + nu / 2) for _, ng, nu, ps in DIV] or [1]) or 1
+    s = min(5.2, 320 / reach)
     o = [f'<svg width="1084" height="{y0 + rh * len(DIV) + 10}" viewBox="0 0 1084 {y0 + rh * len(DIV) + 10}" role="img" aria-label="Diverging sentiment bars">']
     o.append(T(cx - 160, 20, "Negative", 14, 500, "var(--muted)", "end"))
     o.append(T(cx, 20, "Neutral", 14, 500, "var(--muted)", "middle"))
@@ -455,9 +472,13 @@ def f_diverge(data: ReportData):
         o.append(f'<rect x="{cx - hn - ng * s:.1f}" y="{cy - 16}" width="{ng * s:.1f}" height="32" rx="3" style="fill:var(--neg)"/>')
         o.append(f'<rect x="{cx - hn:.1f}" y="{cy - 16}" width="{nu * s:.1f}" height="32" style="fill:var(--neu)"/>')
         o.append(f'<rect x="{cx + hn:.1f}" y="{cy - 16}" width="{ps * s:.1f}" height="32" rx="3" style="fill:var(--pos)"/>')
-        o.append(T(cx - hn - ng * s / 2, cy, f"{ng}%", 14, 600, "var(--on-neg)", "middle"))
-        o.append(T(cx, cy, f"{nu}%", 14, 500, "var(--on-neu)", "middle"))
-        o.append(T(cx + hn + ps * s / 2, cy, f"{ps}%", 14, 600, "var(--on-pos)", "middle"))
+        # In-bar labels only where the segment can hold them; the right-hand column always prints both.
+        if ng * s >= 40:
+            o.append(T(cx - hn - ng * s / 2, cy, f"{ng}%", 14, 600, "var(--on-neg)", "middle"))
+        if nu * s >= 26:  # neutral is not repeated on the right, so keep it down to a narrower width
+            o.append(T(cx, cy, f"{nu}%", 14 if nu * s >= 40 else 11, 500, "var(--on-neu)", "middle"))
+        if ps * s >= 40:
+            o.append(T(cx + hn + ps * s / 2, cy, f"{ps}%", 14, 600, "var(--on-pos)", "middle"))
         o.append(T(1084, cy, f"{ng}% / {ps}%", 16, 600, "var(--ink)", "end"))
     o.append(f'<line x1="{cx}" y1="{y0 - 4}" x2="{cx}" y2="{y0 + rh * len(DIV)}" style="stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3"/>')
     o.append("</svg>")
@@ -505,10 +526,18 @@ def f_byscore(data: ReportData):
     css_rules = ""
     for ri, (lab, vals, sent, n) in enumerate(BYS):
         segs = ""
+        small = []
         for i, v in enumerate(vals):
             col = data.themes[i].color
             name = data.themes[i].name
-            txt = f"{v}%" if v >= 5 else f"{v}"
+            txt = f"{v}%"
+            if 0 < v < 5:
+                # Too thin to hold a readable label: print it under the bar instead (colour is never the
+                # only carrier of a value), rather than a clipped "3.1" inside a sliver.
+                small.append(f"{esc(name)} {v}%")
+                segs += (f'<div title="{esc(name)} {v}%" style="flex:0 0 {v}%;background:var(--{col});'
+                         f'border-right:2px solid var(--bg)"></div>')
+                continue
             # The bar's own row is now fluid (width:100% below), so a segment's real rendered width can
             # no longer be decided server-side against an assumed 700px reference - both label variants
             # are always emitted, and a CSS container query (container-type:inline-size on the segment
@@ -521,11 +550,16 @@ def f_byscore(data: ReportData):
             css_rules += (f'.{cls}f{{display:none}}'
                            f'@container (min-width:{needed}px){{.{cls}f{{display:block}}.{cls}s{{display:none}}}}')
             segs += (f'<div class="{cls}" style="container-type:inline-size;flex:0 0 {v}%;background:var(--{col});color:{TH_ON[col]};border-right:2px solid var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">{full}{short}</div>')
+        # Tint by the sentiment's own sign (tone colours only ever show sentiment): it used to be --neg
+        # for every value, so clearly positive groups (+0.50) showed as red.
         pp = min(55, abs(sent) / 0.2 * 55)
+        tone = "--pos" if sent >= 0.05 else "--neg" if sent <= -0.05 else "--neu"
+        note = (f'<div style="font-size:13px;color:var(--muted);margin-top:6px">Under 5%: {", ".join(small)}</div>'
+                if small else "")
         rows_html += (f'<div style="display:flex;align-items:center;padding:20px 0;border-top:1px solid var(--line)">'
                  f'<div style="width:200px;flex:none"><div style="font-size:18px;font-weight:600">{lab}</div><div style="font-size:14px;color:var(--muted)">{fmt(n)} answers</div></div>'
-                 f'<div style="flex:1;height:66px;display:flex;border-radius:6px;overflow:hidden">{segs}</div>'
-                 f'<div style="margin-left:32px;display:inline-flex;align-items:baseline;gap:8px;padding:6px 16px;border:1px solid var(--line);border-radius:999px;background:color-mix(in srgb,var(--neg) {pp:.0f}%,var(--surface))">'
+                 f'<div style="flex:1;min-width:0"><div style="height:66px;display:flex;border-radius:6px;overflow:hidden">{segs}</div>{note}</div>'
+                 f'<div style="margin-left:32px;display:inline-flex;align-items:baseline;gap:8px;padding:6px 16px;border:1px solid var(--line);border-radius:999px;background:color-mix(in srgb,var({tone}) {pp:.0f}%,var(--surface))">'
                  f'<span style="font-size:13px;color:var(--ink)">avg sentiment</span><span style="font-size:17px;font-weight:600">{sent:+.2f}</span></div></div>')
     body = (f'<div style="padding:56px 48px">{hdr("What does each score group talk about?", f"Theme mix by {data.score.name}. Each bar adds to 100%.")}'
             f'<style>{css_rules}</style>'
@@ -1050,8 +1084,8 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
                         f'<div style="width:100%;height:100%;border-radius:3px;overflow:hidden;'
                         f'background:{bg};'
                         f'display:flex;align-items:center;justify-content:center;text-align:center;padding:2px">'
-                        f'<span style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2;'
-                        f'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;'
+                        f'<span lang="en" style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.2;'
+                        f'overflow:hidden;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto;display:-webkit-box;'
                         f'-webkit-line-clamp:{s_max_lines};-webkit-box-orient:vertical">'
                         f'{label_text}</span>'
                         f'</div></div>')
@@ -1060,11 +1094,14 @@ def treemap_html(data: ReportData, w: int, h: int) -> str:
         # Same height-derived line count as sub-cells above, computed against the header area only
         # (header_pct of rh) when sub-cells actually render - otherwise a tall cell's label could compute
         # more lines than fit before the sub-cells start, visually colliding with them.
-        line_h = 15 * 1.3
         label_h = (rh * header_pct / 100) if sub_html else rh
+        # Narrow cells drop to 13px, and long words hyphenate ("compli-ments") instead of being split
+        # with no hyphen ("compliment s"), which read as two words.
+        fs = 15 if rw >= 110 else 13
+        line_h = fs * 1.3
         max_lines = max(1, int((label_h - 12 - 8) // line_h))
-        label = (f'<div style="font-size:15px;font-weight:500;color:{TH_ON[col]};line-height:1.3;'
-                 f'overflow:hidden;overflow-wrap:break-word;display:-webkit-box;'
+        label = (f'<div lang="en" style="font-size:{fs}px;font-weight:500;color:{TH_ON[col]};line-height:1.3;'
+                 f'overflow:hidden;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto;display:-webkit-box;'
                  f'-webkit-line-clamp:{max_lines};-webkit-box-orient:vertical">'
                  f'{esc(name)} <span style="font-weight:600">{share}%</span></div>')
 

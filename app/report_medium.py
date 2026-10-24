@@ -17,6 +17,8 @@ from .report_blocks import BY_SLUG
 
 FLOW_NOTE = ('Flow widths are estimates from rounded group percentages. The tone end uses each theme\'s '
              'overall tone split; it does not trace individual answers through tone.')
+GRID_MIN_SPREAD = 0.05  # same 0.05 bar SPEC.md uses for a tone spread worth charting
+
 GRID_NOTE = ('Cells use the existing theme-average sentiment estimate, not separately scored individual '
              'answers. Groups below the minimum size are withheld. This is an exploration, not an additional finding.')
 
@@ -31,10 +33,18 @@ def view(chart_id: str, data: ReportData, label: str, note: str = '') -> dict:
             f'<strong>{esc(t.name)}</strong><br>{t.share:g}% · {fmt(t.count)} answers</div>'
             for t in data.themes if t.count > 0
         )
-        html = (f'<div style="padding:24px 16px">{hdr("Themes and sub-themes", "Themes above, sub-themes below. Labels retain their size on smaller screens.")}'
-                f'<div style="margin-top:24px">{icicle_html(data, 358, 400)}</div>'
-                f'<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px">{key}</div></div>')
-        width, height = 390, 580 + 50 * math.ceil(len(data.themes) / 2)
+        # Both layouts ship in one fragment and a container query picks one by the chart's real width:
+        # the compact 390px layout was also being shown on desktop, as a small column in a wide page.
+        compact = (f'<div style="padding:24px 16px">'
+                   f'<div style="margin-top:24px">{icicle_html(data, 358, 400)}</div>'
+                   f'<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px">{key}</div></div>')
+        wide = f'<div style="padding:24px 48px 40px">{icicle_html(data, 1084, 480)}</div>'
+        html = ('<style>.vb-icicle-wide{display:none}'
+                '@container vbicicle (min-width:640px){.vb-icicle-wide{display:block}.vb-icicle-compact{display:none}}</style>'
+                '<div style="container-type:inline-size;container-name:vbicicle">'
+                f'<div style="padding:56px 48px 0">{hdr("Themes and sub-themes", "Themes above, sub-themes below.")}</div>'
+                f'<div class="vb-icicle-wide">{wide}</div><div class="vb-icicle-compact">{compact}</div></div>')
+        width, height = 1180, 700
     else:
         html, width, height = render_report_parts(chart_id, data)
     return {'chart_id': chart_id, 'chart_title': TITLES.get(chart_id, chart_id),
@@ -205,6 +215,11 @@ def safe_numeric_grid(data: ReportData) -> ReportData | None:
              and c.row_label in grid.row_labels and c.col_label in grid.col_labels
              and math.isfinite(c.sentiment)]
     if len({c.row_label for c in cells}) < 2 or len({c.col_label for c in cells}) < 2:
+        return None
+    # Cell tone is the theme-average estimate, so cells only differ when the theme mix differs. When every
+    # cell lands within a few hundredths (dataset 11: +0.50 to +0.52), the grid has nothing to show.
+    sentiments = [c.sentiment for c in cells]
+    if max(sentiments) - min(sentiments) < GRID_MIN_SPREAD:
         return None
     # Defensive suppression: the renderer must not expose smaller cells passed by an older producer.
     kept = {(c.row_label, c.col_label) for c in cells}
