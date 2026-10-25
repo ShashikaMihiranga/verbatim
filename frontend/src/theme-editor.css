@@ -98,3 +98,16 @@
   .te-share, .te-tone, .te-head span:nth-child(3), .te-head span:nth-child(5) { display: none; }
   .te-count { margin-left: 0; }
 }
+
+/* Previews (step 2) */
+.te-sub-title { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; font-size: 15px; font-weight: 600; }
+.te-samples, .te-parts { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; }
+.te-samples-name, .te-part-name { font-weight: 500; font-size: 15px; }
+.te-panel blockquote { margin: 6px 0 0; padding: 0 0 0 12px; border-left: 2px solid var(--line); color: var(--ink); font-size: 14px; line-height: 1.5; }
+.te-note svg { vertical-align: -2px; margin-right: 6px; }
+.te-seg { display: flex; align-items: center; gap: 6px; }
+.te-seg-label { font-size: 14px; font-weight: 500; margin-right: 6px; }
+.te-seg-btn { width: 40px; height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); cursor: pointer; font-variant-numeric: tabular-nums; }
+.te-seg-btn[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.te-part-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.te-parts .te-bar { display: block; }

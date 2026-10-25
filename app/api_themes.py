@@ -1303,6 +1303,193 @@ def merge_themes(
     return _theme_dict(survivor, total)
 
 
+# ---------------------------------------------------------------- theme editor previews (step 2)
+# Shown to owners and editors before an edit; nothing here commits. Sample answers are the owner's own
+# text read back from the cleaned data, never sent to a model.
+SAMPLE_MIN_WORDS, SAMPLE_MAX_WORDS = 4, 60
+
+
+def _sample_answers(clean_df: pd.DataFrame, column: str, refs: list[int], n: int) -> list[str]:
+    """`n` readable answers from `refs`: 4-60 words where possible, in row order, so the same theme always
+    shows the same samples."""
+    picked, spare = [], []
+    for r in refs:
+        try:
+            text = clean_df.at[r, column]
+        except KeyError:
+            continue
+        if not isinstance(text, str) or not text.strip():
+            continue
+        words = len(text.split())
+        (picked if SAMPLE_MIN_WORDS <= words <= SAMPLE_MAX_WORDS else spare).append(text.strip())
+        if len(picked) >= n:
+            break
+    return (picked + spare)[:n]
+
+
+def _column_themes(db: Session, ds: Dataset, column: str, ids: list[int]) -> list[Theme]:
+    rows = list(db.scalars(select(Theme).where(
+        Theme.dataset_id == ds.id, Theme.column_name == column, Theme.id.in_(ids))).all())
+    missing = sorted(set(ids) - {t.id for t in rows})
+    if missing:
+        raise HTTPException(404, f"Theme id(s) not found: {missing}")
+    if any(t.label == "Other" for t in rows):
+        raise HTTPException(422, "Other holds answers that fit no theme, so it cannot be merged.")
+    return rows
+
+
+class MergePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    column: str = Field(max_length=255)
+    theme_ids: list[int] = Field(min_length=2, max_length=20)
+
+
+@router.post("/datasets/{dataset_id}/themes/merge-preview")
+def merge_preview(
+    dataset_id: int, body: MergePreviewRequest,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """What a merge of `theme_ids` would make, without making it: combined answers and share, the
+    size-weighted tone the merge itself uses (`_merged_tone`), the sub-themes that carry over, and two
+    sample answers per theme."""
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    rows = _column_themes(db, ds, body.column, body.theme_ids)
+    if len(rows) < 2:
+        raise HTTPException(422, "Merging needs at least 2 distinct themes.")
+    total = sum(t.size for t in _stored_themes(db, ds.id, body.column))
+    answers = len({r for t in rows for r in (t.answer_refs or [])})
+    tone, sentiment = _merged_tone(rows)
+    clean_df, _plan = _load_clean_df(ds, db)
+    return {
+        "answers": answers,
+        "share": round(answers / total * 100, 1) if total else 0.0,
+        "tone": tone, "sentiment": sentiment,
+        "sub_themes": len(_merged_sub_themes(rows)),
+        "label": max(rows, key=lambda t: t.size).label,
+        "themes": [
+            {"id": t.id, "label": t.label, "size": t.size,
+             "samples": _sample_answers(clean_df, body.column, list(t.answer_refs or []), 2)}
+            for t in sorted(rows, key=lambda t: -t.size)
+        ],
+    }
+
+
+def _split_parts(theme: Theme, parts: int) -> list[dict]:
+    """A split along stored sub-themes: the `parts - 1` largest sub-themes become their own themes, and
+    the rest (every other answer, other sub-themes included) stays as this theme, keeping its name. Exact,
+    because each sub-theme stores its own answers."""
+    subs = sorted(theme.sub_themes or [], key=lambda s: -s["size"])[: parts - 1]
+    own = set(theme.answer_refs or [])
+    taken = [sorted(set(s.get("answer_refs") or []) & own) for s in subs]
+    used = {r for refs in taken for r in refs}
+    rest = sorted(own - used)
+    out = [{"label": theme.label, "refs": rest, "keeps_theme": True, "sub": None}]
+    out += [{"label": s["label"], "refs": refs, "keeps_theme": False, "sub": s} for s, refs in zip(subs, taken) if refs]
+    return out
+
+
+def _split_choices(theme: Theme) -> list[int]:
+    """How many parts a sub-theme split can make: 2 up to the sub-themes plus the rest, at most 4."""
+    n = len([s for s in theme.sub_themes or [] if s.get("answer_refs")])
+    return list(range(2, min(4, n + 1) + 1)) if n else []
+
+
+class SplitPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    parts: int | None = Field(default=None, ge=2, le=4)
+
+
+def _splittable(db: Session, user: User, dataset_id: int, theme_id: int) -> tuple[Dataset, Theme]:
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    theme = db.get(Theme, theme_id)
+    if theme is None or theme.dataset_id != ds.id:
+        raise HTTPException(404, "Theme not found.")
+    if theme.label == "Other":
+        raise HTTPException(422, "Other holds answers that fit no theme, so it cannot be split. Use Look inside Other.")
+    return ds, theme
+
+
+@router.post("/datasets/{dataset_id}/themes/{theme_id}/split-preview")
+def split_preview(
+    dataset_id: int, theme_id: int, body: SplitPreviewRequest,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """The parts a split would make, without making them. With stored sub-themes: exact parts
+    (`_split_parts`), default as many as the sub-themes clamped to 2-3. Without: `by_wording` and no parts,
+    since that split re-reads the answers in a background job and its parts are not known in advance."""
+    ds, theme = _splittable(db, user, dataset_id, theme_id)
+    choices = _split_choices(theme)
+    total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
+    base = {"theme_id": theme.id, "label": theme.label, "size": theme.size,
+            "share": round(theme.size / total * 100, 1) if total else 0.0, "sub_themes": len(theme.sub_themes or [])}
+    if not choices:
+        return {**base, "by_wording": True, "choices": [], "parts": []}
+    parts = body.parts if body.parts in choices else min(max(2, min(3, len(theme.sub_themes or []))), choices[-1])
+    clean_df, _plan = _load_clean_df(ds, db)
+    return {
+        **base, "by_wording": False, "choices": choices, "parts_chosen": parts,
+        "parts": [
+            {"label": p["label"], "answers": len(p["refs"]), "keeps_theme": p["keeps_theme"],
+             "share": round(len(p["refs"]) / total * 100, 1) if total else 0.0,
+             "sample": next(iter(_sample_answers(clean_df, theme.column_name, p["refs"], 1)), None)}
+            for p in _split_parts(theme, parts)
+        ],
+    }
+
+
+class SplitSubThemesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    parts: int = Field(ge=2, le=4)
+
+
+def _without(theme_tone: dict | None, size: int, parts: list[tuple[dict | None, int]]) -> dict:
+    """The tone left after taking `parts` (tone, size) out of a theme of `size`: the size-weighted
+    difference, floored at 0 and rescaled to 100."""
+    left = size - sum(n for _, n in parts) or 1
+    raw = {k: max(0.0, ((theme_tone or {}).get(k, 0.0) * size - sum((t or {}).get(k, 0.0) * n for t, n in parts)) / left)
+           for k in ("neg", "neu", "pos")}
+    scale = sum(raw.values()) or 1.0
+    return {k: round(v * 100 / scale, 1) for k, v in raw.items()}
+
+
+@router.post("/datasets/{dataset_id}/themes/{theme_id}/split-sub-themes")
+def split_sub_themes(
+    dataset_id: int, theme_id: int, body: SplitSubThemesRequest,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Applies the split `split_preview` showed: each chosen sub-theme becomes its own theme with its
+    stored answers, tone and sentiment; the theme keeps the rest and its other sub-themes. Synchronous
+    and free (no re-embedding): the parts were already found when the themes were built."""
+    ds, theme = _splittable(db, user, dataset_id, theme_id)
+    _refuse_while_report_builds(db, ds.id, theme.column_name)
+    if body.parts not in _split_choices(theme):
+        raise HTTPException(422, "This theme has no sub-themes to split along. Use Split to re-read its answers.")
+    parts = _split_parts(theme, body.parts)
+    created = []
+    for p in parts[1:]:
+        s = p["sub"]
+        t = Theme(dataset_id=ds.id, column_name=theme.column_name, column_id=theme.column_id, label=p["label"],
+                  description=s.get("description"), size=len(p["refs"]), sentiment=s.get("sentiment"),
+                  tone=s.get("tone"), answer_refs=p["refs"], sub_themes=[])
+        db.add(t)
+        created.append(t)
+    moved = [(p["sub"].get("tone"), len(p["refs"])) for p in parts[1:]]
+    moved_sent = [(p["sub"].get("sentiment"), len(p["refs"])) for p in parts[1:]]
+    keep = parts[0]
+    old_size = theme.size
+    theme.tone = _without(theme.tone, old_size, moved)
+    if theme.sentiment is not None and all(s is not None for s, _ in moved_sent) and len(keep["refs"]):
+        theme.sentiment = round((theme.sentiment * old_size - sum(s * n for s, n in moved_sent)) / len(keep["refs"]), 3)
+    taken_labels = {p["label"] for p in parts[1:]}
+    theme.sub_themes = [s for s in theme.sub_themes or [] if s["label"] not in taken_labels]
+    theme.answer_refs = keep["refs"]
+    theme.size = len(keep["refs"])
+    _invalidate_report_for_edit(db, ds.id, theme.column_name)
+    db.commit()
+    total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
+    return {"theme": _theme_dict(theme, total), "new_themes": [_theme_dict(t, total) for t in created]}
+
+
 def _split_theme_error(e: BaseException) -> str | None:
     """Same shape as `_look_inside_other_error` - the split job's only real-network step is the one
     batched Claude labeling call (`label_and_consolidate`); re-embedding is Voyage, not Claude/Jev, and

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { getProfile } from './api'
 import type { ColumnProfile, DatasetView, Kind } from './api'
@@ -16,6 +16,7 @@ import ReportView from './Report'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
 import ThemeEditor from './ThemeEditor'
+import { mergePreview, splitPreview, splitSubThemes } from './themeEditorApi'
 import './upload.css'
 import './themes.css'
 import './report.css'
@@ -224,6 +225,12 @@ export default function Themes() {
     setThemes(resp.themes)
     setThemesRole(resp.role ?? null)
   }
+
+  // Stable, so the editor's preview panels fetch once per selection, not on every render.
+  const loadMergePreview = useCallback(
+    (ids: number[]) => mergePreview(id, column as string, ids), [id, column])
+  const loadSplitPreview = useCallback(
+    (themeId: number, parts?: number) => splitPreview(id, themeId, parts), [id])
   const [splitThemeJob, setSplitThemeJob] = useState<Job | null>(null)
 
   // Both builds now run as background jobs (see docs/DECISIONS.md): starting one only creates a `Job` row
@@ -581,6 +588,12 @@ export default function Themes() {
     await refreshThemesChartAndList()
   }
 
+  async function handleSplitParts(themeId: number, parts: number) {
+    await splitSubThemes(id, themeId, parts)
+    setReport(null)
+    await refreshThemesChartAndList()
+  }
+
   async function startSplitTheme(themeId: number) {
     const started = await splitTheme(id, themeId)
     watch(
@@ -786,7 +799,8 @@ export default function Themes() {
               <ThemeEditor
                 themes={themes} totalAnswers={themes.reduce((n, t) => n + t.size, 0)}
                 canEdit={themesRole === 'owner' || themesRole === 'editor'} splitJob={splitThemeJob}
-                onRename={handleRename} onMerge={handleMerge} onSplit={startSplitTheme}
+                onRename={handleRename} onMerge={handleMerge} onSplit={startSplitTheme} onSplitParts={handleSplitParts}
+                loadMergePreview={loadMergePreview} loadSplitPreview={loadSplitPreview}
               />
             </>
           ) : (

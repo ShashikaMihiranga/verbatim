@@ -3342,3 +3342,19 @@ existing theme; the report shows the finished run's result only, with no button.
   list and scrolled into view when it opens.
 - Next: previews (step 2), undo (step 3), Claude grouping (step 4), real client and caching (step 5).
 
+## 2026-10-25 (Theme editor, step 2: merge and split previews)
+
+- `POST /themes/merge-preview`: combined answers, share, the size-weighted tone the merge uses, the
+  sub-themes that carry over, and two sample answers per theme (4-60 words where possible, in row order).
+  Commits nothing. Editor role; Other refused.
+- Split, where the hand-off and the app differed: the hand-off's preview divides a theme's share by its
+  sub-themes' weights, but the existing split re-embeds and re-labels, so its parts are unknown in advance.
+  Decision: when a theme has stored sub-themes, split exactly along them. `POST /themes/{id}/split-preview`
+  returns the parts (the largest N-1 sub-themes become themes, the rest stays as the theme with its name;
+  default N = sub-themes clamped to 2-3, at most 4), and `POST /themes/{id}/split-sub-themes` applies it,
+  synchronously and free. Each sub-theme keeps its stored tone, sentiment and description; the theme's
+  tone is the size-weighted remainder. Without sub-themes the preview says "by wording" and Split runs the
+  existing background job.
+- Checked on dataset 13: merging two themes previewed 1,961 answers, 19.7%; splitting "Parking and
+  perimeter security" into 3 previewed 285 + 144 + 76 = its 505 answers.
+

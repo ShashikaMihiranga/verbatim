@@ -28,8 +28,22 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+const MERGE_PREVIEW = {
+  answers: 100, share: 16.7, tone: { neg: 0, neu: 100, pos: 0 }, sentiment: -0.12, sub_themes: 0, label: 'Light',
+  themes: [{ id: 4, label: 'Light', size: 60, samples: ['The lights flicker all day', 'Too dim by the window'] },
+    { id: 1, label: 'Desks', size: 40, samples: ['My desk is too small'] }],
+}
+const SPLIT_PREVIEW = (parts = 2) => ({
+  theme_id: 3, label: 'Noise and privacy', size: 200, share: 33.3, sub_themes: 2, by_wording: false,
+  choices: [2, 3], parts_chosen: parts,
+  parts: [{ label: 'Noise and privacy', answers: 150, share: 25, keeps_theme: true, sample: 'People talk loudly' },
+    { label: 'Sub 0', answers: 50, share: 8.3, keeps_theme: false, sample: 'Phones ring' }].slice(0, parts),
+})
 const handlers = () => ({
   onRename: vi.fn(() => Promise.resolve()), onMerge: vi.fn(() => Promise.resolve()), onSplit: vi.fn(() => Promise.resolve()),
+  onSplitParts: vi.fn(() => Promise.resolve()),
+  loadMergePreview: vi.fn(() => Promise.resolve(MERGE_PREVIEW)),
+  loadSplitPreview: vi.fn((_id: number, parts?: number) => Promise.resolve(SPLIT_PREVIEW(parts ?? 2))),
 })
 function mount(canEdit = true, h = handlers()) {
   act(() => { root.render(<ThemeEditor themes={THEMES} totalAnswers={600} canEdit={canEdit} {...h} />) })
@@ -90,8 +104,12 @@ describe('ThemeEditor', () => {
     const h = mount()
     act(() => button('Select Desks').click())
     act(() => button('Select Light').click())
-    act(() => container.querySelector<HTMLButtonElement>('.te-selbar button')!.click())
+    await act(async () => container.querySelector<HTMLButtonElement>('.te-selbar button')!.click())
     expect(container.textContent).toContain('2 themes become one')
+    expect(h.loadMergePreview).toHaveBeenCalledWith([1, 4])
+    expect(container.textContent).toContain('What people said in each')
+    expect(container.querySelectorAll('.te-samples blockquote')).toHaveLength(3)
+    expect(container.textContent).toContain('-0.12') // the server's weighted tone
     const name = container.querySelector<HTMLInputElement>('.te-field input')!
     expect(name.value).toBe('Light')
     await act(async () => byText('Merge themes').click())
@@ -111,11 +129,36 @@ describe('ThemeEditor', () => {
     expect(container.textContent).toContain('Renamed “Desks” to “Desk space”.')
   })
 
+  it('split preview: parts from sub-themes, a part count to choose, and the split it shows', async () => {
+    const h = mount()
+    await act(async () => button('Split Noise and privacy').click())
+    expect(container.textContent).toContain('(keeps the theme)')
+    expect(container.querySelectorAll('.te-parts li')).toHaveLength(2)
+    const three = container.querySelector<HTMLButtonElement>('.te-seg button:nth-of-type(2)')!
+    expect(three.textContent).toBe('3')
+    await act(async () => three.click())
+    expect(h.loadSplitPreview).toHaveBeenLastCalledWith(3, 3)
+    await act(async () => byText('Split theme').click())
+    expect(h.onSplitParts).toHaveBeenCalledWith(3, 3)
+    expect(h.onSplit).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Split “Noise and privacy” into 3 themes.')
+  })
+
+  it('split with no sub-themes runs the by-wording job', async () => {
+    const h = handlers()
+    h.loadSplitPreview.mockResolvedValueOnce({ ...SPLIT_PREVIEW(), by_wording: true, choices: [], parts: [] })
+    mount(true, h)
+    await act(async () => button('Split Desks').click())
+    expect(container.textContent).toContain('grouped by wording in the background')
+    await act(async () => byText('Split theme').click())
+    expect(h.onSplit).toHaveBeenCalledWith(1)
+  })
+
   it('shows the error from a failed edit and keeps the panel open', async () => {
     const h = handlers()
-    h.onSplit.mockRejectedValueOnce(new Error('Too few answers to split.'))
+    h.onSplitParts.mockRejectedValueOnce(new Error('Too few answers to split.'))
     mount(true, h)
-    act(() => button('Split Desks').click())
+    await act(async () => button('Split Noise and privacy').click())
     await act(async () => byText('Split theme').click())
     expect(container.querySelector('[role="alert"]')?.textContent).toBe('Too few answers to split.')
     expect(byText('Split theme')).toBeTruthy()

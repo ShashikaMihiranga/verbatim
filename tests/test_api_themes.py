@@ -2098,3 +2098,86 @@ def test_theme_list_says_the_callers_role(env):
     seed_theme(env, did, label="A", description="x", size=1, sentiment=0.0,
                tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0])
     assert env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["role"] == "owner"
+
+
+# ---------------------------------------------------------------- theme editor previews (step 2)
+def _sub(label, refs, tone=None, sentiment=0.0):
+    return {"label": label, "description": f"About {label}", "size": len(refs), "sentiment": sentiment,
+            "tone": tone or {"neg": 50.0, "neu": 50.0, "pos": 0.0}, "answer_refs": refs}
+
+
+def _neutral(**kw):
+    return dict(description="x", sentiment=0.0, tone={"neg": 0, "neu": 100, "pos": 0}, **kw)
+
+
+def test_merge_preview_reports_the_merge_without_committing(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a = seed_theme(env, did, label="A", size=6, answer_refs=[0, 1, 2, 3, 4, 5], **_neutral())
+    b = seed_theme(env, did, label="B", size=2, answer_refs=[6, 7], **_neutral())
+    seed_theme(env, did, label="C", size=2, answer_refs=[8, 9], **_neutral())
+    r = env.client.post(f"/api/datasets/{did}/themes/merge-preview", json={"column": Q, "theme_ids": [b, a]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["answers"], body["share"], body["label"]) == (8, 80.0, "A")
+    assert [t["label"] for t in body["themes"]] == ["A", "B"]  # largest first
+    assert all(len(t["samples"]) == 2 and all(isinstance(x, str) and x for x in t["samples"]) for t in body["themes"])
+    got = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    assert len(got) == 3  # nothing merged
+
+
+def test_split_preview_follows_stored_sub_themes_exactly(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    tid = seed_theme(env, did, label="Noise", size=10, answer_refs=list(range(10)), **_neutral(),
+                     sub_themes=[_sub("Phones", [0, 1, 2, 3]), _sub("Talking", [4, 5, 6]), _sub("Doors", [7])])
+    body = env.client.post(f"/api/datasets/{did}/themes/{tid}/split-preview", json={}).json()
+    assert body["choices"] == [2, 3, 4] and body["parts_chosen"] == 3  # 3 sub-themes, clamped to 3
+    assert [(p["label"], p["answers"], p["keeps_theme"]) for p in body["parts"]] == [
+        ("Noise", 3, True), ("Phones", 4, False), ("Talking", 3, False)]  # the rest keeps the theme
+    assert all(p["sample"] for p in body["parts"])
+    two = env.client.post(f"/api/datasets/{did}/themes/{tid}/split-preview", json={"parts": 2}).json()
+    assert [(p["label"], p["answers"]) for p in two["parts"]] == [("Noise", 6), ("Phones", 4)]
+
+
+def test_split_preview_without_sub_themes_says_by_wording(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    tid = seed_theme(env, did, label="Noise", size=4, answer_refs=[0, 1, 2, 3], **_neutral())
+    body = env.client.post(f"/api/datasets/{did}/themes/{tid}/split-preview", json={}).json()
+    assert body["by_wording"] is True and body["parts"] == [] and body["choices"] == []
+    r = env.client.post(f"/api/datasets/{did}/themes/{tid}/split-sub-themes", json={"parts": 2})
+    assert r.status_code == 422
+
+
+def test_split_sub_themes_makes_the_previewed_themes(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    tid = seed_theme(env, did, label="Noise", size=10, answer_refs=list(range(10)), description="x",
+                     sentiment=-0.2, tone={"neg": 40, "neu": 60, "pos": 0},
+                     sub_themes=[_sub("Phones", [0, 1, 2, 3], {"neg": 100.0, "neu": 0.0, "pos": 0.0}, -0.5),
+                                 _sub("Talking", [4, 5, 6]), _sub("Doors", [7])])
+    r = env.client.post(f"/api/datasets/{did}/themes/{tid}/split-sub-themes", json={"parts": 2})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["theme"]["label"], body["theme"]["size"]) == ("Noise", 6)
+    assert [s["label"] for s in body["theme"]["sub_themes"]] == ["Talking", "Doors"]
+    assert body["theme"]["tone"] == {"neg": 0.0, "neu": 100.0, "pos": 0.0}  # (40*10 - 100*4) / 6
+    assert body["theme"]["sentiment"] == pytest.approx(0.0)  # (-0.2*10 - -0.5*4) / 6
+    new = body["new_themes"][0]
+    assert (new["label"], new["size"], new["description"], new["sentiment"]) == ("Phones", 4, "About Phones", -0.5)
+    themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    assert sorted(t["label"] for t in themes) == ["Noise", "Phones"]
+    assert sum(t["size"] for t in themes) == 10  # no answer lost or counted twice
+
+
+def test_previews_are_for_editors_and_refuse_other(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a = seed_theme(env, did, label="A", size=2, answer_refs=[0, 1], **_neutral())
+    other = seed_theme(env, did, label="Other", size=2, answer_refs=[2, 3], **_neutral())
+    assert env.client.post(f"/api/datasets/{did}/themes/merge-preview",
+                           json={"column": Q, "theme_ids": [a, other]}).status_code == 422
+    assert env.client.post(f"/api/datasets/{did}/themes/{other}/split-preview", json={}).status_code == 422
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=999_999)
+    assert env.client.post(f"/api/datasets/{did}/themes/{a}/split-preview", json={}).status_code == 404

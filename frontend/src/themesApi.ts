@@ -72,7 +72,7 @@ export interface ThemeAnswersResponse {
   sub_theme_index?: number
 }
 
-async function asError(r: Response): Promise<Error> {
+export async function asError(r: Response): Promise<Error> {
   let msg = `Something went wrong (${r.status}).`
   try {
     const j = await r.json()

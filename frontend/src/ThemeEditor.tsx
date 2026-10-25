@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './theme-editor.css'
-import { ChevronDown, ICON, List, Merge, Pencil, Search, Split, Undo2 } from './icons'
+import { ChevronDown, ICON, Info, List, Merge, Pencil, Quote, Search, Split, Undo2 } from './icons'
 import JobProgress from './JobProgress'
+import type { MergePreview, SplitPreview } from './themeEditorApi'
 import type { Job } from './jobsApi'
 import ThemeRow from './ThemeRows'
 import {
@@ -16,6 +17,7 @@ type Panel = { kind: 'idle' } | { kind: 'merge' } | { kind: 'split'; id: number 
 
 export default function ThemeEditor({
   themes, totalAnswers, canEdit, edited = new Set<number>(), splitJob = null, onRename, onMerge, onSplit,
+  onSplitParts, loadMergePreview, loadSplitPreview,
 }: {
   themes: ThemeCard[]
   totalAnswers: number
@@ -24,7 +26,10 @@ export default function ThemeEditor({
   splitJob?: Job | null
   onRename: (themeId: number, label: string) => Promise<void>
   onMerge: (themeIds: number[], label: string) => Promise<void>
-  onSplit: (themeId: number) => Promise<void>
+  onSplit: (themeId: number) => Promise<void> // re-read by wording: a background job
+  onSplitParts: (themeId: number, parts: number) => Promise<void> // along stored sub-themes, applied at once
+  loadMergePreview: (themeIds: number[]) => Promise<MergePreview>
+  loadSplitPreview: (themeId: number, parts?: number) => Promise<SplitPreview>
 }) {
   const [query, setQuery] = useState('')
   const [chip, setChip] = useState<Chip>('all')
@@ -161,7 +166,7 @@ export default function ThemeEditor({
           )}
           {panel.kind === 'merge' && selected.length >= 2 && (
             <MergePanel
-              themes={selected} totalAnswers={totalAnswers} busy={busy}
+              themes={selected} totalAnswers={totalAnswers} busy={busy} load={loadMergePreview}
               onCancel={() => setPanel({ kind: 'idle' })}
               onMerge={(name) => void run(async () => {
                 await onMerge(selected.map((t) => t.id), name)
@@ -180,9 +185,13 @@ export default function ThemeEditor({
           )}
           {panel.kind === 'split' && byId(panel.id) && (
             <SplitPanel
-              theme={byId(panel.id) as ThemeCard} busy={busy} job={splitJob}
+              theme={byId(panel.id) as ThemeCard} busy={busy} job={splitJob} load={loadSplitPreview}
               onCancel={() => setPanel({ kind: 'idle' })}
-              onSplit={() => void run(() => onSplit(panel.id), `Splitting “${(byId(panel.id) as ThemeCard).label}”. The new themes appear when it finishes.`)}
+              onSplit={(parts) => {
+                const name = (byId(panel.id) as ThemeCard).label
+                if (parts === null) void run(() => onSplit(panel.id), `Splitting “${name}” by wording. The new themes appear when it finishes.`)
+                else void run(() => onSplitParts(panel.id, parts), `Split “${name}” into ${parts} themes.`)
+              }}
             />
           )}
         </aside>
@@ -192,16 +201,29 @@ export default function ThemeEditor({
   )
 }
 
-function MergePanel({ themes, totalAnswers, busy, onCancel, onMerge }: {
+function MergePanel({ themes, totalAnswers, busy, load, onCancel, onMerge }: {
   themes: ThemeCard[]
   totalAnswers: number
   busy: boolean
+  load: (ids: number[]) => Promise<MergePreview>
   onCancel: () => void
   onMerge: (name: string) => void
 }) {
   const fallback = largestName(themes)
   const [name, setName] = useState(fallback)
+  const [preview, setPreview] = useState<MergePreview | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  const ids = themes.map((t) => t.id).join(',')
+  useEffect(() => {
+    let live = true
+    load(ids.split(',').map(Number))
+      .then((p) => { if (live) setPreview(p) })
+      .catch((e) => { if (live) setFailed(e instanceof Error ? e.message : 'Could not load the preview.') })
+    return () => { live = false }
+  }, [ids, load])
+  // Until the server answers, the same sums from the list (the server's merge uses the same weighting).
   const c = combine(themes, totalAnswers)
+  const figures = preview ? { share: preview.share, answers: preview.answers, tone: preview.sentiment } : c
   return (
     <div className="te-panel">
       <h3 className="te-panel-title"><Merge size={20} {...ICON} />{themes.length} themes become one</h3>
@@ -211,11 +233,29 @@ function MergePanel({ themes, totalAnswers, busy, onCancel, onMerge }: {
       </label>
       <p className="te-note">Left empty, it keeps the largest theme's name, {fallback}.</p>
       <dl className="te-figures">
-        <div><dt>Share of all answers</dt><dd>{c.share}%</dd></div>
-        <div><dt>Answers</dt><dd>{fmt(c.answers)}</dd></div>
-        <div><dt>Tone</dt><dd>{formatTone(c.tone)}</dd></div>
+        <div><dt>Share of all answers</dt><dd>{figures.share}%</dd></div>
+        <div><dt>Answers</dt><dd>{fmt(figures.answers)}</dd></div>
+        <div><dt>Tone</dt><dd>{formatTone(figures.tone)}</dd></div>
       </dl>
-      <p className="te-note">Sub-themes of every merged theme carry over.</p>
+      <h4 className="te-sub-title"><Quote size={16} {...ICON} />What people said in each</h4>
+      {failed && <p className="te-error" role="alert">{failed}</p>}
+      {!preview && !failed && <p className="te-note" role="status">Loading answers…</p>}
+      {preview && (
+        <ul className="te-samples">
+          {preview.themes.map((t) => (
+            <li key={t.id}>
+              <div className="te-samples-name">{t.label}</div>
+              {t.samples.length ? t.samples.map((a, i) => <blockquote key={i}>{a}</blockquote>)
+                : <p className="te-note">No readable answers.</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="te-note"><Info size={14} {...ICON} />
+        {preview && preview.sub_themes > 0
+          ? `Sub-themes of every merged theme carry over (${preview.sub_themes}).`
+          : 'Sub-themes of every merged theme carry over.'}
+      </p>
       <div className="te-buttons">
         <button type="button" className="te-btn is-primary" disabled={busy} onClick={() => onMerge(name.trim() || fallback)}>
           <Merge size={18} {...ICON} />Merge themes
@@ -249,24 +289,65 @@ function RenamePanel({ theme, busy, onCancel, onSave }: {
   )
 }
 
-function SplitPanel({ theme, busy, job, onCancel, onSplit }: {
+function SplitPanel({ theme, busy, job, load, onCancel, onSplit }: {
   theme: ThemeCard
   busy: boolean
   job: Job | null
+  load: (id: number, parts?: number) => Promise<SplitPreview>
   onCancel: () => void
-  onSplit: () => void
+  onSplit: (parts: number | null) => void // a number: along sub-themes; null: re-read by wording (a job)
 }) {
+  const [parts, setParts] = useState<number | undefined>(undefined)
+  const [preview, setPreview] = useState<SplitPreview | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    load(theme.id, parts)
+      .then((p) => { if (live) setPreview(p) })
+      .catch((e) => { if (live) setFailed(e instanceof Error ? e.message : 'Could not load the preview.') })
+    return () => { live = false }
+  }, [theme.id, parts, load])
   const running = job !== null && job.status === 'running'
+  const largest = Math.max(1, ...(preview?.parts.map((p) => p.answers) ?? [1]))
   return (
     <div className="te-panel">
       <h3 className="te-panel-title"><Split size={20} {...ICON} />{theme.label}</h3>
       <p className="te-note">
         {theme.size_pct.toFixed(1)}% of answers, {theme.sub_themes.length} sub-theme{theme.sub_themes.length === 1 ? '' : 's'} found.
       </p>
-      <p className="te-note">Splitting re-reads this theme's answers in the background and names the parts it finds.</p>
+      {failed && <p className="te-error" role="alert">{failed}</p>}
+      {!preview && !failed && <p className="te-note" role="status">Loading the preview…</p>}
+      {preview && !preview.by_wording && (
+        <>
+          <div className="te-seg" role="radiogroup" aria-label="Split into">
+            <span className="te-seg-label">Split into</span>
+            {preview.choices.map((n) => (
+              <button key={n} type="button" role="radio" aria-checked={preview.parts_chosen === n}
+                className="te-seg-btn" onClick={() => setParts(n)}>{n}</button>
+            ))}
+          </div>
+          <ul className="te-parts">
+            {preview.parts.map((p) => (
+              <li key={p.label}>
+                <div className="te-part-head">
+                  <span className="te-part-name">{p.label}{p.keeps_theme && <span className="te-note"> (keeps the theme)</span>}</span>
+                  <span className="te-num">{p.share}% · {fmt(p.answers)}</span>
+                </div>
+                <span className="te-bar" aria-hidden="true"><span style={{ width: `${(p.answers / largest) * 100}%` }} /></span>
+                {p.sample && <blockquote>{p.sample}</blockquote>}
+              </li>
+            ))}
+          </ul>
+          <p className="te-note"><Info size={14} {...ICON} />Each part is one of the sub-themes found when the themes were built. The rest stays as {theme.label}.</p>
+        </>
+      )}
+      {preview?.by_wording && (
+        <p className="te-note"><Info size={14} {...ICON} />{theme.label} has no sub-themes, so its answers are grouped by wording in the background. The new themes appear when that finishes.</p>
+      )}
       {running && job ? <JobProgress job={job} /> : (
         <div className="te-buttons">
-          <button type="button" className="te-btn is-primary" disabled={busy || isOther(theme)} onClick={onSplit}>
+          <button type="button" className="te-btn is-primary" disabled={busy || !preview || isOther(theme)}
+            onClick={() => preview && onSplit(preview.by_wording ? null : preview.parts_chosen ?? null)}>
             <Split size={18} {...ICON} />Split theme
           </button>
           <button type="button" className="te-btn" onClick={onCancel}>Cancel</button>
