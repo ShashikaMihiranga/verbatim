@@ -139,6 +139,26 @@ class CleanedFile(Base):
     created_at: Mapped[datetime] = _created()
 
 
+class ThemeEdit(Base):
+    """One theme edit a user made (rename, merge, split, promote, a batch of merges), kept so it can be
+    undone (theme editor, 2026-10-25). `before` snapshots every affected `Theme` row, all columns, as it
+    was; `created_ids` are rows the edit added; `touched_ids` are the rows it left changed, for the
+    "edited" tag. Undo restores `before`, deletes `created_ids` and sets `undone_at`. A theme rebuild or
+    Look inside Other clears a column's edits, since their snapshots no longer fit the themes."""
+    __tablename__ = "theme_edits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    column_name: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(32))
+    summary: Mapped[str] = mapped_column(Text)
+    before: Mapped[list] = mapped_column(JSON)
+    created_ids: Mapped[list] = mapped_column(JSON)
+    touched_ids: Mapped[list] = mapped_column(JSON)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created()
+
+
 class Job(Base):
     """A background build (themes or report) that runs in a daemon thread, not inside the request that
     started it (see app/jobs.py and docs/DECISIONS.md, "async build jobs"). One row per build attempt for

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ICON, Pencil, Split } from './icons'
+import { ArrowUpRight, Check, ChevronDown, ICON, Pencil, Split } from './icons'
 import { formatTone, fmt, isOther, NAME_BOLD_SHARE, shareBarWidth, type ColorToken } from './themeEditorModel'
 import type { ThemeCard } from './themesApi'
 
@@ -6,7 +6,8 @@ import type { ThemeCard } from './themesApi'
 // printed %, answer count, tone, and three icon actions. Viewers get the same row with no controls but
 // the sub-theme toggle, which only shows more.
 export default function ThemeRow({
-  theme, color, canEdit, selected, expanded, edited, onToggleSelect, onToggleExpand, onRename, onSplit,
+  theme, color, canEdit, selected, expanded, edited, busy = false, onToggleSelect, onToggleExpand, onRename, onSplit,
+  onPromote,
 }: {
   theme: ThemeCard
   color: ColorToken
@@ -18,6 +19,8 @@ export default function ThemeRow({
   onToggleExpand: () => void
   onRename: () => void
   onSplit: () => void
+  onPromote: (index: number, label: string) => void // "Make its own theme" for a sub-theme
+  busy?: boolean
 }) {
   const other = isOther(theme)
   const name = theme.label
@@ -80,6 +83,12 @@ export default function ThemeRow({
             <li key={s.index}>
               <span>{s.label}</span>
               <span className="te-num">{s.size_pct.toFixed(1)}% of all answers</span>
+              {canEdit && (
+                <button type="button" className="te-btn is-small" disabled={busy} onClick={() => onPromote(s.index, s.label)}
+                  aria-label={`Make ${s.label} its own theme`} title={`Make ${s.label} its own theme`}>
+                  <ArrowUpRight size={14} {...ICON} />Own theme
+                </button>
+              )}
             </li>
           ))}
         </ul>

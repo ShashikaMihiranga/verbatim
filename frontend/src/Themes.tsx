@@ -16,7 +16,7 @@ import ReportView from './Report'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
 import ThemeEditor from './ThemeEditor'
-import { mergePreview, splitPreview, splitSubThemes } from './themeEditorApi'
+import { listEdits, mergePreview, promoteSubTheme, splitPreview, splitSubThemes, undoEdit } from './themeEditorApi'
 import './upload.css'
 import './themes.css'
 import './report.css'
@@ -221,9 +221,11 @@ export default function Themes() {
   // Theme editing (docs/TODO.md, fixed 2026-10-22): merge checkbox selection, Manage themes mode only.
   // The caller's role (GET /themes): the theme editor's controls are for owners and editors only.
   const [themesRole, setThemesRole] = useState<ThemesResponse['role']>(null)
+  const [editedIds, setEditedIds] = useState<Set<number>>(new Set())
   const applyThemes = (resp: ThemesResponse) => {
     setThemes(resp.themes)
     setThemesRole(resp.role ?? null)
+    setEditedIds(new Set(resp.edited_ids ?? []))
   }
 
   // Stable, so the editor's preview panels fetch once per selection, not on every render.
@@ -231,6 +233,7 @@ export default function Themes() {
     (ids: number[]) => mergePreview(id, column as string, ids), [id, column])
   const loadSplitPreview = useCallback(
     (themeId: number, parts?: number) => splitPreview(id, themeId, parts), [id])
+  const loadEdits = useCallback(() => listEdits(id, column as string), [id, column])
   const [splitThemeJob, setSplitThemeJob] = useState<Job | null>(null)
 
   // Both builds now run as background jobs (see docs/DECISIONS.md): starting one only creates a `Job` row
@@ -575,21 +578,19 @@ export default function Themes() {
   }
 
   // Theme editor callbacks: they throw on failure, and ThemeEditor shows the message in its own panel.
-  async function handleRename(themeId: number, label: string) {
-    await renameTheme(id, themeId, label)
+  // Each edit resolves to the token that undoes it.
+  async function afterEdit<T extends { undo_token: number }>(edit: Promise<T>): Promise<number> {
+    const { undo_token } = await edit
     setReport(null)
     await refreshThemesChartAndList()
+    return undo_token
   }
-
-  async function handleMerge(themeIds: number[], label: string) {
-    if (!column) return
-    await mergeThemes(id, column, themeIds, label)
-    setReport(null)
-    await refreshThemesChartAndList()
-  }
-
-  async function handleSplitParts(themeId: number, parts: number) {
-    await splitSubThemes(id, themeId, parts)
+  const handleRename = (themeId: number, label: string) => afterEdit(renameTheme(id, themeId, label))
+  const handleMerge = (themeIds: number[], label: string) => afterEdit(mergeThemes(id, column as string, themeIds, label))
+  const handleSplitParts = (themeId: number, parts: number) => afterEdit(splitSubThemes(id, themeId, parts))
+  const handlePromote = (themeId: number, index: number) => afterEdit(promoteSubTheme(id, themeId, index))
+  async function handleUndo(token: number) {
+    await undoEdit(id, column as string, token)
     setReport(null)
     await refreshThemesChartAndList()
   }
@@ -798,8 +799,9 @@ export default function Themes() {
               })()}
               <ThemeEditor
                 themes={themes} totalAnswers={themes.reduce((n, t) => n + t.size, 0)}
-                canEdit={themesRole === 'owner' || themesRole === 'editor'} splitJob={splitThemeJob}
+                canEdit={themesRole === 'owner' || themesRole === 'editor'} splitJob={splitThemeJob} edited={editedIds}
                 onRename={handleRename} onMerge={handleMerge} onSplit={startSplitTheme} onSplitParts={handleSplitParts}
+                onPromote={handlePromote} onUndo={handleUndo} loadEdits={loadEdits}
                 loadMergePreview={loadMergePreview} loadSplitPreview={loadSplitPreview}
               />
             </>

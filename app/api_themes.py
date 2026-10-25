@@ -57,6 +57,7 @@ from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, question_kind_for, theme_nodes
 from .jobs import REPORT_JOB_MAX_AGE, _mark_failed, blocking_job, create_job, set_progress, start_job
+from . import theme_edits
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
     AnswerScore,
@@ -419,6 +420,9 @@ def _write_theme_rows(
     # A rebuild replaces old themes with new ones atomically: either every step above succeeded and this
     # commits, or an exception was already raised and nothing here runs, leaving any previously-stored
     # themes untouched.
+    # Before the deletes below: its query would flush them first, and SQLite would then hand the new rows
+    # the old ids.
+    theme_edits.forget(db, dataset_id, column)  # their snapshots describe the themes being replaced
     for old in db.scalars(select(Theme).where(Theme.dataset_id == dataset_id, Theme.column_name == column)).all():
         db.delete(old)
     db.add_all(new_rows)
@@ -497,6 +501,7 @@ def _apply_other_classification(
     "count", "sentiment", "tone"}], "still_other_count": int, "failed_classification_count": int}` - or
     `None` if `other` was already gone (nothing to summarize)."""
     other = db.get(Theme, other_theme_id)
+    theme_edits.forget(db, dataset_id, column)  # Look inside rewrites themes without an edit record
     if other is None:
         return None  # dataset/column was deleted or rebuilt from under this job; nothing left to update
 
@@ -1204,14 +1209,18 @@ def rename_theme(
         raise HTTPException(404, "Theme not found.")
     _refuse_while_report_builds(db, ds.id, theme.column_name)
 
+    before = theme_edits.snapshot([theme])
+    old_label = theme.label
     theme.label = body.label.strip()
     if body.description is not None:
         theme.description = body.description.strip() or None
+    edit = theme_edits.record(db, ds.id, theme.column_name, "rename", f"Renamed “{old_label}” to “{theme.label}”.",
+                              before, [], [theme], user.id)
     _invalidate_report_for_edit(db, ds.id, theme.column_name)
     db.commit()
 
     total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
-    return _theme_dict(theme, total)
+    return {**_theme_dict(theme, total), "undo_token": edit.id}
 
 
 def _merged_tone(rows: list[Theme]) -> tuple[dict, float | None]:
@@ -1282,6 +1291,7 @@ def merge_themes(
 
     survivor = max(rows, key=lambda t: t.size)
     label = (body.label or "").strip() or survivor.label
+    before = theme_edits.snapshot(rows)
 
     refs = sorted({r for t in rows for r in (t.answer_refs or [])})
     tone, sentiment = _merged_tone(rows)
@@ -1295,12 +1305,14 @@ def merge_themes(
     for t in rows:
         if t.id != survivor.id:
             db.delete(t)
+    edit = theme_edits.record(db, ds.id, body.column, "merge", f"Merged {len(rows)} themes into “{label}”.",
+                              before, [], [survivor], user.id)
 
     _invalidate_report_for_edit(db, ds.id, body.column)
     db.commit()
 
     total = sum(t.size for t in _stored_themes(db, ds.id, body.column))
-    return _theme_dict(survivor, total)
+    return {**_theme_dict(survivor, total), "undo_token": edit.id}
 
 
 # ---------------------------------------------------------------- theme editor previews (step 2)
@@ -1465,6 +1477,7 @@ def split_sub_themes(
     if body.parts not in _split_choices(theme):
         raise HTTPException(422, "This theme has no sub-themes to split along. Use Split to re-read its answers.")
     parts = _split_parts(theme, body.parts)
+    before = theme_edits.snapshot([theme])
     created = []
     for p in parts[1:]:
         s = p["sub"]
@@ -1484,10 +1497,80 @@ def split_sub_themes(
     theme.sub_themes = [s for s in theme.sub_themes or [] if s["label"] not in taken_labels]
     theme.answer_refs = keep["refs"]
     theme.size = len(keep["refs"])
+    edit = theme_edits.record(db, ds.id, theme.column_name, "split",
+                              f"Split “{theme.label}” into {len(created) + 1} themes.", before, created, [theme], user.id)
     _invalidate_report_for_edit(db, ds.id, theme.column_name)
     db.commit()
     total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
-    return {"theme": _theme_dict(theme, total), "new_themes": [_theme_dict(t, total) for t in created]}
+    return {"theme": _theme_dict(theme, total), "new_themes": [_theme_dict(t, total) for t in created],
+            "undo_token": edit.id}
+
+
+
+@router.post("/datasets/{dataset_id}/themes/{theme_id}/sub-themes/{index}/promote")
+def promote_sub_theme(
+    dataset_id: int, theme_id: int, index: int,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """"Make its own theme": the sub-theme leaves its parent (answers, and its share of the tone) and
+    becomes a theme with its stored answers, tone, sentiment and description."""
+    ds, theme = _splittable(db, user, dataset_id, theme_id)
+    _refuse_while_report_builds(db, ds.id, theme.column_name)
+    subs = theme.sub_themes or []
+    if index < 0 or index >= len(subs):
+        raise HTTPException(404, "Sub-theme not found.")
+    s = subs[index]
+    refs = sorted(set(s.get("answer_refs") or []) & set(theme.answer_refs or []))
+    if not refs or len(refs) >= theme.size:
+        raise HTTPException(422, "This sub-theme has no answers of its own to move.")
+    before = theme_edits.snapshot([theme])
+    new = Theme(dataset_id=ds.id, column_name=theme.column_name, column_id=theme.column_id, label=s["label"],
+                description=s.get("description"), size=len(refs), sentiment=s.get("sentiment"), tone=s.get("tone"),
+                answer_refs=refs, sub_themes=[])
+    db.add(new)
+    old_size = theme.size
+    theme.tone = _without(theme.tone, old_size, [(s.get("tone"), len(refs))])
+    if theme.sentiment is not None and s.get("sentiment") is not None:
+        theme.sentiment = round((theme.sentiment * old_size - s["sentiment"] * len(refs)) / (old_size - len(refs)), 3)
+    taken = set(refs)
+    theme.answer_refs = [r for r in theme.answer_refs or [] if r not in taken]
+    theme.size = len(theme.answer_refs)
+    theme.sub_themes = [x for i, x in enumerate(subs) if i != index]
+    edit = theme_edits.record(db, ds.id, theme.column_name, "promote",
+                              f"Made “{s['label']}” its own theme.", before, [new], [theme], user.id)
+    _invalidate_report_for_edit(db, ds.id, theme.column_name)
+    db.commit()
+    total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
+    return {"theme": _theme_dict(theme, total), "new_theme": _theme_dict(new, total), "undo_token": edit.id}
+
+
+class UndoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    column: str = Field(max_length=255)
+    undo_token: int
+
+
+@router.post("/datasets/{dataset_id}/themes/undo")
+def undo_theme_edit(
+    dataset_id: int, body: UndoRequest, db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Reverses the column's newest edit (`undo_token` from the edit's response or GET .../edits)."""
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    _refuse_while_report_builds(db, ds.id, body.column)
+    try:
+        edit = theme_edits.undo(db, ds.id, body.column, body.undo_token)
+    except theme_edits.UndoRefused as e:
+        raise HTTPException(409, str(e)) from e
+    _invalidate_report_for_edit(db, ds.id, body.column)
+    db.commit()
+    return {"undone": theme_edits.edit_dict(edit)}
+
+
+@router.get("/datasets/{dataset_id}/themes/edits")
+def list_theme_edits(dataset_id: int, column: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """"Your edits": the column's undoable edits, newest first. Only the first can be undone next."""
+    ds = _own_dataset(db, user, dataset_id)
+    return {"edits": [theme_edits.edit_dict(e) for e in theme_edits.active_edits(db, ds.id, column)]}
 
 
 def _split_theme_error(e: BaseException) -> str | None:
@@ -1519,6 +1602,8 @@ def _apply_theme_split(
     original = db.get(Theme, theme_id)
     if original is None:
         return None
+    before = theme_edits.snapshot([original])
+    created: list[Theme] = []
 
     column_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
     column_id = column_row.id if column_row else None
@@ -1554,11 +1639,12 @@ def _apply_theme_split(
         if len(rows) < MIN_OTHER_NEW_THEME_SIZE:
             continue  # too small to count as its own theme - stays in remainder (already there by default)
         tone, sentiment = _aggregate_tone(rows, _scores_for(rows))
-        db.add(Theme(
+        created.append(Theme(
             dataset_id=dataset_id, column_id=column_id, column_name=column,
             label=label.label, description=label.description, size=len(rows),
             sentiment=sentiment, tone=tone, answer_refs=sorted(rows), sub_themes=[],
         ))
+        db.add(created[-1])
         new_themes_summary.append({"label": label.label, "count": len(rows)})
         remainder.difference_update(rows)  # these rows are now accounted for by their new theme
 
@@ -1571,6 +1657,9 @@ def _apply_theme_split(
         original.sentiment = sentiment
     else:
         db.delete(original)
+    theme_edits.record(db, dataset_id, column, "split", f"Split “{before[0]['label']}” into "
+                       f"{len(created) + (1 if remainder else 0)} themes by wording.", before, created,
+                       [original] if remainder else [], None)
 
     _invalidate_report_for_edit(db, dataset_id, column)
     db.commit()
@@ -1678,6 +1767,8 @@ def list_themes(dataset_id: int, column: str, db: Session = Depends(get_db), use
         # The caller's role, so the theme editor shows edit controls to owners and editors only (the
         # edit routes check it again).
         "role": _dataset_role(db, user, ds),
+        # Themes an edit made or changed that is still undoable: the editor's "edited" tag.
+        "edited_ids": sorted(theme_edits.edited_ids(db, ds.id, column)),
         "themes": [_theme_dict(t, total) for t in rows],
     }
 

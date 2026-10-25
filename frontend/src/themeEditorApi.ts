@@ -1,6 +1,6 @@
 // The theme editor's own endpoints (app/api_themes.py, "theme editor previews"). Previews commit nothing.
 import { authFetch } from './authFetch'
-import { asError, type ThemeCard, type ToneSplit } from './themesApi'
+import { asError, type Edited, type ThemeCard, type ToneSplit } from './themesApi'
 
 export interface MergePreview {
   answers: number
@@ -45,4 +45,25 @@ export const splitPreview = (id: number, themeId: number, parts?: number) =>
   post<SplitPreview>(`/api/datasets/${id}/themes/${themeId}/split-preview`, parts ? { parts } : {})
 
 export const splitSubThemes = (id: number, themeId: number, parts: number) =>
-  post<{ theme: ThemeCard; new_themes: ThemeCard[] }>(`/api/datasets/${id}/themes/${themeId}/split-sub-themes`, { parts })
+  post<Edited<{ theme: ThemeCard; new_themes: ThemeCard[] }>>(`/api/datasets/${id}/themes/${themeId}/split-sub-themes`, { parts })
+
+export const promoteSubTheme = (id: number, themeId: number, index: number) =>
+  post<Edited<{ theme: ThemeCard; new_theme: ThemeCard }>>(`/api/datasets/${id}/themes/${themeId}/sub-themes/${index}/promote`, {})
+
+export const undoEdit = (id: number, column: string, token: number) =>
+  post<{ undone: ThemeEditEntry }>(`/api/datasets/${id}/themes/undo`, { column, undo_token: token })
+
+// "Your edits": the undoable edits, newest first.
+export interface ThemeEditEntry {
+  id: number
+  undo_token: number
+  kind: 'rename' | 'merge' | 'merge_batch' | 'split' | 'promote'
+  summary: string
+  created_at: string | null
+}
+
+export async function listEdits(id: number, column: string): Promise<ThemeEditEntry[]> {
+  const r = await authFetch(`/api/datasets/${id}/themes/edits?${new URLSearchParams({ column })}`)
+  if (!r.ok) throw await asError(r)
+  return (await r.json()).edits
+}

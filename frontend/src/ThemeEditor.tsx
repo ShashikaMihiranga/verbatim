@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './theme-editor.css'
-import { ChevronDown, ICON, Info, List, Merge, Pencil, Quote, Search, Split, Undo2 } from './icons'
+import { ChevronDown, Clock, ICON, Info, List, Merge, Pencil, Quote, Search, Split, Undo2 } from './icons'
 import JobProgress from './JobProgress'
-import type { MergePreview, SplitPreview } from './themeEditorApi'
+import type { MergePreview, SplitPreview, ThemeEditEntry } from './themeEditorApi'
 import type { Job } from './jobsApi'
 import ThemeRow from './ThemeRows'
 import {
@@ -12,22 +12,27 @@ import type { ThemeCard } from './themesApi'
 
 // The theme editor (design/handoffs/ThemeEditor_UIHandoff.md): one list that merges, splits and renames,
 // replacing the old "Merge themes" checklist. Left: toolbar, icon key, the list and the sticky selection
-// bar. Right: one panel at a time and the toast. Edits call the existing endpoints through the callbacks.
+// bar. Right: the toast, then one panel at a time; idle shows "Your edits". Every edit callback resolves
+// to the token that undoes it (a by-wording split is a job, so it is undone from "Your edits" later).
 type Panel = { kind: 'idle' } | { kind: 'merge' } | { kind: 'split'; id: number } | { kind: 'rename'; id: number }
+type Toast = { text: string; token?: number }
 
 export default function ThemeEditor({
   themes, totalAnswers, canEdit, edited = new Set<number>(), splitJob = null, onRename, onMerge, onSplit,
-  onSplitParts, loadMergePreview, loadSplitPreview,
+  onSplitParts, onPromote, onUndo, loadEdits, loadMergePreview, loadSplitPreview,
 }: {
   themes: ThemeCard[]
   totalAnswers: number
   canEdit: boolean // owners and editors; viewers get the list with no edit controls
   edited?: Set<number>
   splitJob?: Job | null
-  onRename: (themeId: number, label: string) => Promise<void>
-  onMerge: (themeIds: number[], label: string) => Promise<void>
+  onRename: (themeId: number, label: string) => Promise<number>
+  onMerge: (themeIds: number[], label: string) => Promise<number>
   onSplit: (themeId: number) => Promise<void> // re-read by wording: a background job
-  onSplitParts: (themeId: number, parts: number) => Promise<void> // along stored sub-themes, applied at once
+  onSplitParts: (themeId: number, parts: number) => Promise<number> // along stored sub-themes, applied at once
+  onPromote: (themeId: number, index: number) => Promise<number>
+  onUndo: (token: number) => Promise<void>
+  loadEdits: () => Promise<ThemeEditEntry[]>
   loadMergePreview: (themeIds: number[]) => Promise<MergePreview>
   loadSplitPreview: (themeId: number, parts?: number) => Promise<SplitPreview>
 }) {
@@ -36,9 +41,10 @@ export default function ThemeEditor({
   const [selection, setSelection] = useState<Set<number>>(new Set())
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [panel, setPanel] = useState<Panel>({ kind: 'idle' })
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<Toast | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [edits, setEdits] = useState<ThemeEditEntry[] | null>(null)
   const side = useRef<HTMLElement>(null)
   // In the one-column layout the panel sits above the list: bring it into view when it opens.
   useEffect(() => {
@@ -46,6 +52,13 @@ export default function ThemeEditor({
     const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     side.current.scrollIntoView?.({ block: 'start', behavior: smooth ? 'smooth' : 'auto' })
   }, [panel])
+  // "Your edits" follows the themes: every edit or undo reloads them, and with them this list.
+  useEffect(() => {
+    if (!canEdit) return
+    let live = true
+    loadEdits().then((e) => { if (live) setEdits(e) }).catch(() => { if (live) setEdits([]) })
+    return () => { live = false }
+  }, [themes, canEdit, loadEdits])
 
   const colors = useMemo(() => colorTokens(themes), [themes])
   const shown = visibleThemes(themes, query, chip, edited)
@@ -54,15 +67,28 @@ export default function ThemeEditor({
   const bar = selectionText(selected, totalAnswers)
   const byId = (id: number) => themes.find((t) => t.id === id)
 
-  async function run(action: () => Promise<void>, done: string) {
+  async function run(action: () => Promise<number | void>, done: string) {
     setBusy(true)
     setError(null)
     try {
-      await action()
-      setToast(done)
+      const token = await action()
+      setToast({ text: done, token: typeof token === 'number' ? token : undefined })
       setPanel({ kind: 'idle' })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'That edit did not go through.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function undo(token: number) {
+    setBusy(true)
+    setError(null)
+    try {
+      await onUndo(token)
+      setToast({ text: 'Undone.' })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not undo that edit.')
     } finally {
       setBusy(false)
     }
@@ -77,126 +103,154 @@ export default function ThemeEditor({
 
   return (
     <div className="te-wrap">
-    <section className="te" aria-label="Theme editor">
-      <div className="te-main">
-        <div className="te-toolbar">
-          <label className="te-filter">
-            <Search size={16} {...ICON} />
-            <input type="search" placeholder="Filter themes" aria-label="Filter themes" value={query}
-              onChange={(e) => setQuery(e.target.value)} />
-          </label>
-          <div className="te-chips" role="group" aria-label="Show">
-            {([['all', 'All themes'], ['small', `Small (under ${SMALL_SHARE}%)`], ['edited', 'Edited']] as const).map(([key, label]) => (
-              <button key={key} type="button" className="te-chip" aria-pressed={chip === key} onClick={() => setChip(key)}>
-                {key === 'all' && <List size={14} {...ICON} />}
-                {key === 'edited' && <Pencil size={14} {...ICON} />}
-                {label}
-              </button>
+      <section className="te" aria-label="Theme editor">
+        <div className="te-main">
+          <div className="te-toolbar">
+            <label className="te-filter">
+              <Search size={16} {...ICON} />
+              <input type="search" placeholder="Filter themes" aria-label="Filter themes" value={query}
+                onChange={(e) => setQuery(e.target.value)} />
+            </label>
+            <div className="te-chips" role="group" aria-label="Show">
+              {([['all', 'All themes'], ['small', `Small (under ${SMALL_SHARE}%)`], ['edited', 'Edited']] as const).map(([key, label]) => (
+                <button key={key} type="button" className="te-chip" aria-pressed={chip === key} onClick={() => setChip(key)}>
+                  {key === 'all' && <List size={14} {...ICON} />}
+                  {key === 'edited' && <Pencil size={14} {...ICON} />}
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="te-count">{shown.length} of {themes.length} themes</span>
+          </div>
+
+          {canEdit && (
+            <>
+              <p className="te-intro">Tick themes to merge them, or use a row's buttons. Edits apply right away.</p>
+              <ul className="te-key" aria-label="Icon key">
+                <li><Merge size={16} {...ICON} />Merge</li>
+                <li><Split size={16} {...ICON} />Split</li>
+                <li><Pencil size={16} {...ICON} />Rename</li>
+                <li><ChevronDown size={16} {...ICON} />Sub-themes</li>
+                <li><Undo2 size={16} {...ICON} />Undo</li>
+              </ul>
+            </>
+          )}
+
+          <div className="te-head" aria-hidden="true">
+            <span /><span>Theme</span><span>Share of answers</span><span>Answers</span><span>Tone</span><span />
+          </div>
+          <ul className="te-list">
+            {shown.map((t) => (
+              <ThemeRow
+                key={t.id} theme={t} color={colors.get(t.id) ?? 'other'} canEdit={canEdit}
+                selected={selection.has(t.id)} expanded={expanded.has(t.id)} edited={edited.has(t.id)}
+                onToggleSelect={() => setSelection(toggle(selection, t.id))}
+                onToggleExpand={() => setExpanded(toggle(expanded, t.id))}
+                onRename={() => setPanel({ kind: 'rename', id: t.id })}
+                onSplit={() => setPanel({ kind: 'split', id: t.id })}
+                onPromote={(index, label) => void run(() => onPromote(t.id, index), `Made “${label}” its own theme.`)}
+                busy={busy}
+              />
             ))}
-          </div>
-          <span className="te-count">{shown.length} of {themes.length} themes</span>
+          </ul>
+          {shown.length === 0 && (
+            <p className="te-empty">
+              No themes match.{' '}
+              <button type="button" className="te-link" onClick={() => { setQuery(''); setChip('all') }}>
+                Clear the filter to see all {themes.length}.
+              </button>
+            </p>
+          )}
+
+          {canEdit && (
+            <div className={`te-selbar${bar.ready ? ' is-ready' : ''}`} role="status">
+              <div>
+                <div className="te-selbar-title">{bar.title}</div>
+                <div className="te-selbar-detail">{bar.detail}</div>
+              </div>
+              <button type="button" className="te-btn is-primary" disabled={!bar.ready || busy}
+                onClick={() => setPanel({ kind: 'merge' })}>
+                <Merge size={18} {...ICON} />
+                {bar.ready ? `Merge ${selected.length} themes…` : 'Merge…'}
+              </button>
+            </div>
+          )}
         </div>
 
         {canEdit && (
-          <>
-            <p className="te-intro">Tick themes to merge them, or use a row's buttons. Edits apply right away.</p>
-            <ul className="te-key" aria-label="Icon key">
-              <li><Merge size={16} {...ICON} />Merge</li>
-              <li><Split size={16} {...ICON} />Split</li>
-              <li><Pencil size={16} {...ICON} />Rename</li>
-              <li><ChevronDown size={16} {...ICON} />Sub-themes</li>
-              <li><Undo2 size={16} {...ICON} />Undo</li>
-            </ul>
-          </>
-        )}
-
-        <div className="te-head" aria-hidden="true">
-          <span /><span>Theme</span><span>Share of answers</span><span>Answers</span><span>Tone</span><span />
-        </div>
-        <ul className="te-list">
-          {shown.map((t) => (
-            <ThemeRow
-              key={t.id} theme={t} color={colors.get(t.id) ?? 'other'} canEdit={canEdit}
-              selected={selection.has(t.id)} expanded={expanded.has(t.id)} edited={edited.has(t.id)}
-              onToggleSelect={() => setSelection(toggle(selection, t.id))}
-              onToggleExpand={() => setExpanded(toggle(expanded, t.id))}
-              onRename={() => setPanel({ kind: 'rename', id: t.id })}
-              onSplit={() => setPanel({ kind: 'split', id: t.id })}
-            />
-          ))}
-        </ul>
-        {shown.length === 0 && (
-          <p className="te-empty">
-            No themes match.{' '}
-            <button type="button" className="te-link" onClick={() => { setQuery(''); setChip('all') }}>
-              Clear the filter to see all {themes.length}.
-            </button>
-          </p>
-        )}
-
-        {canEdit && (
-          <div className={`te-selbar${bar.ready ? ' is-ready' : ''}`} role="status">
-            <div>
-              <div className="te-selbar-title">{bar.title}</div>
-              <div className="te-selbar-detail">{bar.detail}</div>
+          <aside className="te-side" ref={side}>
+            <div aria-live="polite">
+              {toast && (
+                <div className="te-toast">
+                  <span>{toast.text}</span>
+                  {toast.token !== undefined ? (
+                    <button type="button" className="te-toast-btn" disabled={busy} onClick={() => void undo(toast.token as number)}>
+                      <Undo2 size={16} {...ICON} />Undo
+                    </button>
+                  ) : (
+                    <button type="button" className="te-toast-btn" onClick={() => setToast(null)}>Dismiss</button>
+                  )}
+                </div>
+              )}
             </div>
-            <button type="button" className="te-btn is-primary" disabled={!bar.ready || busy}
-              onClick={() => setPanel({ kind: 'merge' })}>
-              <Merge size={18} {...ICON} />
-              {bar.ready ? `Merge ${selected.length} themes…` : 'Merge…'}
-            </button>
-          </div>
+            {error && <p className="te-error" role="alert">{error}</p>}
+            {panel.kind === 'idle' && (
+              <div className="te-panel">
+                <h3 className="te-panel-title"><Clock size={20} {...ICON} />Your edits{edits && edits.length > 0 ? ` (${edits.length})` : ''}</h3>
+                {edits === null ? <p className="te-note" role="status">Loading…</p>
+                  : edits.length === 0 ? <p className="te-note">No edits yet. Anything you merge, split or rename shows up here.</p>
+                    : (
+                      <ol className="te-edits">
+                        {edits.map((e, i) => (
+                          <li key={e.id}>
+                            <span>{e.summary}</span>
+                            {i === 0 && (
+                              <button type="button" className="te-btn is-small" disabled={busy} onClick={() => void undo(e.undo_token)}
+                                aria-label={`Undo: ${e.summary}`} title={`Undo: ${e.summary}`}>
+                                <Undo2 size={16} {...ICON} />Undo
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                {edits && edits.length > 1 && <p className="te-note">Undo goes back one edit at a time, newest first.</p>}
+              </div>
+            )}
+            {panel.kind === 'merge' && selected.length >= 2 && (
+              <MergePanel
+                themes={selected} totalAnswers={totalAnswers} busy={busy} load={loadMergePreview}
+                onCancel={() => setPanel({ kind: 'idle' })}
+                onMerge={(name) => void run(async () => {
+                  const token = await onMerge(selected.map((t) => t.id), name)
+                  setSelection(new Set())
+                  return token
+                }, `Merged ${selected.length} themes into “${name}”.`)}
+              />
+            )}
+            {panel.kind === 'rename' && byId(panel.id) && (
+              <RenamePanel
+                theme={byId(panel.id) as ThemeCard} busy={busy} onCancel={() => setPanel({ kind: 'idle' })}
+                onSave={(name) => {
+                  const before = (byId(panel.id) as ThemeCard).label
+                  void run(() => onRename(panel.id, name), `Renamed “${before}” to “${name}”.`)
+                }}
+              />
+            )}
+            {panel.kind === 'split' && byId(panel.id) && (
+              <SplitPanel
+                theme={byId(panel.id) as ThemeCard} busy={busy} job={splitJob} load={loadSplitPreview}
+                onCancel={() => setPanel({ kind: 'idle' })}
+                onSplit={(parts) => {
+                  const name = (byId(panel.id) as ThemeCard).label
+                  if (parts === null) void run(() => onSplit(panel.id), `Splitting “${name}” by wording. The new themes appear when it finishes, and Your edits can undo it.`)
+                  else void run(() => onSplitParts(panel.id, parts), `Split “${name}” into ${parts} themes.`)
+                }}
+              />
+            )}
+          </aside>
         )}
-      </div>
-
-      {canEdit && (
-        <aside className="te-side" ref={side}>
-          {toast && (
-            <div className="te-toast" aria-live="polite">
-              <span>{toast}</span>
-              <button type="button" className="te-toast-btn" onClick={() => setToast(null)}>Dismiss</button>
-            </div>
-          )}
-          {error && <p className="te-error" role="alert">{error}</p>}
-          {panel.kind === 'idle' && (
-            <div className="te-panel">
-              <h3 className="te-panel-title">Edit themes</h3>
-              <p className="te-note">Tick two or more themes to merge them. Rename and split are on each row.</p>
-            </div>
-          )}
-          {panel.kind === 'merge' && selected.length >= 2 && (
-            <MergePanel
-              themes={selected} totalAnswers={totalAnswers} busy={busy} load={loadMergePreview}
-              onCancel={() => setPanel({ kind: 'idle' })}
-              onMerge={(name) => void run(async () => {
-                await onMerge(selected.map((t) => t.id), name)
-                setSelection(new Set())
-              }, `Merged ${selected.length} themes into “${name}”.`)}
-            />
-          )}
-          {panel.kind === 'rename' && byId(panel.id) && (
-            <RenamePanel
-              theme={byId(panel.id) as ThemeCard} busy={busy} onCancel={() => setPanel({ kind: 'idle' })}
-              onSave={(name) => {
-                const before = (byId(panel.id) as ThemeCard).label
-                void run(() => onRename(panel.id, name), `Renamed “${before}” to “${name}”.`)
-              }}
-            />
-          )}
-          {panel.kind === 'split' && byId(panel.id) && (
-            <SplitPanel
-              theme={byId(panel.id) as ThemeCard} busy={busy} job={splitJob} load={loadSplitPreview}
-              onCancel={() => setPanel({ kind: 'idle' })}
-              onSplit={(parts) => {
-                const name = (byId(panel.id) as ThemeCard).label
-                if (parts === null) void run(() => onSplit(panel.id), `Splitting “${name}” by wording. The new themes appear when it finishes.`)
-                else void run(() => onSplitParts(panel.id, parts), `Split “${name}” into ${parts} themes.`)
-              }}
-            />
-          )}
-        </aside>
-      )}
-    </section>
+      </section>
     </div>
   )
 }

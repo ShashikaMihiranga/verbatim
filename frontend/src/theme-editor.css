@@ -111,3 +111,12 @@
 .te-seg-btn[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .te-part-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .te-parts .te-bar { display: block; }
+
+/* Undo and edits (step 3) */
+.te-btn.is-small { height: 32px; padding: 0 10px; font-size: 13px; gap: 6px; flex: none; }
+.te-toast-btn { display: inline-flex; align-items: center; gap: 6px; }
+.te-edits { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.te-edits li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.te-edits li:first-child { border-top: 0; padding-top: 0; }
+.te-subs-list li { align-items: center; }
+.te-subs-list li > span:first-child { flex: 1; }

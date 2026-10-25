@@ -3358,3 +3358,22 @@ existing theme; the report shows the finished run's result only, with no button.
 - Checked on dataset 13: merging two themes previewed 1,961 answers, 19.7%; splitting "Parking and
   perimeter security" into 3 previewed 285 + 144 + 76 = its 505 answers.
 
+## 2026-10-25 (Theme editor, step 3: undo, "Your edits", make a sub-theme its own theme)
+
+- Undo by snapshot, not inverse operations: new table `theme_edits` (migration `6e4a9c2d7b18`, model
+  `ThemeEdit`, logic in `app/theme_edits.py`). Each edit route snapshots every column of the `Theme` rows
+  it changes, makes the change, and records the edit in the same transaction; undo puts the snapshots back
+  with their ids, deletes the rows the edit created, and marks it undone. One mechanism covers rename,
+  merge, both kinds of split, promote and (step 4) a batch of merges.
+- Newest first only (409 "Undo the newer edits first"), so a snapshot never overwrites a later edit. A
+  theme rebuild or Look inside Other rewrites themes without an edit record, so it clears the column's
+  edits (`forget`; in the rebuild it runs before the old rows are deleted, or SQLite reused their ids).
+- Every edit response carries `undo_token`; `POST /themes/undo`, `GET /themes/edits` (newest first);
+  `GET /themes` adds `edited_ids` for the "edited" tag and the Edited chip. `POST /themes/{id}/sub-themes/
+  {index}/promote` is "Make its own theme". Undo is editor-only.
+- UI: the toast has Undo (then "Undone." with Dismiss); the idle panel lists "Your edits" with Undo on
+  the newest; sub-themes get "Own theme". A by-wording split is a job, so it is undone from the list.
+- Open question for the user: every edit still deletes the column's built report (existing behaviour,
+  `_invalidate_report_for_edit`), and undo cannot bring it back. Keeping the report and letting it read
+  as out of date (the `themes_signature` check from BUG-053) would let an undo make it current again.
+

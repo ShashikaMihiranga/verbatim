@@ -39,14 +39,19 @@ const SPLIT_PREVIEW = (parts = 2) => ({
   parts: [{ label: 'Noise and privacy', answers: 150, share: 25, keeps_theme: true, sample: 'People talk loudly' },
     { label: 'Sub 0', answers: 50, share: 8.3, keeps_theme: false, sample: 'Phones ring' }].slice(0, parts),
 })
+const EDITS = [
+  { id: 9, undo_token: 9, kind: 'merge' as const, summary: 'Merged 2 themes into “Light”.', created_at: null },
+  { id: 8, undo_token: 8, kind: 'rename' as const, summary: 'Renamed “Lamps” to “Light”.', created_at: null },
+]
 const handlers = () => ({
-  onRename: vi.fn(() => Promise.resolve()), onMerge: vi.fn(() => Promise.resolve()), onSplit: vi.fn(() => Promise.resolve()),
-  onSplitParts: vi.fn(() => Promise.resolve()),
+  onRename: vi.fn(() => Promise.resolve(11)), onMerge: vi.fn(() => Promise.resolve(12)), onSplit: vi.fn(() => Promise.resolve()),
+  onSplitParts: vi.fn(() => Promise.resolve(13)), onPromote: vi.fn(() => Promise.resolve(14)),
+  onUndo: vi.fn(() => Promise.resolve()), loadEdits: vi.fn(() => Promise.resolve(EDITS)),
   loadMergePreview: vi.fn(() => Promise.resolve(MERGE_PREVIEW)),
   loadSplitPreview: vi.fn((_id: number, parts?: number) => Promise.resolve(SPLIT_PREVIEW(parts ?? 2))),
 })
-function mount(canEdit = true, h = handlers()) {
-  act(() => { root.render(<ThemeEditor themes={THEMES} totalAnswers={600} canEdit={canEdit} {...h} />) })
+function mount(canEdit = true, h = handlers(), edited = new Set<number>()) {
+  act(() => { root.render(<ThemeEditor themes={THEMES} totalAnswers={600} canEdit={canEdit} edited={edited} {...h} />) })
   return h
 }
 const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
@@ -180,5 +185,51 @@ describe('ThemeEditor', () => {
     expect(container.querySelector('.te-selbar')).toBeNull()
     expect(container.querySelector('.te-side')).toBeNull()
     expect(container.querySelector('button[aria-label^="Show 2 sub-themes"]')).not.toBeNull()
+  })
+
+  it('toast undoes the edit it reports, then says Undone', async () => {
+    const h = mount()
+    act(() => button('Rename Desks').click())
+    act(() => type(container.querySelector<HTMLInputElement>('.te-field input')!, 'Desk space'))
+    await act(async () => byText('Save name').click())
+    const toast = container.querySelector('.te-toast')!
+    expect(toast.closest('[aria-live="polite"]')).not.toBeNull()
+    await act(async () => Array.from(toast.querySelectorAll('button')).find((b) => b.textContent === 'Undo')!.click())
+    expect(h.onUndo).toHaveBeenCalledWith(11)
+    expect(container.querySelector('.te-toast')?.textContent).toContain('Undone.')
+    expect(byText('Dismiss')).toBeTruthy()
+  })
+
+  it('Your edits lists the edits newest first; only the newest can be undone', async () => {
+    const h = handlers()
+    await act(async () => { root.render(<ThemeEditor themes={THEMES} totalAnswers={600} canEdit {...h} />) })
+    expect(container.textContent).toContain('Your edits (2)')
+    const items = Array.from(container.querySelectorAll('.te-edits li'))
+    expect(items.map((li) => li.querySelector('span')!.textContent)).toEqual(EDITS.map((e) => e.summary))
+    expect(items[1].querySelector('button')).toBeNull()
+    await act(async () => button('Undo: Merged 2 themes into “Light”.').click())
+    expect(h.onUndo).toHaveBeenCalledWith(9)
+  })
+
+  it('empty edit history says what will show up there', async () => {
+    const h = handlers()
+    h.loadEdits.mockResolvedValue([])
+    await act(async () => { root.render(<ThemeEditor themes={THEMES} totalAnswers={600} canEdit {...h} />) })
+    expect(container.textContent).toContain('No edits yet. Anything you merge, split or rename shows up here.')
+  })
+
+  it('a sub-theme can become its own theme', async () => {
+    const h = mount()
+    act(() => button('Show 2 sub-themes of Noise and privacy').click())
+    await act(async () => button('Make Sub 1 its own theme').click())
+    expect(h.onPromote).toHaveBeenCalledWith(3, 1)
+    expect(container.textContent).toContain('Made “Sub 1” its own theme.')
+  })
+
+  it('edited themes carry a tag, and the Edited chip shows only them', () => {
+    mount(true, handlers(), new Set([4]))
+    expect(container.querySelectorAll('.te-edited')).toHaveLength(1)
+    act(() => byText('Edited').click())
+    expect(Array.from(container.querySelectorAll('.te-label')).map((n) => n.textContent)).toEqual(['Light'])
   })
 })

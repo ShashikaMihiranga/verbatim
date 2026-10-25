@@ -2181,3 +2181,92 @@ def test_previews_are_for_editors_and_refuse_other(env):
     assert env.client.post(f"/api/datasets/{did}/themes/{other}/split-preview", json={}).status_code == 422
     app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=999_999)
     assert env.client.post(f"/api/datasets/{did}/themes/{a}/split-preview", json={}).status_code == 404
+
+
+# ---------------------------------------------------------------- theme editor undo (step 3)
+def _themes(env, did):
+    body = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()
+    return {t["id"]: (t["label"], t["size"]) for t in body["themes"]}, body["edited_ids"]
+
+
+def _undo(env, did, token):
+    return env.client.post(f"/api/datasets/{did}/themes/undo", json={"column": Q, "undo_token": token})
+
+
+def test_undo_reverses_a_merge_with_the_same_ids(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a = seed_theme(env, did, label="A", size=3, answer_refs=[0, 1, 2], **_neutral())
+    b = seed_theme(env, did, label="B", size=2, answer_refs=[3, 4], **_neutral())
+    before, _ = _themes(env, did)
+    merged = env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a, b], "label": "AB"}).json()
+    after, edited = _themes(env, did)
+    assert after == {a: ("AB", 5)} and edited == [a]
+    edits = env.client.get(f"/api/datasets/{did}/themes/edits", params={"column": Q}).json()["edits"]
+    assert [(e["kind"], e["summary"], e["undo_token"]) for e in edits] == [("merge", "Merged 2 themes into “AB”.", merged["undo_token"])]
+    r = _undo(env, did, merged["undo_token"])
+    assert r.status_code == 200, r.text
+    restored, edited = _themes(env, did)
+    assert restored == before and edited == []
+    assert env.client.get(f"/api/datasets/{did}/themes/edits", params={"column": Q}).json()["edits"] == []
+    assert _undo(env, did, merged["undo_token"]).status_code == 409  # already undone
+
+
+def test_undo_runs_newest_first(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a = seed_theme(env, did, label="A", size=3, answer_refs=[0, 1, 2], **_neutral())
+    first = env.client.patch(f"/api/datasets/{did}/themes/{a}", json={"label": "A2"}).json()["undo_token"]
+    second = env.client.patch(f"/api/datasets/{did}/themes/{a}", json={"label": "A3"}).json()["undo_token"]
+    r = _undo(env, did, first)
+    assert r.status_code == 409 and "newer" in r.json()["detail"]
+    assert _undo(env, did, second).status_code == 200
+    assert _undo(env, did, first).status_code == 200
+    assert _themes(env, did)[0] == {a: ("A", 3)}
+
+
+def test_undo_reverses_a_sub_theme_split_and_a_promote(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    tid = seed_theme(env, did, label="Noise", size=10, answer_refs=list(range(10)), **_neutral(),
+                     sub_themes=[_sub("Phones", [0, 1, 2, 3]), _sub("Talking", [4, 5, 6])])
+    before, _ = _themes(env, did)
+    split = env.client.post(f"/api/datasets/{did}/themes/{tid}/split-sub-themes", json={"parts": 2}).json()
+    assert len(_themes(env, did)[0]) == 2 and sorted(_themes(env, did)[1]) == sorted([tid, split["new_themes"][0]["id"]])
+    assert _undo(env, did, split["undo_token"]).status_code == 200
+    assert _themes(env, did)[0] == before
+    promoted = env.client.post(f"/api/datasets/{did}/themes/{tid}/sub-themes/1/promote")
+    assert promoted.status_code == 200, promoted.text
+    body = promoted.json()
+    assert (body["new_theme"]["label"], body["new_theme"]["size"], body["theme"]["size"]) == ("Talking", 3, 7)
+    assert [s["label"] for s in body["theme"]["sub_themes"]] == ["Phones"]
+    assert _undo(env, did, body["undo_token"]).status_code == 200
+    assert _themes(env, did)[0] == before
+
+
+def test_a_rebuild_clears_the_edit_history(env):
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a = seed_theme(env, did, label="A", size=3, answer_refs=[0, 1, 2], **_neutral())
+    token = env.client.patch(f"/api/datasets/{did}/themes/{a}", json={"label": "A2"}).json()["undo_token"]
+    assert build_themes_job(env, did, timeout=30)["status"] == "done"
+    assert env.client.get(f"/api/datasets/{did}/themes/edits", params={"column": Q}).json()["edits"] == []
+    assert _undo(env, did, token).status_code == 409
+
+
+def test_viewers_cannot_undo(env, monkeypatch):
+    from fastapi import HTTPException
+    import app.api_themes as api_themes
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a = seed_theme(env, did, label="A", size=3, answer_refs=[0, 1, 2], **_neutral())
+    token = env.client.patch(f"/api/datasets/{did}/themes/{a}", json={"label": "A2"}).json()["undo_token"]
+    real = api_themes._own_dataset
+
+    def as_viewer(db, user, dataset_id, min_role="viewer"):
+        if min_role != "viewer":
+            raise HTTPException(403, "Only editors can change this.")
+        return real(db, user, dataset_id)
+    monkeypatch.setattr(api_themes, "_own_dataset", as_viewer)
+    assert _undo(env, did, token).status_code == 403

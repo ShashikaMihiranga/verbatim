@@ -42,7 +42,11 @@ export interface ThemesResponse {
   themes: ThemeCard[]
   // The caller's role on this dataset: the theme editor shows edit controls to owners and editors only.
   role?: 'owner' | 'editor' | 'viewer' | null
+  edited_ids?: number[] // themes an undoable edit made or changed: the editor's "edited" tag
 }
+
+// Every edit answers with the token that undoes it (POST .../themes/undo).
+export type Edited<T> = T & { undo_token: number }
 
 // Wire shape shared with app.api_report's report blocks (see reportApi.ts's ReportBlock) - both are
 // app.charts.render_parts's own {chart_html, chart_width, chart_height} shape, so the frontend can reuse
@@ -116,7 +120,7 @@ export async function lookInsideOther(id: number, column: string): Promise<Build
 // here re-embeds or re-clusters anything), returns the updated ThemeCard directly. Also invalidates any
 // already-built report for this column server-side (see app/api_themes.py's own comment) - a caller
 // should re-fetch/rebuild the report after this, not assume it is still valid.
-export async function renameTheme(id: number, themeId: number, label: string, description?: string | null): Promise<ThemeCard> {
+export async function renameTheme(id: number, themeId: number, label: string, description?: string | null): Promise<Edited<ThemeCard>> {
   const r = await authFetch(`/api/datasets/${id}/themes/${themeId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -129,7 +133,7 @@ export async function renameTheme(id: number, themeId: number, label: string, de
 // Theme editing: merges 2+ themes into the largest one (the survivor), returning its updated ThemeCard.
 // `label` overrides the survivor's own label when given; omitted/undefined keeps it. Also invalidates
 // any already-built report for this column, same as renameTheme above.
-export async function mergeThemes(id: number, column: string, themeIds: number[], label?: string): Promise<ThemeCard> {
+export async function mergeThemes(id: number, column: string, themeIds: number[], label?: string): Promise<Edited<ThemeCard>> {
   const r = await authFetch(`/api/datasets/${id}/themes/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
