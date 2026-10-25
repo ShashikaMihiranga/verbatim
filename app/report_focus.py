@@ -12,14 +12,15 @@ def reveal_folded_theme(data: ReportData, node: ThemeNode) -> ReportData:
 
     Show its real stored tone against the rest of the answers. The overview's seven-theme cap stays
     intact. Subtract weighted totals, not percentages, to avoid double-counting the promoted theme.
+    Tones are rounded to 1 decimal like every stored theme's, or labels print 34.26210782820590...% (BUG-054).
     """
     count = sum(t.count for t in data.themes) - node.count
     rest = replace(node, name='All other answers', color='other', theme_id=None, children=[],
                    count=count, share=round(count / data.answered * 100, 1) if data.answered else 0,
                    answer_refs=[], map_xy=None, callout=None, note='',
                    sentiment=(sum(t.count * t.sentiment for t in data.themes) - node.count * node.sentiment) / count if count else 0,
-                   tones=ToneSplit(*(max(0, sum(t.count * t.tones[i] for t in data.themes)
-                                            - node.count * node.tones[i]) / count if count else 0
+                   tones=ToneSplit(*(round(max(0, sum(t.count * t.tones[i] for t in data.themes)
+                                                  - node.count * node.tones[i]) / count, 1) if count else 0
                                      for i in range(3))))
     return replace(data, themes=[node, rest], selected_theme=node.name, hover_theme=node.name)
 
@@ -60,7 +61,7 @@ def focus_finding(data: ReportData, kind: str, theme: str, group: str = '',
         rest = replace(node, name='All other answers', color='other', theme_id=None,
                        count=count, share=sum(t.share for t in others), children=[], answer_refs=[],
                        sentiment=sum(t.count * t.sentiment for t in others) / count if count else 0,
-                       tones=ToneSplit(*(sum(t.count * t.tones[i] for t in others) / count
+                       tones=ToneSplit(*(round(sum(t.count * t.tones[i] for t in others) / count, 1)
                                          if count else 0 for i in range(3))))
         return replace(focused, themes=[node, rest], score=replace(data.score, bands=[
             replace(b, mix=[b.mix[index], round(100 - b.mix[index], 6)]) for b in bands

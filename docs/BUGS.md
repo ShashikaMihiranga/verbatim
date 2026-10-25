@@ -37,6 +37,15 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-054 — Tone sunburst prints "34.262107828205906%" for All other answers**
+  - Found: 2026-10-25, the user (screenshot of a finding's "Which themes sound negative or positive?"
+    chart): "there is no point showing all the decimals". The long labels also overlap in the table.
+  - Cause: `app/report_focus.py` builds "All other answers" as a count-weighted average of the other
+    themes' tones and never rounded it; stored theme tones are already one decimal.
+  - **Fixed:** (this commit). Both merged rows (`reveal_folded_theme`, the score focus) round tones to one
+    decimal, matching every other percentage in the report (e.g. 34.3%). Test:
+    `test_revealing_a_folded_theme_preserves_counts_and_weighted_tone`.
+
 - [x] **BUG-053 — After Look inside, the report keeps its old findings and doesn't say so**
   - Found: 2026-10-25, the user: "when look inside click it shows the inside the new found theme, but it
     did not update the rest of the report with new finding".

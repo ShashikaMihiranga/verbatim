@@ -75,5 +75,7 @@ def test_revealing_a_folded_theme_preserves_counts_and_weighted_tone():
     assert sum(t.count for t in focused.themes) == sum(t.count for t in data.themes)
     for i in range(3):
         assert sum(t.count * t.tones[i] for t in focused.themes) == pytest.approx(
-            sum(t.count * t.tones[i] for t in data.themes))
+            sum(t.count * t.tones[i] for t in data.themes), rel=1e-3)
+    # Printed as labels, so one decimal like every stored theme (BUG-054).
+    assert all(v == round(v, 1) for t in focused.themes for v in t.tones)
     assert data == before
