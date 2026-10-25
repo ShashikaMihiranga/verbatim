@@ -297,6 +297,7 @@ def test_refine_with_fake_client_sends_only_samples():
     assert len(client.calls) == 1
     sent = client.calls[0]["messages"][0]["content"]
     assert "R-1001" in sent and "2026-06-30" in sent
+    assert client.calls[0]["model"] == "claude-haiku-5-5"  # column hints use the cheap model
     by = {c["name"]: c for c in out["columns"]}
     assert by["Region"]["kind"] == "short_text" and by["Region"]["refined_by"] == "claude"
     assert by["Age"]["kind"] == "numeric"  # invalid kind rejected

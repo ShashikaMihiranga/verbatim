@@ -2255,13 +2255,21 @@ def test_undo_links_findings_back_to_the_themes_a_merge_deleted(env):
         assert s.get(Finding, finding_id).theme_id == b
 
 
-def test_grouping_runs_on_the_cheap_model_unless_overridden(monkeypatch):
+def test_light_steps_run_on_the_cheap_model_and_theme_naming_does_not(monkeypatch):
+    """User's decision (2026-10-25): grouping and report headlines use the cheap model; naming themes
+    (Find themes, Look inside Other) keeps the stronger one."""
     from app import api_themes
+    from app.api_report import get_headline_client
+    from app.claude_models import LIGHT_MODEL_SETTING
+    from app.text_pipeline.labeling import DEFAULT_MODEL
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     monkeypatch.setenv(api_themes.GROUPING_SETTING, "claude")
-    monkeypatch.delenv("VERBATIM_GROUPING_MODEL", raising=False)
+    monkeypatch.delenv(LIGHT_MODEL_SETTING, raising=False)
+    monkeypatch.delenv("VERBATIM_CLAUDE_MODEL", raising=False)
     assert api_themes.get_grouping_client().model == "claude-haiku-5-5"
-    monkeypatch.setenv("VERBATIM_GROUPING_MODEL", "claude-sonnet-5-5")
+    assert get_headline_client(api_themes.get_claude_client()).model == "claude-haiku-5-5"
+    assert api_themes.get_claude_client().model == DEFAULT_MODEL == "claude-sonnet-5"
+    monkeypatch.setenv(LIGHT_MODEL_SETTING, "claude-sonnet-5-5")
     assert api_themes.get_grouping_client().model == "claude-sonnet-5-5"
 
 

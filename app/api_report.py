@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 from . import db as _db
 from .api_themes import _load_clean_df, get_claude_client
 from .api_upload import _own_dataset, current_user
+from .claude_models import light_model
 from .charts import TITLES, esc, render_report_parts
 from .export import ExportBlock, build_report_pdf, build_report_pptx, render_report_png
 from .cleaning.suppression import min_group_size as _suppression_min_group_size
@@ -74,7 +75,7 @@ from .models import Column, Dataset, Finding, Report, Theme, User
 from .report_medium import comparison_groups, complete_numeric_grid, finding_views, numeric_explorations, theme_views
 from .report_focus import STRUCTURED_KINDS, focus_finding, reveal_folded_theme
 from .text_pipeline import ClaudeClient
-from .text_pipeline.labeling import OTHER_LABEL
+from .text_pipeline.labeling import OTHER_LABEL, AnthropicClaudeClient
 
 router = APIRouter(prefix="/api")
 
@@ -87,6 +88,14 @@ router = APIRouter(prefix="/api")
 # rather than inventing a third convention: this route's heaviest step is a single small batched call, not
 # the multi-step pipeline themes-building runs. See docs/DECISIONS.md.
 _SLOTS = threading.BoundedSemaphore(max(1, int(os.environ.get("REPORT_CONCURRENCY", "2") or 2)))
+
+
+def get_headline_client(client: ClaudeClient = Depends(get_claude_client)) -> ClaudeClient:
+    """The report's Claude client: headlines are written from numbers only, so they use the cheap model
+    (app/claude_models.py). Built on `get_claude_client`, so its missing-key 503 and test overrides apply."""
+    if isinstance(client, AnthropicClaudeClient):
+        client.model = light_model()
+    return client
 
 
 class BuildRequest(BaseModel):
@@ -536,9 +545,9 @@ def build_report(
     body: BuildRequest,
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
-    claude_client: ClaudeClient = Depends(get_claude_client),
+    claude_client: ClaudeClient = Depends(get_headline_client),
 ):
-    """Validates ownership and the Claude key (via `Depends(get_claude_client)`) synchronously - those stay
+    """Validates ownership and the Claude key (via `Depends(get_headline_client)`) synchronously - those stay
     immediate HTTP errors exactly as before. Whether themes exist yet (`NoThemesForColumn`) can only be
     known once `app.findings.build_findings` actually runs, so - like `TooFewAnswers` on the themes side -
     it now surfaces as `job.error` rather than a synchronous 422; `_report_build_error` maps it to the same

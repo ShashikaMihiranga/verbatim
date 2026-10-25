@@ -59,6 +59,7 @@ from .db import get_db
 from .findings import question_for, question_kind_for, theme_nodes
 from .jobs import REPORT_JOB_MAX_AGE, _mark_failed, blocking_job, create_job, set_progress, start_job
 from . import theme_edits, theme_grouping
+from .claude_models import light_model
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
     AnswerScore,
@@ -1580,9 +1581,6 @@ def list_theme_edits(dataset_id: int, column: str, db: Session = Depends(get_db)
 # One light Claude call per run, so its own small pool rather than the theme builds' slot.
 _GROUP_SLOTS = threading.BoundedSemaphore(2)
 GROUPING_SETTING = "VERBATIM_THEME_GROUPING"
-# Grouping is a small, rule-bound JSON task, so it runs on the cheapest model rather than the labelling
-# model (user's call, 2026-10-25). VERBATIM_GROUPING_MODEL overrides it.
-GROUPING_MODEL = "claude-haiku-5-5"
 GROUP_MAX_TOKENS = 4000
 GROUP_SAMPLES_SHOWN = 2  # sample answers per member theme in the review screen ("See answers")
 
@@ -1593,7 +1591,7 @@ def get_grouping_client() -> ClaudeClient:
     if os.environ.get(GROUPING_SETTING, "").strip().lower() != "claude":
         raise HTTPException(503, f"Grouping themes with Claude is switched off on this server ({GROUPING_SETTING}=claude turns it on).")
     try:
-        return AnthropicClaudeClient(model=os.environ.get("VERBATIM_GROUPING_MODEL") or GROUPING_MODEL)
+        return AnthropicClaudeClient(model=light_model())  # a small JSON task: app/claude_models.py
     except LabelingClaudeNotConfigured as e:
         raise HTTPException(503, "Grouping themes needs a Claude key (ANTHROPIC_API_KEY) that is not configured yet.") from e
 

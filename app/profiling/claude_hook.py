@@ -13,9 +13,9 @@ import os
 import re
 from typing import Any
 
+from ..claude_models import light_model
 from .columns import KINDS
 
-DEFAULT_MODEL = "claude-sonnet-5"  # one tier up from claude-haiku-4-5 - see labeling.py's own comment
 MAX_SAMPLES = 30
 
 SYSTEM = (
@@ -78,7 +78,7 @@ def refine_profile(profile: dict[str, Any], samples: dict[str, list[str]], clien
         client = anthropic.Anthropic()
     try:
         msg = client.messages.create(
-            model=model or os.environ.get("VERBATIM_CLAUDE_MODEL", DEFAULT_MODEL),
+            model=model or light_model(),  # column hints are a small task: app/claude_models.py
             max_tokens=1500,
             system=SYSTEM,
             # thinking disabled - see labeling.py::AnthropicClaudeClient.complete's own comment: a

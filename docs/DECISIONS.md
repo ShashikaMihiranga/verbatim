@@ -3427,9 +3427,27 @@ User's decisions, after the theme editor (steps 1-5) was handed over:
 - **The page** reloads the report after an edit or undo (`reloadReportAfterEdit` in `Themes.tsx`) rather
   than clearing it.
 - **Grouping model.** The user asked for the cheapest model, since grouping is an easy task:
-  `GROUPING_MODEL = "claude-haiku-5-5"` ($0.10 / $0.50 per million tokens), overridable with
-  `VERBATIM_GROUPING_MODEL`. Thinking stays off, as for every Claude call here (allowed on Haiku 5.5 at
+  `claude-haiku-5-5` ($0.10 / $0.50 per million tokens); see the model split below. Thinking stays off, as for every Claude call here (allowed on Haiku 5.5 at
   its default effort). The cache key now starts with the model, so changing models asks again.
 - **Switched on locally** (`VERBATIM_THEME_GROUPING=claude` in the gitignored `.env`); `.env.example`
   documents both settings. Railway devapp and production are not set; that is the user's call.
+
+## 2026-10-25: cheap model for the small Claude steps, Sonnet only for naming themes
+
+User's decision: the heavy work (vectors, clustering, counts, tone) already happens in the app, so only
+the step that decides what the report is about keeps the stronger model.
+
+| Step | Model | Setting |
+|---|---|---|
+| Find themes, Look inside Other, split by wording (naming and merging groups) | `claude-sonnet-5` | `VERBATIM_CLAUDE_MODEL` |
+| Column hints at upload | `claude-haiku-5-5` | `VERBATIM_CLAUDE_LIGHT_MODEL` |
+| Report headlines (written from numbers only) | `claude-haiku-5-5` | `VERBATIM_CLAUDE_LIGHT_MODEL` |
+| Theme grouping suggestions | `claude-haiku-5-5` | `VERBATIM_CLAUDE_LIGHT_MODEL` |
+
+`app/claude_models.py` holds the light model. `api_report.get_headline_client` builds on
+`get_claude_client` (same missing-key 503, same test overrides) and sets the light model.
+`VERBATIM_GROUPING_MODEL`, added earlier the same day and never deployed, is replaced by the shared light
+setting. The unused `sentiment.spot_check` still reads `VERBATIM_CLAUDE_MODEL`; nothing in the app calls
+it. Not yet compared on a real dataset: if Haiku headlines read worse, set `VERBATIM_CLAUDE_LIGHT_MODEL`
+back to `claude-sonnet-5`.
 
