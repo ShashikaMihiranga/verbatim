@@ -194,3 +194,20 @@ describe('InsideOther with the report breakdown', () => {
     expect(html).not.toContain('3,000')
   })
 })
+
+describe('InsideOther point map', () => {
+  it('draws one dot per answer with a legend, only when the run has a map', () => {
+    const withMap: LookInsideOtherResult = {
+      ...done,
+      point_map: { groups: [{ kind: 'still', label: 'Other' }, { kind: 'new', label: 'Parking access' }],
+        points: [[0.1, 0.1, 0], [0.2, 0.3, 1], [0.9, 0.8, 1]] },
+    }
+    const html = render(job({ status: 'done', step: 'Done', result: withMap }))
+    expect(html).toContain('How Other&#x27;s answers group')
+    const map = html.slice(html.indexOf('io-map-svg'), html.indexOf('</svg>', html.indexOf('io-map-svg')))
+    expect((map.match(/<circle/g) ?? []).length).toBe(3)
+    expect(html).toContain('Still in Other')
+    expect(html).toContain('(a sample of 3)')
+    expect(render(job({ status: 'done', step: 'Done', result: done }))).not.toContain('answers group')
+  })
+})

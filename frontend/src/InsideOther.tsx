@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import InsideOtherFlow from './InsideOtherFlow'
 import { prefersReducedMotion } from './insideOtherGeometry'
-import { hasShare, insideOtherModel, listValue, STEPS, type InsideOtherModel, type Leaf } from './insideOtherModel'
+import { hasShare, insideOtherModel, listValue, STEPS, type InsideOtherModel, type Leaf, type PointMap } from './insideOtherModel'
 import type { Job } from './jobsApi'
 import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
 import ThemeChart from './ThemeChart'
@@ -137,6 +137,66 @@ function toneOf(l: Leaf): { color: string; text: string } {
   return { color: 'var(--neu)', text: `${Math.round(neu)}% neutral` }
 }
 
+// Most legend entries before the rest fold into "and N more".
+const MAX_LEGEND = 9
+const MAP_W = 1000
+const MAP_H = 520
+const MAP_PAD = 12
+
+// Each dot is one answer from Other, placed by meaning (the run's own embeddings, laid out with UMAP), so
+// the groups it found show as clouds; the colour says where the answer went.
+function PointMapChart({ map }: { map: PointMap }) {
+  const [focus, setFocus] = useState<number | null>(null)
+  const legend = [...map.groups.keys()].sort((a, b) => {
+    const k = (i: number) => ['new', 'known', 'still'].indexOf(map.groups[i].kind)
+    return k(a) - k(b) || map.groups[b].dots - map.groups[a].dots
+  })
+  const shown = legend.slice(0, MAX_LEGEND)
+  const total = map.points.length
+  const x = (v: number) => MAP_PAD + v * (MAP_W - 2 * MAP_PAD)
+  const y = (v: number) => MAP_PAD + v * (MAP_H - 2 * MAP_PAD)
+  return (
+    <section className="io-chart io-map" aria-label="Where Other's answers went, as a map">
+      <h4 className="io-chart-title">How Other's answers group</h4>
+      <p className="io-map-note">
+        Each dot is one answer{map.sampled ? ` (a sample of ${fmt(total)})` : ''}. Answers that say similar things sit close together. Colour shows where it went.
+      </p>
+      <svg className="io-map-svg" viewBox={`0 0 ${MAP_W} ${MAP_H}`} role="img"
+        aria-label={`${fmt(total)} answers: ${shown.map((i) => `${map.groups[i].label} ${fmt(map.groups[i].dots)}`).join(', ')}`}>
+        {map.groups.map((g, gi) => (
+          // New themes also get an outline, so they read as new without relying on colour alone.
+          <g key={`${g.kind}/${g.label}`} fill={g.color}
+            stroke={g.kind === 'new' ? 'var(--ink)' : undefined} strokeWidth={g.kind === 'new' ? 1 : undefined}
+            opacity={focus === null || focus === gi ? (g.kind === 'still' ? 0.55 : 0.9) : 0.08}>
+            <title>{`${g.kind === 'still' ? 'Still in Other' : g.label} · ${fmt(g.dots)} answers`}</title>
+            {map.points.map(([px, py, pg], i) => (pg === gi
+              ? <circle key={i} cx={x(px).toFixed(1)} cy={y(py).toFixed(1)} r={g.kind === 'still' ? 3 : g.kind === 'new' ? 4.5 : 4} />
+              : null))}
+          </g>
+        ))}
+      </svg>
+      <ul className="io-map-legend">
+        {shown.map((gi) => {
+          const g = map.groups[gi]
+          return (
+            <li key={`${g.kind}/${g.label}`}>
+              <button type="button" className="io-map-key" aria-pressed={focus === gi}
+                onClick={() => setFocus(focus === gi ? null : gi)}>
+                <span className={`io-map-swatch${g.kind === 'new' ? ' is-new' : ''}`} style={{ background: g.color }} aria-hidden="true" />
+                {g.kind === 'new' && <span className="io-newbadge">new</span>}
+                {g.kind === 'still' ? 'Still in Other' : g.label}
+                {/* A sample's dot counts would contradict the answer counts above. */}
+                {!map.sampled && <span className="io-map-n">{fmt(g.dots)}</span>}
+              </button>
+            </li>
+          )
+        })}
+        {legend.length > MAX_LEGEND && <li className="io-map-more">and {legend.length - MAX_LEGEND} more</li>}
+      </ul>
+    </section>
+  )
+}
+
 function Results({ m }: { m: InsideOtherModel }) {
   const largest = Math.max(0, ...m.known.map((l) => l.count))
   const largestNew = Math.max(0, ...m.newThemes.map((l) => l.count))
@@ -169,6 +229,7 @@ function Results({ m }: { m: InsideOtherModel }) {
           ))}
         </ul>
       )}
+      {m.pointMap && <PointMapChart map={m.pointMap} />}
       {m.known.length > 0 && (
         <section className="io-chart">
           <h4 className="io-chart-title">What each known theme gained</h4>

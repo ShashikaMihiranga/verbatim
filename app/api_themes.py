@@ -301,6 +301,69 @@ def _sample_answer_positions(embedded: "EmbeddedAnswers | None", seed: int = 0) 
     return {embedded.row_indexes[i]: (float(x), float(y)) for i, (x, y) in zip(sample_idx, xy)}
 
 
+# Inside Other's scatter plot: a sample of Other's answers, laid out so similar answers sit together and
+# coloured by where each one went. 1,500 dots already read as a dense map.
+MAX_OTHER_POINTS = 1500
+# Below this many answers UMAP's neighbour graph is not trustworthy (same floor clustering uses).
+MIN_POINTS_FOR_UMAP = 50
+
+
+def _other_point_map(
+    rows: list[int], vec_by_row: dict[int, list[float]], dest_by_row: dict[int, tuple[str, str]], seed: int,
+) -> dict | None:
+    """2D positions for a reproducible sample of Look inside Other's answers, from the embeddings the run
+    already computed (no new call). `dest_by_row` maps a row to (kind, label): kind "known", "new" or
+    "still". UMAP with the clustering's own metric, so the groups HDBSCAN found show as separate clouds; a
+    plain PCA below `MIN_POINTS_FOR_UMAP`. Returns `{"groups": [{"kind", "label"}], "points": [[x, y, g]]}`
+    with x/y in 0..1 (y down) and g an index into groups, or None with fewer than 2 points."""
+    have = [r for r in rows if r in vec_by_row]
+    if len(have) < 2:
+        return None
+    rng = np.random.default_rng(seed)
+    if len(have) > MAX_OTHER_POINTS:
+        have = [have[i] for i in sorted(rng.choice(len(have), size=MAX_OTHER_POINTS, replace=False))]
+    vectors = np.asarray([vec_by_row[r] for r in have], dtype=float)
+    if len(have) >= MIN_POINTS_FOR_UMAP:
+        import umap  # heavy import, only when a run actually needs it
+        xy = umap.UMAP(n_components=2, n_neighbors=min(15, len(have) - 1), min_dist=0.1, metric="cosine",
+                       random_state=42).fit_transform(vectors)
+        lo, span = xy.min(axis=0), np.ptp(xy, axis=0)
+        span[span == 0] = 1.0
+        xy = (xy - lo) / span
+    else:
+        xy = _pca_normalize_01(vectors)
+    groups: list[dict[str, str]] = []
+    index: dict[tuple[str, str], int] = {}
+    points = []
+    for r, (x, y) in zip(have, xy):
+        key = dest_by_row.get(r, ("still", "Other"))
+        if key not in index:
+            index[key] = len(groups)
+            groups.append({"kind": key[0], "label": key[1]})
+        points.append([round(float(x), 3), round(float(y), 3), index[key]])
+    return {"groups": groups, "points": points}
+
+
+def _other_destinations(
+    rows: list[int], by_row: dict[int, str], known_themes: dict, summary: dict,
+) -> dict[int, tuple[str, str]]:
+    """Where each Other answer ended up, by the same rules `_apply_other_classification` applied: a
+    sub-theme's answers count for its parent; a new group that was too small to keep went back to Other."""
+    parent = {g["label"]: g["parent"] for g in summary.get("sub_theme_gains") or []}
+    kept_new = {t["label"] for t in summary.get("new_themes") or []}
+    out: dict[int, tuple[str, str]] = {}
+    for r in rows:
+        choice = by_row.get(r)
+        choice = parent.get(choice, choice)
+        if choice in known_themes:
+            out[r] = ("known", choice)
+        elif choice in kept_new:
+            out[r] = ("new", choice)
+        else:
+            out[r] = ("still", "Other")
+    return out
+
+
 def _project_centroids_2d(centroids: list[list[float] | None]) -> list[tuple[float, float] | None]:
     """2D positions for the theme-similarity map (chart-block stream, 2026-10-24, batch 3 -
     `theme_similarity` block) from each real theme's own (post-merge) centroid - see `_cluster_centroid`
@@ -1073,6 +1136,12 @@ def _start_look_inside(
                 summary["charts"] = _build_other_result_charts(new_theme_rows)
             if summary is not None:
                 summary["before_chart"] = before_chart
+                try:
+                    summary["point_map"] = _other_point_map(
+                        rows, vec_by_row, _other_destinations(rows, classification.by_row, known_themes, summary),
+                        seed=dataset_id_)
+                except Exception:  # the map is a picture of the result; never fail a finished run over it
+                    log.exception("Inside Other point map failed for dataset %s column %r", dataset_id_, column)
             # Written in the SAME session/commit as the Theme-row changes above, not via jobs.py's own
             # `_set_step`/`_mark_done` (those only ever touch a still-"running" job, guarding against a
             # watchdog that already failed it out from under this thread - writing `result` here, before

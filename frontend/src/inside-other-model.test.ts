@@ -107,3 +107,38 @@ describe('listValue', () => {
     expect(shares.map(listValue(shares, '+'))).toEqual(['+1%', '+0.5%'])
   })
 })
+
+describe('insideOtherModel point map', () => {
+  const pointMap = {
+    groups: [
+      { kind: 'known' as const, label: 'Cost' }, { kind: 'still' as const, label: 'Other' },
+      { kind: 'new' as const, label: 'Elevators' }, { kind: 'new' as const, label: 'Parking access' },
+      { kind: 'known' as const, label: 'Parking' }, // 8th real theme: outside the treemap's seven colours
+    ],
+    points: [[0.1, 0.2, 0], [0.3, 0.4, 1], [0.5, 0.6, 2], [0.7, 0.8, 3], [0.9, 0.1, 3], [0.2, 0.2, 4]] as Array<[number, number, number]>,
+  }
+
+  it('colours each group like its row or leaf, and draws Other first so themes sit on top', () => {
+    const m = insideOtherModel(job({ status: 'done', step: 'Done', result: result({ point_map: pointMap }) }), themes)
+    const byLabel = Object.fromEntries(m.pointMap!.groups.map((g) => [g.label, g]))
+    expect(m.pointMap!.groups[0].kind).toBe('still')
+    expect(byLabel.Other.color).toBe('var(--other)')
+    expect(byLabel.Cost.color).toBe(m.known.find((l) => l.label === 'Cost')!.color)
+    expect(byLabel.Parking.color).toBe('var(--muted)') // not mistaken for "still in Other"
+    // New themes keep the accent step of their leaf (ranked by size).
+    expect(byLabel['Parking access'].color).toBe(m.newThemes[0].color)
+    expect(byLabel.Elevators.color).toBe(m.newThemes[1].color)
+    expect(byLabel['Parking access'].dots).toBe(2)
+    // Every point still points at its own group after reordering.
+    for (const [x, , g] of m.pointMap!.points) {
+      const original = pointMap.points.find(([px]) => px === x)!
+      expect(m.pointMap!.groups[g].label).toBe(pointMap.groups[original[2]].label)
+    }
+    expect(m.pointMap!.sampled).toBe(true) // 6 dots for 4,402 answers
+  })
+
+  it('no map for older runs, or while running', () => {
+    expect(insideOtherModel(job({ status: 'done', step: 'Done', result: result() }), themes).pointMap).toBeNull()
+    expect(insideOtherModel(job({}), themes).pointMap).toBeNull()
+  })
+})

@@ -3226,3 +3226,18 @@ existing theme; the report shows the finished run's result only, with no button.
 - The native `<select>` became a styled listbox: a native menu opens at the sentence's 36px in the system
   font.
 
+## 2026-10-25 (Inside Other: a scatter plot of how Other's answers group)
+
+- User request: a dot map, "like a scatter plot", so people can see how Other's answers cluster.
+- Each finished Look inside run stores `point_map` in its result (`app/api_themes.py` `_other_point_map`):
+  up to 1,500 of Other's answers (reproducible sample), laid out in 2D from the embeddings the run already
+  made, so no extra paid call. UMAP with the clustering's cosine metric keeps the groups HDBSCAN found as
+  separate clouds; PCA below 50 answers. Each dot carries where its answer ended up
+  (`_other_destinations`: known theme, new theme kept, or still in Other; sub-themes count for their
+  parent, folded small groups count as Other). A failure here is logged and never fails the run.
+- The panel draws it after the "Done" banner (`InsideOther.tsx` `PointMapChart`): dot colours match the
+  numbered rows and leaves; new themes also get an outline so colour is not the only carrier; still in
+  Other is small grey dots underneath. Clicking a legend entry fades the other groups. Dot counts are hidden
+  when the map is a sample, so they never contradict the answer counts above.
+- Runs finished before this have no map; the plot appears from the next Look inside run.
+
