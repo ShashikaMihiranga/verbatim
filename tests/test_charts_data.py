@@ -917,27 +917,32 @@ def test_narrow_tall_other_box_keeps_a_compact_pointer():
     assert "overflow-wrap:break-word" not in cell
 
 
-def test_rank_themes_open_to_show_their_sub_themes():
-    """BUG-055: sub-themes sit under their theme as an expandable row, not behind a fake switch."""
+def test_rank_sub_themes_switch_reveals_them_under_each_theme():
+    """BUG-055: the Themes / Sub-themes switch was a drawing. "Sub-themes" must reveal each theme's
+    sub-themes directly under that theme."""
     from app.charts import f_rank, f_rank_m
     from app.fixtures.ev_sample import EV
     with_kids = [t for t in EV.themes if t.children]
     for fn in (f_rank, f_rank_m):
         body = fn(EV)[0]
-        assert "Sub-themes</" not in body and "<input" not in body
-        assert body.count("<details>") == len(with_kids)
+        assert body.count('type="radio"') == 2 and 'value="sub"' in body and " id=" not in body
+        assert ".vb-rank:has(input[value=sub]:checked) .vb-rank-sub{display:block}" in body
+        assert body.count('class="vb-rank-sub"') == len(with_kids)
+        names = [t.name for t in EV.themes]
         for t in with_kids:
-            # each sub-theme comes after its own theme's row
-            at = body.index(f"{t.name}: show")
+            block = body.index('class="vb-rank-sub"', body.index(f">{t.name}<"))
+            nxt = names.index(t.name) + 1
+            end = body.index(f">{names[nxt]}<") if nxt < len(names) else len(body)
+            assert block < end  # the block sits before the next theme's row
             for c in t.children:
-                assert body.index(c.name, at) > at
+                assert block < body.index(c.name, block) < end
 
 
-def test_rank_without_sub_themes_has_nothing_to_open():
+def test_rank_without_sub_themes_has_no_switch():
     from dataclasses import replace
     from app.charts import f_rank, f_rank_m
     from app.fixtures.ev_sample import EV
     bare = replace(EV, themes=[replace(t, children=[]) for t in EV.themes])
     for fn in (f_rank, f_rank_m):
         body = fn(bare)[0]
-        assert "<details>" not in body and "sub-themes" not in body
+        assert "<input" not in body and 'class="vb-rank-sub"' not in body

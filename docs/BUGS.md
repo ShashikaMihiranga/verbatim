@@ -44,13 +44,15 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
     from the design. Nothing behind it; there was no sub-theme list to switch to.
   - **Fixed:** `a76b97d` made the switch real (hidden radios plus `:has()` rules). Then, at the user's
     request ("put these underneath the main theme as expanded main theme details"), the switch was
-    replaced (this commit): a theme with sub-themes is a native `<details>` row marked ▸; opening it shows
-    its sub-themes right under it, in the same three columns and on the same bar scale. Chart fragments are
-    injected HTML and can't run scripts, hence `<details>`. Sub-themes store no tone, so their bars are
-    neutral and the sentiment column shows a dash. With no sub-themes (or a filter active) nothing opens
-    and the subtitle hint is left out. Rows now grow when a name wraps (`min-height`), and the name column
-    is a little wider. Checked live on dataset 12. Tests: `test_rank_themes_open_to_show_their_sub_themes`,
-    `test_rank_without_sub_themes_has_nothing_to_open`; `rank`/`rank-mobile` goldens regenerated.
+    replaced (`e9446e9`) by per-theme `<details>` rows. The user then asked for the switch back in its old
+    place, revealing the sub-topics under their themes (this commit): the switch is restored at the top
+    right; "Sub-themes" shows every theme's sub-themes directly under it, in the same three columns and on
+    the same bar scale; "Themes" hides them again. Labels wrap hidden radios and `:has()` rules on the
+    chart root do the switching (fragments can't run scripts). Sub-themes store no tone, so their bars are
+    neutral and the sentiment column shows a dash. No switch when no theme has sub-themes (or a filter is
+    active). Rows grow when a name wraps (`min-height`); the name column is a little wider. Checked live on
+    dataset 12. Tests: `test_rank_sub_themes_switch_reveals_them_under_each_theme`,
+    `test_rank_without_sub_themes_has_no_switch`; `rank`/`rank-mobile` goldens regenerated.
 
 - [x] **BUG-054 — Tone sunburst prints "34.262107828205906%" for All other answers**
   - Found: 2026-10-25, the user (screenshot of a finding's "Which themes sound negative or positive?"

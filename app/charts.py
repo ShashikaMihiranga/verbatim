@@ -379,22 +379,18 @@ def f_overview(data: ReportData, report: bool = False):
     return body, 1180, 680 + OVERVIEW_TREEMAP_H + 24
 
 # ---------- rank ----------
-# Theme rows with sub-themes open in place to show them (BUG-055: the chart used to carry a Themes /
-# Sub-themes switch that was only a drawing). Chart fragments are injected HTML and cannot run scripts,
-# so each such row is a native <details>; these rules hide the browser's marker and turn the chevron.
-# Fixed class names: every copy of the chart on a page wants the same rules.
-RANK_CSS = ("<style>.vb-rank summary{list-style:none;cursor:pointer}.vb-rank summary::-webkit-details-marker{display:none}"
-            ".vb-rank summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:8px}"
-            ".vb-rank .vb-chev{display:inline-block;transition:transform .15s}.vb-rank details[open] .vb-chev{transform:rotate(90deg)}"
-            "@media (prefers-reduced-motion:reduce){.vb-rank .vb-chev{transition:none}}</style>")
-# Wider than other charts' name columns: theme names here sit beside an open/close mark.
+# The Themes / Sub-themes switch (BUG-055: it used to be only a drawing). "Sub-themes" shows each theme's
+# sub-themes right under that theme. Chart fragments are injected HTML and cannot run scripts, so each
+# switch label wraps a hidden radio and `:has()` rules on the chart root do the rest. Fixed class names:
+# every copy of the chart on a page wants the same rules, and `:has()` scopes them to their own root.
+RANK_CSS = ("<style>.vb-rank-switch label{color:var(--muted);font-weight:500}"
+            ".vb-rank-switch label>input{position:absolute;opacity:0;width:1px;height:1px;margin:0}"
+            ".vb-rank-switch label:has(input:checked){background:var(--accent);color:var(--on-accent);font-weight:600}"
+            ".vb-rank-switch label:has(input:focus-visible){outline:2px solid var(--ink);outline-offset:-3px}"
+            ".vb-rank-sub{display:none}.vb-rank:has(input[value=sub]:checked) .vb-rank-sub{display:block}</style>")
+# Wider than other charts' name columns: sub-theme names sit indented under their theme's.
 RANK_NAME_COL = "clamp(180px,22%,300px)"
 RANK_SUB_TIP = "Sub-themes have no tone of their own yet."
-
-def _rank_chev(has_children):
-    # Same width either way, so names line up whether or not a row opens.
-    mark = "&#9656;" if has_children else ""
-    return f'<span class="vb-chev" aria-hidden="true" style="width:16px;flex:none;text-align:center;color:var(--accent);font-size:17px;line-height:1">{mark}</span>'
 
 def rank_rows(data, mobile=False, selected=None, hover=None):
     o = ""
@@ -412,9 +408,9 @@ def rank_rows(data, mobile=False, selected=None, hover=None):
         if mobile:
             bw = share / mx * 236
             row = (f'<div style="padding:10px 12px;border-radius:8px;{bg}{ring}opacity:{op}">'
-                   f'<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:500"><span style="display:flex;gap:6px">{_rank_chev(kids)}{esc(name)}</span>'
+                   f'<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:500"><span>{esc(name)}</span>'
                    f'<span style="font-weight:400;color:var(--muted)">{sent:+.2f}</span></div>'
-                   f'<div style="display:flex;align-items:center;gap:10px;margin-top:6px;padding-left:20px"><div style="width:{bw:.0f}px;height:22px;border-radius:3px;background:{tone(sent, data.overall_sentiment)};flex:none"></div>'
+                   f'<div style="display:flex;align-items:center;gap:10px;margin-top:6px"><div style="width:{bw:.0f}px;height:22px;border-radius:3px;background:{tone(sent, data.overall_sentiment)};flex:none"></div>'
                    f'<div style="line-height:1.15"><div style="font-size:16px;font-weight:600">{share}%</div><div style="font-size:12px;color:var(--muted)">{fmt(cnt)}</div></div></div></div>')
             subs = "".join(
                 f'<div style="padding:6px 12px 6px 32px;opacity:{op}"><div style="font-size:14px">{esc(c.name)}</div>'
@@ -429,7 +425,7 @@ def rank_rows(data, mobile=False, selected=None, hover=None):
             # untouched literal px - only the layout reflows, matching docs/DECISIONS.md's fluid-charts
             # entry.
             row = (f'<div style="display:flex;align-items:center;min-height:64px;padding:6px 16px;box-sizing:border-box;border-radius:8px;{bg}{ring}opacity:{op}">'
-                   f'<div style="flex:0 0 {RANK_NAME_COL};display:flex;align-items:center;gap:6px;font-size:17px;font-weight:500">{_rank_chev(kids)}<span>{esc(name)}</span></div>'
+                   f'<div style="flex:0 0 {RANK_NAME_COL};font-size:17px;font-weight:500">{esc(name)}</div>'
                    f'<div style="flex:1;display:flex;align-items:center;gap:14px">'
                    f'<div style="flex:1;min-width:0"><div style="width:{pct:.1f}%;height:28px;border-radius:3px;background:{tone(sent, data.overall_sentiment)}"></div></div>'
                    f'<div style="line-height:1.2;flex:none"><div style="font-size:18px;font-weight:600">{share}%</div><div style="font-size:13px;color:var(--muted)">{fmt(cnt)}</div></div></div>'
@@ -442,11 +438,7 @@ def rank_rows(data, mobile=False, selected=None, hover=None):
                 f'<div style="flex:1;min-width:0"><div style="width:{c.share / mx * 100:.1f}%;height:16px;border-radius:3px;background:var(--neu)"></div></div>'
                 f'<div style="flex:none;font-size:16px;font-weight:600">{c.share}%</div></div>'
                 f'<div title="{RANK_SUB_TIP}" style="flex:0 0 clamp(70px,8%,110px);text-align:right;color:var(--muted)">&mdash;</div></div>' for c in kids)
-        if kids:
-            o += (f'<details><summary aria-label="{esc(name)}: show {len(kids)} sub-theme{"s" if len(kids) != 1 else ""}">{row}</summary>'
-                  f'<div style="padding:2px 0 10px">{subs}</div></details>')
-        else:
-            o += row
+        o += row + (f'<div class="vb-rank-sub" style="padding:2px 0 10px">{subs}</div>' if kids else "")
     return o
 
 def rank_legend():
@@ -455,23 +447,34 @@ def rank_legend():
                 f'<span style="width:16px;height:16px;border-radius:3px;background:{c}"></span>{t}</span>')
     return (sw("var(--neg)", "More negative than average") + sw("var(--neu)", "About average") + sw("var(--pos)", "Milder than average"))
 
-def _rank_sub_hint(data):
-    return " Open a theme marked \u25b8 to see its sub-themes." if any(t.children for t in data.themes) else ""
+def rank_switch(data, small=False):
+    """The Themes / Sub-themes switch, or "" when no theme has sub-themes (nothing to switch to)."""
+    if not any(t.children for t in data.themes):
+        return ""
+    # Radio group name from the chart's content, so two different rank charts on a page don't share one.
+    key = repr([data.selected_theme] + [(t.name, t.share, [c.name for c in t.children]) for t in data.themes]).encode()
+    group = f"vbrk{zlib.crc32(key):08x}{'m' if small else ''}"
+    btn = f'padding:8px {14 if small else 18}px;font-size:{14 if small else 15}px;cursor:pointer;user-select:none'
+    return (f'<div class="vb-rank-switch" role="radiogroup" aria-label="Show" style="position:relative;display:inline-flex;flex:none;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)">'
+            f'<label style="{btn}"><input type="radio" name="{group}" value="themes" checked>Themes</label>'
+            f'<label style="{btn};border-left:1px solid var(--line)"><input type="radio" name="{group}" value="sub">Sub-themes</label></div>')
 
 def f_rank(data: ReportData):
-    sub = f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f})."
-    head = hdr("What should we fix first?", sub + _rank_sub_hint(data))
-    body = (f'<div class="vb-rank" style="padding:56px 48px">{RANK_CSS}{head}'
+    body = (f'<div class="vb-rank" style="padding:56px 48px">{RANK_CSS}<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">'
+            f'<div>{hdr("What should we fix first?", f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f}).")}</div>'
+            f'{rank_switch(data)}</div>'
             f'<div style="margin-top:22px;display:flex;flex-wrap:wrap">{rank_legend()}</div>'
             f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="flex:0 0 {RANK_NAME_COL}">Theme</div><div style="flex:1">Share of answered, with count</div><div style="flex:0 0 clamp(70px,8%,110px);text-align:right">Avg sentiment</div></div>'
             f'{rank_rows(data, False, None, data.selected_theme)}</div>')
     return body, 1180, 860
 
 def f_rank_m(data: ReportData):
-    hint = _rank_sub_hint(data)
-    body = (f'<div class="vb-rank" style="padding:24px 16px">{RANK_CSS}{hdr("What should we fix first?")}'
+    switch = rank_switch(data, True)
+    if switch:
+        switch = f'<div style="margin-top:14px">{switch}</div>'
+    body = (f'<div class="vb-rank" style="padding:24px 16px">{RANK_CSS}{hdr("What should we fix first?")}{switch}'
             f'<div style="margin-top:14px;display:flex;flex-wrap:wrap;row-gap:6px">{rank_legend()}</div>'
-            f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">{esc(f"{data.selected_theme} selected, others dimmed.{hint}")}</div>'
+            f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">{esc(data.selected_theme)} selected, others dimmed</div>'
             f'<div style="margin-top:6px">{rank_rows(data, True, data.selected_theme)}</div></div>')
     return body, 390, 960
 
