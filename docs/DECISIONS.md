@@ -3536,3 +3536,10 @@ inside Other result, which is counts, labels and tones, and the answer map's dot
 and a theme index with no answer text or row ids). `api_themes.answer_map_data` is shared by the route and
 the snapshot tool. `InsideOther` and `ReportView` take that map data as a prop instead of fetching.
 
+## 2026-10-26: no "Use Jev for sentiment" checkbox
+
+User's call: the Build themes screen no longer offers "Use Jev for sentiment (optional, needs a TypeSafe
+key)". Builds always score tone with the word list in code, which was already the default (the box started
+unticked). The API's `use_jev_sentiment` field stays, defaulting to false, so nothing else changes; Look
+inside Other still uses Jev to sort Other's answers.
+

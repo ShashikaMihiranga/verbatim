@@ -203,7 +203,6 @@ export default function Themes() {
   const id = Number(params.get('dataset'))
   const [ds, setDs] = useState<DatasetView | null>(null)
   const [column, setColumn] = useState<string | null>(null)
-  const [useJev, setUseJev] = useState(false)
   const [themes, setThemes] = useState<ThemeCard[] | null>(null)
   const [themesJob, setThemesJob] = useState<Job | null>(null)
   const [report, setReport] = useState<ReportResponse | null>(null)
@@ -533,7 +532,7 @@ export default function Themes() {
   async function build() {
     setError('')
     try {
-      const started = await buildThemes(id, column as string, useJev)
+      const started = await buildThemes(id, column as string)
       setThemes(null)
       setLookInsideOtherJob(null) // the server dropped the old run's result with the old themes
       setAutoLookNote(null)
@@ -696,10 +695,6 @@ export default function Themes() {
             We will group similar answers into themes, label them and score their tone. This can take a minute or two
             for a large file.
           </p>
-          <label className="jev">
-            <input type="checkbox" checked={useJev} onChange={(e) => setUseJev(e.target.checked)} />
-            Use Jev for sentiment (optional, needs a TypeSafe key)
-          </label>
           <div>
             <button type="button" className="btn" onClick={() => void build()}>
               Build themes

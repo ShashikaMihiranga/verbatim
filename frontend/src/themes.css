@@ -4,7 +4,6 @@
 .th-build { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); padding: 28px; text-align: center; }
 .th-build .big { font-size: 20px; font-weight: 500; margin-bottom: 6px; }
 .th-build .small { color: var(--muted); font-size: 15px; margin: 0 0 20px; }
-.th-build label.jev { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin-bottom: 20px; }
 
 /* .th-detail is the one theme-detail panel shown below the chart on both the Themes screen's browse view
    and the report page's overview block (frontend/src/ThemeDetail.tsx) - same surface/border/padding
