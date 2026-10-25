@@ -379,24 +379,47 @@ def f_overview(data: ReportData, report: bool = False):
     return body, 1180, 680 + OVERVIEW_TREEMAP_H + 24
 
 # ---------- rank ----------
+# Theme rows with sub-themes open in place to show them (BUG-055: the chart used to carry a Themes /
+# Sub-themes switch that was only a drawing). Chart fragments are injected HTML and cannot run scripts,
+# so each such row is a native <details>; these rules hide the browser's marker and turn the chevron.
+# Fixed class names: every copy of the chart on a page wants the same rules.
+RANK_CSS = ("<style>.vb-rank summary{list-style:none;cursor:pointer}.vb-rank summary::-webkit-details-marker{display:none}"
+            ".vb-rank summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:8px}"
+            ".vb-rank .vb-chev{display:inline-block;transition:transform .15s}.vb-rank details[open] .vb-chev{transform:rotate(90deg)}"
+            "@media (prefers-reduced-motion:reduce){.vb-rank .vb-chev{transition:none}}</style>")
+# Wider than other charts' name columns: theme names here sit beside an open/close mark.
+RANK_NAME_COL = "clamp(180px,22%,300px)"
+RANK_SUB_TIP = "Sub-themes have no tone of their own yet."
+
+def _rank_chev(has_children):
+    # Same width either way, so names line up whether or not a row opens.
+    mark = "&#9656;" if has_children else ""
+    return f'<span class="vb-chev" aria-hidden="true" style="width:16px;flex:none;text-align:center;color:var(--accent);font-size:17px;line-height:1">{mark}</span>'
+
 def rank_rows(data, mobile=False, selected=None, hover=None):
     o = ""
     # Every theme can have a zero share at once - e.g. the Filters feature (SPEC.md section 5) narrowed to
     # a combination that matches zero rows. `mx = 1` makes every bar's width compute to 0 instead of
     # dividing by zero; a visually empty set of bars, not a crash.
     mx = max((t.share for t in data.themes), default=0) or 1
-    for name, share, sent, cnt, col in rows(data):
+    for t in data.themes:
+        name, share, sent, cnt = t.name, t.share, t.sentiment, t.count
+        kids = t.children
         sel = name == selected
         op = DIM if (selected and not sel) else 1
         bg = "background:var(--surface);" if (name == hover or sel) else ""
         ring = "outline:2px solid var(--ink);outline-offset:-2px;" if sel else ""
         if mobile:
             bw = share / mx * 236
-            o += (f'<div style="padding:10px 12px;border-radius:8px;{bg}{ring}opacity:{op}">'
-                  f'<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:500"><span>{esc(name)}</span>'
-                  f'<span style="font-weight:400;color:var(--muted)">{sent:+.2f}</span></div>'
-                  f'<div style="display:flex;align-items:center;gap:10px;margin-top:6px"><div style="width:{bw:.0f}px;height:22px;border-radius:3px;background:{tone(sent, data.overall_sentiment)};flex:none"></div>'
-                  f'<div style="line-height:1.15"><div style="font-size:16px;font-weight:600">{share}%</div><div style="font-size:12px;color:var(--muted)">{fmt(cnt)}</div></div></div></div>')
+            row = (f'<div style="padding:10px 12px;border-radius:8px;{bg}{ring}opacity:{op}">'
+                   f'<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:500"><span style="display:flex;gap:6px">{_rank_chev(kids)}{esc(name)}</span>'
+                   f'<span style="font-weight:400;color:var(--muted)">{sent:+.2f}</span></div>'
+                   f'<div style="display:flex;align-items:center;gap:10px;margin-top:6px;padding-left:20px"><div style="width:{bw:.0f}px;height:22px;border-radius:3px;background:{tone(sent, data.overall_sentiment)};flex:none"></div>'
+                   f'<div style="line-height:1.15"><div style="font-size:16px;font-weight:600">{share}%</div><div style="font-size:12px;color:var(--muted)">{fmt(cnt)}</div></div></div></div>')
+            subs = "".join(
+                f'<div style="padding:6px 12px 6px 32px;opacity:{op}"><div style="font-size:14px">{esc(c.name)}</div>'
+                f'<div style="display:flex;align-items:center;gap:10px;margin-top:4px"><div style="width:{c.share / mx * 236:.0f}px;height:14px;border-radius:3px;background:var(--neu);flex:none"></div>'
+                f'<div style="font-size:14px;font-weight:600">{c.share}%</div></div></div>' for c in kids)
         else:
             pct = share / mx * 100
             # Bar width is a % of its own flex:1 wrapper (not a px number computed against a fixed
@@ -405,12 +428,25 @@ def rank_rows(data, mobile=False, selected=None, hover=None):
             # room on a wide screen without ever shrinking below a readable minimum. Font sizes are
             # untouched literal px - only the layout reflows, matching docs/DECISIONS.md's fluid-charts
             # entry.
-            o += (f'<div style="display:flex;align-items:center;height:64px;padding:0 16px;border-radius:8px;{bg}{ring}opacity:{op}">'
-                  f'<div style="flex:0 0 clamp(160px,18%,280px);font-size:17px;font-weight:500">{esc(name)}</div>'
-                  f'<div style="flex:1;display:flex;align-items:center;gap:14px">'
-                  f'<div style="flex:1;min-width:0"><div style="width:{pct:.1f}%;height:28px;border-radius:3px;background:{tone(sent, data.overall_sentiment)}"></div></div>'
-                  f'<div style="line-height:1.2;flex:none"><div style="font-size:18px;font-weight:600">{share}%</div><div style="font-size:13px;color:var(--muted)">{fmt(cnt)}</div></div></div>'
-                  f'<div style="flex:0 0 clamp(70px,8%,110px);text-align:right;font-size:17px">{sent:+.2f}</div></div>')
+            row = (f'<div style="display:flex;align-items:center;min-height:64px;padding:6px 16px;box-sizing:border-box;border-radius:8px;{bg}{ring}opacity:{op}">'
+                   f'<div style="flex:0 0 {RANK_NAME_COL};display:flex;align-items:center;gap:6px;font-size:17px;font-weight:500">{_rank_chev(kids)}<span>{esc(name)}</span></div>'
+                   f'<div style="flex:1;display:flex;align-items:center;gap:14px">'
+                   f'<div style="flex:1;min-width:0"><div style="width:{pct:.1f}%;height:28px;border-radius:3px;background:{tone(sent, data.overall_sentiment)}"></div></div>'
+                   f'<div style="line-height:1.2;flex:none"><div style="font-size:18px;font-weight:600">{share}%</div><div style="font-size:13px;color:var(--muted)">{fmt(cnt)}</div></div></div>'
+                   f'<div style="flex:0 0 clamp(70px,8%,110px);text-align:right;font-size:17px">{sent:+.2f}</div></div>')
+            # Same three columns as the theme row so the bars share one scale and one left edge.
+            subs = "".join(
+                f'<div style="display:flex;align-items:center;min-height:44px;padding:0 16px;opacity:{op}">'
+                f'<div style="flex:0 0 {RANK_NAME_COL};padding:4px 12px 4px 22px;box-sizing:border-box;font-size:15px;line-height:1.25;color:var(--ink)">{esc(c.name)}</div>'
+                f'<div style="flex:1;display:flex;align-items:center;gap:14px">'
+                f'<div style="flex:1;min-width:0"><div style="width:{c.share / mx * 100:.1f}%;height:16px;border-radius:3px;background:var(--neu)"></div></div>'
+                f'<div style="flex:none;font-size:16px;font-weight:600">{c.share}%</div></div>'
+                f'<div title="{RANK_SUB_TIP}" style="flex:0 0 clamp(70px,8%,110px);text-align:right;color:var(--muted)">&mdash;</div></div>' for c in kids)
+        if kids:
+            o += (f'<details><summary aria-label="{esc(name)}: show {len(kids)} sub-theme{"s" if len(kids) != 1 else ""}">{row}</summary>'
+                  f'<div style="padding:2px 0 10px">{subs}</div></details>')
+        else:
+            o += row
     return o
 
 def rank_legend():
@@ -419,86 +455,24 @@ def rank_legend():
                 f'<span style="width:16px;height:16px;border-radius:3px;background:{c}"></span>{t}</span>')
     return (sw("var(--neg)", "More negative than average") + sw("var(--neu)", "About average") + sw("var(--pos)", "Milder than average"))
 
-def rank_sub_rows(data, mobile=False):
-    """Each theme's sub-themes under it, bar length on the same share-of-answered scale as rank_rows.
-    Sub-themes keep no tone or exact count of their own (only `SubTheme.share`), so their bars are
-    neutral and the sentiment column is blank rather than borrowing the parent's numbers."""
-    mx = max((t.share for t in data.themes), default=0) or 1
-    o = ""
-    for t in data.themes:
-        if not t.children:
-            continue
-        o += (f'<div style="padding:{"14px 12px 2px" if mobile else "18px 16px 4px"};font-size:{15 if mobile else 17}px;font-weight:600">'
-              f'{esc(t.name)} <span style="font-weight:400;color:var(--muted)">{t.share}%</span></div>')
-        for c in t.children:
-            pct = c.share / mx * 100
-            if mobile:
-                o += (f'<div style="padding:6px 12px 6px 24px"><div style="font-size:15px">{esc(c.name)}</div>'
-                      f'<div style="display:flex;align-items:center;gap:10px;margin-top:4px"><div style="width:{c.share / mx * 236:.0f}px;height:18px;border-radius:3px;background:var(--neu);flex:none"></div>'
-                      f'<div style="font-size:15px;font-weight:600">{c.share}%</div></div></div>')
-            else:
-                o += (f'<div style="display:flex;align-items:center;height:48px;padding:0 16px 0 36px">'
-                      f'<div style="flex:0 0 calc(clamp(160px,18%,280px) - 20px);font-size:16px">{esc(c.name)}</div>'
-                      f'<div style="flex:1;display:flex;align-items:center;gap:14px">'
-                      f'<div style="flex:1;min-width:0"><div style="width:{pct:.1f}%;height:22px;border-radius:3px;background:var(--neu)"></div></div>'
-                      f'<div style="font-size:17px;font-weight:600;flex:none">{c.share}%</div></div>'
-                      f'<div style="flex:0 0 clamp(70px,8%,110px);text-align:right;color:var(--muted)">&mdash;</div></div>')
-    return o
-
-def rank_switch(data, themes_html, subs_html, small=False):
-    """A working Themes / Sub-themes switch (BUG-055: it used to be a drawing of one). Chart fragments are
-    injected as HTML and cannot run scripts, so each label wraps a hidden radio and `:has()` rules pick
-    the list; no element ids, so two copies of a chart on one page cannot steer each other. The radio
-    group name hashes the chart's themes and selected theme. Returns (uid, switch, body), both to sit
-    inside one element with class `uid`; with no sub-themes there is nothing to switch to: None."""
-    if not subs_html:
-        return None
-    key = repr([data.selected_theme] + [(t.name, t.share, [c.name for c in t.children]) for t in data.themes]).encode()
-    uid = f"vbrk{zlib.crc32(key):08x}{'m' if small else ''}"
-    # Colour and weight live in the rules, not inline: an inline colour would beat the checked state's.
-    btn = f'padding:8px {14 if small else 18}px;font-size:{14 if small else 15}px;cursor:pointer;user-select:none'
-    style = (f'<style>.{uid} label{{color:var(--muted);font-weight:500}}'
-             f'.{uid} label>input{{position:absolute;opacity:0;width:1px;height:1px;margin:0}}'
-             f'.{uid} label:has(input:checked){{background:var(--accent);color:var(--on-accent);font-weight:600}}'
-             f'.{uid} label:has(input:focus-visible){{outline:2px solid var(--ink);outline-offset:-3px}}'
-             f'.{uid}-sub{{display:none}}'
-             f'.{uid}:has(input[value=sub]:checked) .{uid}-th{{display:none}}'
-             f'.{uid}:has(input[value=sub]:checked) .{uid}-sub{{display:block}}</style>')
-    switch = (f'{style}<div role="radiogroup" aria-label="Show" style="position:relative;display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)">'
-              f'<label style="{btn}"><input type="radio" name="{uid}" value="themes" checked>Themes</label>'
-              f'<label style="{btn};border-left:1px solid var(--line)"><input type="radio" name="{uid}" value="sub">Sub-themes</label></div>')
-    body = f'<div class="{uid}-th">{themes_html}</div><div class="{uid}-sub">{subs_html}</div>'
-    return uid, switch, body
-
-RANK_SUBS_NOTE = "Bar length is share of all answered. Sub-themes have no tone of their own yet."
+def _rank_sub_hint(data):
+    return " Open a theme marked \u25b8 to see its sub-themes." if any(t.children for t in data.themes) else ""
 
 def f_rank(data: ReportData):
-    head = hdr("What should we fix first?", f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f}).")
-    themes_html = (f'<div style="margin-top:22px;display:flex;flex-wrap:wrap">{rank_legend()}</div>'
-                   f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="flex:0 0 clamp(160px,18%,280px)">Theme</div><div style="flex:1">Share of answered, with count</div><div style="flex:0 0 clamp(70px,8%,110px);text-align:right">Avg sentiment</div></div>'
-                   f'{rank_rows(data, False, None, data.selected_theme)}')
-    subs = rank_sub_rows(data)
-    sw = rank_switch(data, themes_html, f'<div style="margin-top:22px;font-size:14px;color:var(--muted)">{RANK_SUBS_NOTE}</div>{subs}' if subs else "")
-    if sw is None:
-        return f'<div style="padding:56px 48px">{head}{themes_html}</div>', 1180, 860
-    uid, switch, inner = sw
-    body = (f'<div class="{uid}" style="padding:56px 48px">'
-            f'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">'
-            f'<div>{head}</div>{switch}</div>{inner}</div>')
+    sub = f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f})."
+    head = hdr("What should we fix first?", sub + _rank_sub_hint(data))
+    body = (f'<div class="vb-rank" style="padding:56px 48px">{RANK_CSS}{head}'
+            f'<div style="margin-top:22px;display:flex;flex-wrap:wrap">{rank_legend()}</div>'
+            f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="flex:0 0 {RANK_NAME_COL}">Theme</div><div style="flex:1">Share of answered, with count</div><div style="flex:0 0 clamp(70px,8%,110px);text-align:right">Avg sentiment</div></div>'
+            f'{rank_rows(data, False, None, data.selected_theme)}</div>')
     return body, 1180, 860
 
 def f_rank_m(data: ReportData):
-    head = hdr("What should we fix first?")
-    themes_html = (f'<div style="margin-top:14px;display:flex;flex-wrap:wrap;row-gap:6px">{rank_legend()}</div>'
-                   f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">{esc(data.selected_theme)} selected, others dimmed</div>'
-                   f'<div style="margin-top:6px">{rank_rows(data, True, data.selected_theme)}</div>')
-    subs = rank_sub_rows(data, True)
-    sw = rank_switch(data, themes_html, f'<div style="margin-top:14px;font-size:13px;color:var(--muted)">{RANK_SUBS_NOTE}</div>{subs}' if subs else "", small=True)
-    if sw is None:
-        return f'<div style="padding:24px 16px">{head}{themes_html}</div>', 390, 960
-    uid, switch, inner = sw
-    body = (f'<div class="{uid}" style="padding:24px 16px">{head}'
-            f'<div style="margin-top:14px">{switch}</div>{inner}</div>')
+    hint = _rank_sub_hint(data)
+    body = (f'<div class="vb-rank" style="padding:24px 16px">{RANK_CSS}{hdr("What should we fix first?")}'
+            f'<div style="margin-top:14px;display:flex;flex-wrap:wrap;row-gap:6px">{rank_legend()}</div>'
+            f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">{esc(f"{data.selected_theme} selected, others dimmed.{hint}")}</div>'
+            f'<div style="margin-top:6px">{rank_rows(data, True, data.selected_theme)}</div></div>')
     return body, 390, 960
 
 # ---------- other-growth (docs/TODO.md, 2026-10-23 - "Look inside Other"'s own result-chart tabs) ----------

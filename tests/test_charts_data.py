@@ -917,25 +917,27 @@ def test_narrow_tall_other_box_keeps_a_compact_pointer():
     assert "overflow-wrap:break-word" not in cell
 
 
-def test_rank_sub_themes_switch_is_a_real_control():
-    """BUG-055: the Themes / Sub-themes switch was a drawing; it must be inputs that show the sub-theme list."""
+def test_rank_themes_open_to_show_their_sub_themes():
+    """BUG-055: sub-themes sit under their theme as an expandable row, not behind a fake switch."""
     from app.charts import f_rank, f_rank_m
     from app.fixtures.ev_sample import EV
+    with_kids = [t for t in EV.themes if t.children]
     for fn in (f_rank, f_rank_m):
         body = fn(EV)[0]
-        assert body.count('type="radio"') == 2 and 'value="sub"' in body
-        assert ":has(input[value=sub]:checked)" in body
-        for t in EV.themes:
+        assert "Sub-themes</" not in body and "<input" not in body
+        assert body.count("<details>") == len(with_kids)
+        for t in with_kids:
+            # each sub-theme comes after its own theme's row
+            at = body.index(f"{t.name}: show")
             for c in t.children:
-                assert c.name in body
-        assert " id=" not in body  # no ids: two copies of the chart on one page must not steer each other
+                assert body.index(c.name, at) > at
 
 
-def test_rank_without_sub_themes_has_no_switch():
+def test_rank_without_sub_themes_has_nothing_to_open():
     from dataclasses import replace
     from app.charts import f_rank, f_rank_m
     from app.fixtures.ev_sample import EV
     bare = replace(EV, themes=[replace(t, children=[]) for t in EV.themes])
     for fn in (f_rank, f_rank_m):
         body = fn(bare)[0]
-        assert "Sub-themes" not in body and "<input" not in body
+        assert "<details>" not in body and "sub-themes" not in body
