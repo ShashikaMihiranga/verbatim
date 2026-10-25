@@ -3255,3 +3255,15 @@ existing theme; the report shows the finished run's result only, with no button.
 - The panel's "How all answers group" plot fetches the map when a run is done; colours match the numbered
   rows, this run's new themes are outlined, Other is grey underneath.
 
+## 2026-10-25 (answer map: readable or not shown)
+
+- User, on dataset 14's map: "how can anyone make groups from this". It was the old PCA layout (every
+  theme in one blob), and 20 of 29 themes shared one dark grey.
+- Theme builds record `Column.stats["answer_positions_layout"] = "umap"`; the endpoint returns `layout`
+  ("pca" for positions stored without it). The panel draws only UMAP layouts; for older ones it says to
+  rebuild themes. Dataset 14 now shows that notice.
+- Themes outside the treemap's top seven are pale (`minor`), drawn under the main ones. Each main cloud
+  (top-seven theme or this run's new theme, at least 2% of the dots) is named at its median point;
+  `placeLabels` keeps names inside the plot and moves or drops one that would cover a bigger cloud's name.
+- Not done: the report's own `answer_map` block still draws whatever positions are stored, PCA included.
+

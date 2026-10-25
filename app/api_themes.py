@@ -303,6 +303,9 @@ def _sample_answer_positions(embedded: "EmbeddedAnswers | None", seed: int = 0) 
 
 # Below this many answers UMAP's neighbour graph is not trustworthy (the same floor clustering uses).
 MIN_POINTS_FOR_UMAP = 50
+# Recorded on `Column.stats` with the positions. Positions without it came from a plain PCA, which piles
+# every theme into one blob: the answer map says to rebuild themes instead of drawing that.
+ANSWER_LAYOUT = "umap"
 
 
 def _layout_2d(vectors: np.ndarray) -> np.ndarray:
@@ -869,6 +872,8 @@ def build_themes(
             col_row = job_db.scalar(select(Column).where(Column.dataset_id == dataset_id_, Column.name == column))
             if col_row is not None:
                 col_row.answer_positions = {str(r): list(xy) for r, xy in positions.items()}
+                # Which layout made them: the answer map only shows UMAP layouts (see `answer_map`).
+                col_row.stats = {**(col_row.stats or {}), "answer_positions_layout": ANSWER_LAYOUT}
                 job_db.commit()
             queued = _queue_auto_look_inside(job_db, job.id, dataset_id_, column, jev_factory)
             if queued is not None:
@@ -1462,8 +1467,9 @@ def answer_map(dataset_id: int, column: str, db: Session = Depends(get_db), user
     """Every theme's answers on one map, for the scatter plot under Inside Other: the sample of positions
     stored at theme build (`Column.answer_positions`, up to `MAX_ANSWER_POSITIONS`), each dot coloured by
     the theme its answer is in NOW, so answers Look inside Other moved show in their new theme.
-    `{"answers": total answers, "groups": [{"label", "other"}], "points": [[x, y, group]]}`; x/y in 0..1;
-    empty `points` when the themes were built before positions were stored."""
+    `{"answers": total answers, "layout": "umap" | "pca" | None, "groups": [{"label", "other"}],
+    "points": [[x, y, group]]}`; x/y in 0..1; empty `points` when the themes were built before positions
+    were stored. "pca": built before 2026-10-25, when every theme overlapped; the page asks for a rebuild."""
     ds = _own_dataset(db, user, dataset_id)
     rows = _stored_themes(db, ds.id, column)
     col_row = db.scalar(select(Column).where(Column.dataset_id == ds.id, Column.name == column))
@@ -1474,8 +1480,10 @@ def answer_map(dataset_id: int, column: str, db: Session = Depends(get_db), user
             theme_of[int(r)] = gi
     points = [[round(float(xy[0]), 3), round(float(xy[1]), 3), theme_of[int(r)]]
               for r, xy in positions.items() if int(r) in theme_of]
+    layout = ((col_row.stats or {}).get("answer_positions_layout") or "pca") if positions else None
     return {
         "answers": sum(t.size for t in rows),
+        "layout": layout,
         "groups": [{"label": t.label, "other": t.label == "Other"} for t in rows],
         "points": points,
     }

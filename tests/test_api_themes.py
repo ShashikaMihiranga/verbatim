@@ -1986,7 +1986,7 @@ def test_answer_map_puts_every_themes_answers_on_one_map(env):
     themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
     got = env.client.get(f"/api/datasets/{did}/themes/answer-map", params={"column": Q})
     assert got.status_code == 200, got.text
-    assert got.json()["points"] == []  # this test upload has no Column row, so no stored positions
+    assert got.json()["points"] == [] and got.json()["layout"] is None  # no Column row: no stored positions
     # Positions as a theme build stores them: a sample keyed by row, here every answer plus a stray row.
     from app.models import Column as ColumnRow, Theme as ThemeRow
     with env.Session() as s:
@@ -1996,6 +1996,12 @@ def test_answer_map_puts_every_themes_answers_on_one_map(env):
         s.commit()
     body = env.client.get(f"/api/datasets/{did}/themes/answer-map", params={"column": Q}).json()
     assert len(body["points"]) == len(refs)  # the stray row belongs to no theme: no dot
+    assert body["layout"] == "pca"  # stored without a layout mark: an older build
+    with env.Session() as s:
+        col = s.query(ColumnRow).filter_by(dataset_id=did, name=Q).one()
+        col.stats = {"answer_positions_layout": "umap"}
+        s.commit()
+    assert env.client.get(f"/api/datasets/{did}/themes/answer-map", params={"column": Q}).json()["layout"] == "umap"
     assert body["answers"] == sum(t["size"] for t in themes)
     assert [g["label"] for g in body["groups"]] == [t["label"] for t in themes]
     assert [g["other"] for g in body["groups"]] == [t["label"] == "Other" for t in themes]

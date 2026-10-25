@@ -157,6 +157,8 @@ export async function getThemes(id: number, column: string): Promise<ThemesRespo
 // stored at theme build, each dot's group is the theme its answer is in now. x/y in 0..1, y down.
 export interface AnswerMapResponse {
   answers: number
+  // "umap": laid out by meaning. "pca": an older build, every theme overlapping. null: no positions stored.
+  layout: 'umap' | 'pca' | null
   groups: Array<{ label: string; other: boolean }>
   points: Array<[number, number, number]>
 }

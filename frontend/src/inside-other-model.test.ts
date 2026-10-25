@@ -112,6 +112,7 @@ describe('answerMapModel', () => {
   // Groups as GET /themes/answer-map returns them: every theme of the column, Other flagged.
   const raw = {
     answers: 5830,
+    layout: 'umap' as const,
     groups: [
       { label: 'Cost', other: false }, { label: 'Other', other: true }, { label: 'Elevators', other: false },
       { label: 'Parking access', other: false }, { label: 'Parking', other: false }, { label: 'Empty', other: false },
@@ -128,7 +129,13 @@ describe('answerMapModel', () => {
     expect(byLabel.Other.color).toBe('var(--other)')
     expect(byLabel.Cost.kind).toBe('known')
     expect(byLabel.Cost.color).toBe(m.known.find((l) => l.label === 'Cost')!.color)
-    expect(byLabel.Parking.color).toBe('var(--muted)') // 8th real theme: not mistaken for Other
+    // 8th real theme: pale, so the top themes stand out, and not mistaken for Other.
+    expect(byLabel.Parking.kind).toBe('minor')
+    expect(byLabel.Parking.color).toContain('color-mix')
+    expect(byLabel.Parking.at).toBeNull() // minor themes are not named on the map
+    expect(byLabel.Other.at).toBeNull()
+    expect(byLabel['Parking access'].at).toEqual([0.8, 0.45]) // the middle of its two dots
+    expect(map.groups.map((g) => g.kind)).toEqual(['still', 'minor', 'known', 'new', 'new'])
     expect(byLabel['Parking access'].kind).toBe('new')
     expect(byLabel['Parking access'].color).toBe(m.newThemes[0].color)
     expect(byLabel.Elevators.color).toBe(m.newThemes[1].color)
@@ -145,6 +152,7 @@ describe('answerMapModel', () => {
     const map = answerMapModel(raw, null, themes.map((t) => t.name))!
     expect(map.groups.some((g) => g.kind === 'new')).toBe(false)
     expect(answerMapModel({ ...raw, points: [] }, null, [])).toBeNull()
+    expect(answerMapModel({ ...raw, layout: 'pca' }, null, [])).toBeNull() // older layout: every theme overlaps
     expect(answerMapModel(null, null, [])).toBeNull()
   })
 })

@@ -19,15 +19,24 @@ const NEW_TINTS = [100, 82, 68, 56, 44, 34]
 export type Phase = 'idle' | 'running' | 'done' | 'failed'
 
 export interface PointGroup {
-  kind: 'known' | 'new' | 'still'
+  // "minor": a known theme outside the treemap's top seven, drawn pale so the main clouds stand out.
+  kind: 'known' | 'minor' | 'new' | 'still'
   label: string
   color: string
   dots: number // dots drawn for this group (a sample when Other was large)
+  at: [number, number] | null // where its name is written: the middle of its cloud; null = no label
 }
 export interface PointMap {
-  groups: PointGroup[] // still in Other first, then known, then new: later groups draw on top
+  groups: PointGroup[] // still in Other first, then minor, known, new: later groups draw on top
   points: Array<[number, number, number]> // x, y (0..1, y down), index into `groups`
   sampled: boolean // fewer dots than answers
+}
+
+// Below this share of the dots a cloud is too small to name on the map; the legend still lists it.
+const LABEL_MIN_SHARE = 0.02
+const median = (v: number[]) => {
+  const s = [...v].sort((a, b) => a - b)
+  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2
 }
 
 export interface Leaf {
@@ -115,34 +124,75 @@ const fromRecord = (r: Record<string, number> | undefined) => Object.entries(r ?
 export function answerMapModel(
   raw: AnswerMapResponse | null, r: LookInsideOtherResult | null, realThemes: string[],
 ): PointMap | null {
-  if (!raw || raw.points.length === 0) return null
+  // Only a layout by meaning (UMAP) shows groups; an older PCA layout piles every theme together.
+  if (!raw || raw.points.length === 0 || raw.layout !== 'umap') return null
   const newThemes = r?.new_themes ?? []
   const isNew = new Set(newThemes.map((t) => t.label))
-  const pm = {
-    groups: raw.groups.map((g) => ({ label: g.label, kind: g.other ? 'still' : isNew.has(g.label) ? 'new' : 'known' })),
-    points: raw.points,
+  const kindOf = (g: { label: string; other: boolean }): PointGroup['kind'] => {
+    if (g.other) return 'still'
+    if (isNew.has(g.label)) return 'new'
+    return knownColor(g.label, realThemes).color === 'var(--other)' ? 'minor' : 'known'
   }
   // New themes take the same accent step as their leaf in the columns: ranked by size.
   const newRank = [...newThemes].sort((a, b) => b.count - a.count).map((t) => t.label)
-  const colorOf = (g: { kind: string; label: string }) => {
-    if (g.kind === 'new') return newColor(Math.max(0, newRank.indexOf(g.label))).color
-    if (g.kind === 'known') {
-      const c = knownColor(g.label, realThemes).color
-      return c === 'var(--other)' ? 'var(--muted)' : c // a known theme outside the top 7, not "still in Other"
-    }
+  const colorOf = (kind: PointGroup['kind'], label: string) => {
+    if (kind === 'new') return newColor(Math.max(0, newRank.indexOf(label))).color
+    if (kind === 'known') return knownColor(label, realThemes).color
+    if (kind === 'minor') return 'color-mix(in srgb, var(--muted) 35%, var(--surface))'
     return 'var(--other)'
   }
-  const dots = pm.groups.map(() => 0)
-  for (const [, , g] of pm.points) dots[g] = (dots[g] ?? 0) + 1
-  const rank = (k: string) => ['still', 'known', 'new'].indexOf(k)
-  const sorted = pm.groups.map((g, i) => ({ ...g, i })).filter((g) => dots[g.i] > 0).sort((a, b) => rank(a.kind) - rank(b.kind) || dots[b.i] - dots[a.i])
+  const xs: number[][] = raw.groups.map(() => [])
+  const ys: number[][] = raw.groups.map(() => [])
+  for (const [x, y, g] of raw.points) {
+    xs[g]?.push(x)
+    ys[g]?.push(y)
+  }
+  const rank = (k: PointGroup['kind']) => ['still', 'minor', 'known', 'new'].indexOf(k)
+  const sorted = raw.groups.map((g, i) => ({ label: g.label, kind: kindOf(g), i, dots: xs[i].length }))
+    .filter((g) => g.dots > 0)
+    .sort((a, b) => rank(a.kind) - rank(b.kind) || b.dots - a.dots)
   const remap = new Map(sorted.map((g, j) => [g.i, j]))
+  const named = (g: { kind: PointGroup['kind']; dots: number }) =>
+    (g.kind === 'known' || g.kind === 'new') && g.dots >= raw.points.length * LABEL_MIN_SHARE
   return {
-    groups: sorted.map((g) => ({ kind: g.kind as PointGroup['kind'], label: g.label, color: colorOf(g), dots: dots[g.i] })),
-    points: pm.points.filter(([, , g]) => remap.has(g)).map(([x, y, g]) => [x, y, remap.get(g)!]),
-    sampled: pm.points.length < raw.answers,
+    groups: sorted.map((g) => ({
+      kind: g.kind, label: g.label, color: colorOf(g.kind, g.label), dots: g.dots,
+      at: named(g) ? [median(xs[g.i]), median(ys[g.i])] : null,
+    })),
+    points: raw.points.filter(([, , g]) => remap.has(g)).map(([x, y, g]) => [x, y, remap.get(g)!]),
+    sampled: raw.points.length < raw.answers,
   }
 }
+
+// Answer map geometry (InsideOther.tsx PointMapChart), in the SVG's own units.
+export const MAP_W = 1000
+export const MAP_H = 520
+export const MAP_PAD = 12
+const MAP_LABEL_MAX = 30 // characters; the legend and the dot's tooltip carry the full name
+const LABEL_EM = 0.56 // average Jost character width at weight 600, in em
+const LABEL_FS = 15
+const LABEL_H = 22
+
+export const shortName = (s: string) => (s.length > MAP_LABEL_MAX ? `${s.slice(0, MAP_LABEL_MAX - 1).trimEnd()}…` : s)
+
+// Where each named cloud's label goes: kept inside the plot, and moved a line down or up (or left out)
+// when it would cover a bigger cloud's label. Biggest clouds are placed first. Pure, for the tests.
+export function placeLabels(
+  wanted: Array<{ gi: number; x: number; y: number; text: string; dots: number }>,
+): Array<{ gi: number; x: number; y: number; text: string }> {
+  const placed: Array<{ gi: number; x: number; y: number; text: string; w: number }> = []
+  const hits = (x: number, y: number, w: number) =>
+    placed.some((p) => Math.abs(p.x - x) < (p.w + w) / 2 + 6 && Math.abs(p.y - y) < LABEL_H)
+  for (const l of [...wanted].sort((a, b) => b.dots - a.dots)) {
+    const w = l.text.length * LABEL_FS * LABEL_EM
+    const x = Math.min(MAP_W - MAP_PAD - w / 2, Math.max(MAP_PAD + w / 2, l.x))
+    const clampY = (v: number) => Math.min(MAP_H - MAP_PAD - LABEL_H / 2, Math.max(MAP_PAD + LABEL_H / 2, v))
+    const y = [l.y, l.y + LABEL_H, l.y - LABEL_H].map(clampY).find((v) => !hits(x, v, w))
+    if (y !== undefined) placed.push({ gi: l.gi, x, y, text: l.text, w })
+  }
+  return placed.map(({ gi, x, y, text }) => ({ gi, x, y, text }))
+}
+
 
 export function isResult(r: Job['result']): r is LookInsideOtherResult {
   return r !== null && typeof r === 'object' && 'known_added' in r

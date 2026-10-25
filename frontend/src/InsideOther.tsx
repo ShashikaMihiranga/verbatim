@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import InsideOtherFlow from './InsideOtherFlow'
 import { prefersReducedMotion } from './insideOtherGeometry'
-import { hasShare, insideOtherModel, listValue, STEPS, answerMapModel, isResult, type InsideOtherModel, type Leaf, type PointMap } from './insideOtherModel'
+import { hasShare, insideOtherModel, listValue, STEPS, answerMapModel, isResult, MAP_H, MAP_PAD, MAP_W, placeLabels, shortName, type InsideOtherModel, type Leaf, type PointMap } from './insideOtherModel'
 import { getAnswerMap, type AnswerMapResponse } from './themesApi'
 import type { Job } from './jobsApi'
 import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
@@ -140,22 +140,20 @@ function toneOf(l: Leaf): { color: string; text: string } {
 
 // Most legend entries before the rest fold into "and N more".
 const MAX_LEGEND = 9
-const MAP_W = 1000
-const MAP_H = 520
-const MAP_PAD = 12
-
 // Each dot is one answer from the whole column, placed by meaning (the theme build's embeddings, laid out
 // in 2D), so themes show as clouds; the colour is the answer's theme now, after this run.
 function PointMapChart({ map }: { map: PointMap }) {
   const [focus, setFocus] = useState<number | null>(null)
   const legend = [...map.groups.keys()].sort((a, b) => {
-    const k = (i: number) => ['new', 'known', 'still'].indexOf(map.groups[i].kind)
+    const k = (i: number) => ['new', 'known', 'still', 'minor'].indexOf(map.groups[i].kind)
     return k(a) - k(b) || map.groups[b].dots - map.groups[a].dots
   })
   const shown = legend.slice(0, MAX_LEGEND)
   const total = map.points.length
   const x = (v: number) => MAP_PAD + v * (MAP_W - 2 * MAP_PAD)
   const y = (v: number) => MAP_PAD + v * (MAP_H - 2 * MAP_PAD)
+  const labels = placeLabels(map.groups.flatMap((g, gi) => (g.at && (focus === null || focus === gi)
+    ? [{ gi, x: x(g.at[0]), y: y(g.at[1]), text: shortName(g.label), dots: g.dots }] : [])))
   return (
     <section className="io-chart io-map" aria-label="Every theme's answers, as a map">
       <h4 className="io-chart-title">How all answers group</h4>
@@ -168,12 +166,19 @@ function PointMapChart({ map }: { map: PointMap }) {
           // New themes also get an outline, so they read as new without relying on colour alone.
           <g key={`${g.kind}/${g.label}`} fill={g.color}
             stroke={g.kind === 'new' ? 'var(--ink)' : undefined} strokeWidth={g.kind === 'new' ? 1 : undefined}
-            opacity={focus === null || focus === gi ? (g.kind === 'still' ? 0.55 : 0.9) : 0.08}>
+            opacity={focus === null || focus === gi ? (g.kind === 'still' ? 0.55 : g.kind === 'minor' ? 1 : 0.9) : 0.08}>
             <title>{`${g.kind === 'still' ? 'Still in Other' : g.label} · ${fmt(g.dots)} answers`}</title>
             {map.points.map(([px, py, pg], i) => (pg === gi
-              ? <circle key={i} cx={x(px).toFixed(1)} cy={y(py).toFixed(1)} r={g.kind === 'still' ? 3 : g.kind === 'new' ? 4.5 : 4} />
+              ? <circle key={i} cx={x(px).toFixed(1)} cy={y(py).toFixed(1)} r={g.kind === 'still' || g.kind === 'minor' ? 3 : g.kind === 'new' ? 4.5 : 4} />
               : null))}
           </g>
+        ))}
+        {/* Names over the middle of each main cloud, last so they sit on top of every dot. */}
+        {labels.map((l) => (
+          <text key={`label/${l.gi}`} className="io-map-label" x={l.x.toFixed(1)} y={l.y.toFixed(1)}
+            textAnchor="middle" dominantBaseline="central">
+            {l.text}
+          </text>
         ))}
       </svg>
       <ul className="io-map-legend">
@@ -210,6 +215,16 @@ function AnswerMap({ job, realThemes }: { job: Job; realThemes: string[] }) {
   }, [job.id, job.dataset_id, job.column])
   const map = useMemo(() => answerMapModel(raw, isResult(job.result) ? job.result : null, realThemes),
     [raw, job.result, realThemes])
+  if (raw?.layout === 'pca') {
+    // Positions from before 2026-10-25: a plain projection that piles every theme together. Drawing that
+    // would suggest the themes don't separate, which it can't show either way.
+    return (
+      <section className="io-chart io-map" aria-label="Every theme's answers, as a map">
+        <h4 className="io-chart-title">How all answers group</h4>
+        <p className="io-map-note">Rebuild themes to see this map. These themes were built before answers could be laid out by meaning, so every theme would overlap.</p>
+      </section>
+    )
+  }
   return map ? <PointMapChart map={map} /> : null
 }
 

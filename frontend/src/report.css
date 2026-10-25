@@ -221,6 +221,10 @@
 .io-map-note { margin: -6px 0 14px; font-size: 14px; color: var(--muted); max-width: 720px; }
 .io-map-svg { display: block; width: 100%; height: auto; max-width: 100%; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .io-map-svg g { transition: opacity .15s; }
+.io-map-label {
+  font-size: 15px; font-weight: 600; fill: var(--ink); pointer-events: none; /* LABEL_FS in InsideOther.tsx */
+  paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round;
+}
 @media (prefers-reduced-motion: reduce) { .io-map-svg g { transition: none; } }
 .io-map-legend { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 14px 0 0; padding: 0; list-style: none; }
 .io-map-key {
