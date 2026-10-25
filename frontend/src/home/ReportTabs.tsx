@@ -1,103 +1,70 @@
-import { animate, stagger, utils } from 'animejs'
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { animate, stagger, svg, utils, type JSAnimation } from 'animejs'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router-dom'
-import type { ReportResponse } from '../reportApi'
-import type { ChartFragmentData } from '../ThemeChart'
 import { PauseButton } from './homeFit'
-import { onView, useReducedMotion } from './homeMotion'
-import { loadSampleReport, SAMPLE_TABS } from './sampleReport'
+import { BLOCK_TABS } from './homeBlocks'
+import { useReducedMotion } from './homeMotion'
 
-// What is in a report (hand-off section 4): six pill tabs and one panel. Each tab shows a real chart from
-// the sample report with the sentence it supports. Tabs auto-advance every 6s (paused by the button, by
-// keyboard or click focus, and under reduced motion); a shown chart rebuilds itself; hover replays it.
+// What is in a report (hand-off section 4): six pill tabs and one panel showing the active block: chapter,
+// name, one sentence, a "Needs" chip and the mockup's example chart, which builds itself when shown (cells
+// pop, bars grow, strokes draw, labels fade; home_blocks.py CHART_JS). Tabs auto-advance every 6s; hover
+// replays the chart; arrow keys move between tabs; reduced motion shows finished charts and no advance.
 
 const ADVANCE_MS = 6000
 
-// A server chart fragment (app/charts.py render_parts), scaled evenly to fit its box. Safe to embed: it is
-// server-generated, escaped SVG/HTML from our own frozen sample file, the same markup Report.tsx embeds.
-function ChartBox({ fragment, replay }: { fragment: ChartFragmentData; replay: number }) {
-  const box = useRef<HTMLDivElement | null>(null)
-  const inner = useRef<HTMLDivElement | null>(null)
-  const [k, setK] = useState(0)
-  const reduce = useReducedMotion()
-  useLayoutEffect(() => {
-    const el = box.current?.parentElement
-    if (!el) return
-    const measure = () => {
-      const narrow = el.clientWidth < 600 // phones: keep the chart readable and let it scroll sideways in its box
-      const fit = narrow ? el.clientWidth / fragment.chart_width : Math.min(el.clientWidth / fragment.chart_width, (el.clientHeight || 390) / fragment.chart_height)
-      setK(Math.min(1, narrow ? Math.max(fit, 0.5) : fit))
-    }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [fragment])
-  useEffect(() => {
-    const el = inner.current
-    if (!el || reduce) return
-    // Rebuild the chart: its marks fade and rise in, in drawing order.
-    const marks = Array.from(el.querySelectorAll<SVGElement | HTMLElement>('svg rect, svg path, svg circle, svg text, svg line, svg polyline')).slice(0, 220)
-    utils.set(marks, { opacity: 0 })
-    const a = animate(marks, { opacity: [0, 1], translateY: [6, 0], duration: 520, delay: stagger(Math.max(2, Math.round(900 / Math.max(1, marks.length)))), ease: 'outQuad' })
-    return () => { a.revert() }
-  }, [fragment, replay, reduce])
-  return (
-    <div ref={box} className={`hd-chartbox${fragment.chart_id === 'quotes' ? ' is-tall' : ''}`} style={{ width: fragment.chart_width * k, height: fragment.chart_height * k }}>
-      <div ref={inner} className="hd-chartbox-in" style={{ width: fragment.chart_width, height: fragment.chart_height, transform: `scale(${k})` }}
-        dangerouslySetInnerHTML={{ __html: fragment.chart_html }} />
-    </div>
-  )
+function reveal(el: Element): JSAnimation[] {
+  const d = Array.from(el.querySelectorAll<SVGGeometryElement>('.cb-d')), r = el.querySelectorAll('.cb-r'), rx = el.querySelectorAll('.cb-rx')
+  const c = el.querySelectorAll('.cb-c'), f = el.querySelectorAll('.cb-f')
+  const drawables = d.length ? svg.createDrawable(d) : []
+  utils.set(drawables, { draw: '0 0' }); utils.set(r, { scaleY: 0 }); utils.set(rx, { scaleX: 0 })
+  utils.set(c, { scale: 0, opacity: 0 }); utils.set(f, { opacity: 0 })
+  return [
+    animate(drawables, { draw: ['0 0', '0 1'], duration: 1000, delay: stagger(70), ease: 'inOutQuad' }),
+    animate(r, { scaleY: [0, 1], duration: 700, delay: stagger(90, { start: 200 }), ease: 'outBack' }),
+    animate(rx, { scaleX: [0, 1], duration: 750, delay: stagger(80, { start: 150 }), ease: 'outQuart' }),
+    animate(c, { scale: [0, 1], opacity: [0, 1], duration: 520, delay: stagger(28, { start: 150, grid: [5, 6], from: 'first' }), ease: 'outBack' }),
+    animate(f, { opacity: [0, 1], duration: 500, delay: 700 }),
+  ]
 }
 
 export default function ReportTabs() {
   const reduce = useReducedMotion()
-  const [report, setReport] = useState<ReportResponse | null>(null)
-  const [failed, setFailed] = useState(false)
   const [cur, setCur] = useState(0)
   const [playing, setPlaying] = useState(true)
   const [replay, setReplay] = useState(0)
-  const [seen, setSeen] = useState(false)
-  const section = useRef<HTMLDivElement | null>(null)
+  const chart = useRef<SVGSVGElement | null>(null)
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
-  useEffect(() => onView(section.current, () => setSeen(true), 9000, 0.05), [])
   useEffect(() => {
-    if (!seen) return
-    let live = true
-    loadSampleReport().then((r) => { if (live) setReport(r) }).catch(() => { if (live) setFailed(true) })
-    return () => { live = false }
-  }, [seen])
+    if (!chart.current || reduce) return
+    const anims = reveal(chart.current)
+    return () => anims.forEach((a) => a.revert())
+  }, [cur, replay, reduce])
   useEffect(() => {
-    if (reduce || !playing || !report) return
-    const t = window.setTimeout(() => setCur((c) => (c + 1) % SAMPLE_TABS.length), ADVANCE_MS)
+    if (reduce || !playing) return
+    const t = window.setTimeout(() => setCur((c) => (c + 1) % BLOCK_TABS.length), ADVANCE_MS)
     return () => window.clearTimeout(t)
-  }, [cur, playing, reduce, report])
+  }, [cur, playing, reduce])
 
-  const select = (i: number, focus = false) => {
-    setCur(i)
-    if (focus) tabRefs.current[i]?.focus()
-  }
   const onKey = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
-    const n = SAMPLE_TABS.length
+    const n = BLOCK_TABS.length
     const to = e.key === 'ArrowRight' ? (i + 1) % n : e.key === 'ArrowLeft' ? (i - 1 + n) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1
     if (to < 0) return
     e.preventDefault()
     setPlaying(false) // the reader has taken over
-    select(to, true)
+    setCur(to)
+    tabRefs.current[to]?.focus()
   }
 
-  const tab = SAMPLE_TABS[cur]
-  const fragment = report ? tab.pick(report) : undefined
+  const tab = BLOCK_TABS[cur]
   return (
-    <div ref={section}>
+    <div>
       <div className="hd-tabs-row">
         <div className="hd-tabs" role="tablist" aria-label="Report blocks">
-          {SAMPLE_TABS.map((t, i) => (
-            <button key={t.name} ref={(b) => { tabRefs.current[i] = b }} type="button" role="tab" id={`hd-tab-${i}`}
+          {BLOCK_TABS.map((t, i) => (
+            <button key={t.key} ref={(b) => { tabRefs.current[i] = b }} type="button" role="tab" id={`hd-tab-${i}`}
               aria-selected={i === cur} aria-controls="hd-tabpanel" tabIndex={i === cur ? 0 : -1} className="hd-tab"
-              onClick={() => select(i)} onKeyDown={(e) => onKey(e, i)}>
+              onClick={() => setCur(i)} onKeyDown={(e) => onKey(e, i)}>
               {t.name}
             </button>
           ))}
@@ -111,15 +78,16 @@ export default function ReportTabs() {
             <div className="hd-pane-name">{tab.name}</div>
             <div className="hd-pane-sent">{tab.sentence}</div>
             <div className="hd-needs">Needs: {tab.needs}</div>
-            <div style={{ marginTop: 18 }}><Link className="hd-sample-link" to="/sample">See the whole sample report</Link></div>
           </div>
-          <div className="hd-pane-chart" onMouseEnter={() => setReplay((n) => n + 1)}
-            role="img" aria-label={`${tab.name} chart from a sample workplace survey. ${tab.sentence}`}>
-            {fragment ? <ChartBox fragment={fragment} replay={replay} />
-              : <span className="hd-loading">{failed ? 'The sample chart could not be loaded.' : 'Loading the sample chart...'}</span>}
+          <div className="hd-pane-chart" onMouseEnter={() => setReplay((n) => n + 1)}>
+            {/* A static example drawing from homeBlocks.ts: our own markup, nobody's data. */}
+            <svg key={tab.key} ref={chart} className="hd-blockchart" viewBox="0 0 480 300" role="img" aria-label={`${tab.name} example. ${tab.sentence}`}
+              style={{ overflow: 'visible', fill: 'none', strokeLinecap: 'round', strokeLinejoin: 'round' }}
+              dangerouslySetInnerHTML={{ __html: tab.svg }} />
           </div>
         </div>
       </div>
+      <p className="hd-sample-row"><Link className="hd-sample-link" to="/sample">See a real report built from a workplace survey</Link></p>
     </div>
   )
 }

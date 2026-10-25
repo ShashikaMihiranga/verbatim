@@ -3490,3 +3490,12 @@ Built from `design/handoffs/HomePageD_UIHandoff.md` and `design/screens/Home-D.d
   product rule bans counts on marketing screens; these are a sample's chart labels, kept because the
   hand-off asks for real charts). The main bundle is about 580 KB; the home page could be split out later.
 
+### 2026-10-26 follow-up: report tabs use the mockup's charts and animation
+
+User's call after seeing devapp: the "What is in a report" tabs now show the mockup's six example charts
+(`home_blocks.py` fill mode, ported to `frontend/src/home/homeBlocks.ts`) with its reveal (cells pop, bars
+grow, strokes draw, labels fade) and the mockup's sentences, instead of the real 10k charts. These are
+made-up example numbers, not customer data. The 10k survey stays the sample behind "See a sample report"
+(`/sample`), linked under the panel as "See a real report built from a workplace survey". This supersedes
+the "Report tabs" bullet of the entry above; `SAMPLE_TABS` is gone.
+

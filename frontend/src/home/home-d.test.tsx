@@ -25,7 +25,7 @@ const SAMPLE = JSON.parse(sampleJson) as ReportResponse
 
 import HomePage from './HomePage'
 import { MAP_STAGES } from './howItWorksData'
-import { SAMPLE_TABS } from './sampleReport'
+import { BLOCK_TABS } from './homeBlocks'
 
 let container: HTMLDivElement
 let root: Root
@@ -88,17 +88,23 @@ describe('home page D', () => {
     expect(Array.from(container.querySelectorAll('button')).some((b) => /^(Pause|Play) /.test(b.getAttribute('aria-label') ?? ''))).toBe(false)
   })
 
-  it('has real tabs with arrow keys, each showing its sample chart and sentence', async () => {
+  it('has real tabs with arrow keys, each showing the mockup chart and sentence', async () => {
     await mount()
     const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
-    expect(tabs.map((t) => t.textContent)).toEqual(SAMPLE_TABS.map((t) => t.name))
+    expect(tabs.map((t) => t.textContent)).toEqual(['Theme map', 'Rank, tinted by tone', 'Themes by group', 'Over time', 'Score to theme to tone', 'In their own words'])
     expect(container.querySelector('[role="tablist"]')).not.toBeNull()
     expect(tabs[0].getAttribute('aria-selected')).toBe('true')
-    expect(container.querySelector('.hd-chartbox-in')?.innerHTML).toContain('What are the themes?')
+    expect(container.querySelector('.hd-blockchart')!.innerHTML).toContain('Charging')
     await act(async () => { tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })
     expect(tabs[1].getAttribute('aria-selected')).toBe('true')
     expect(document.activeElement).toBe(tabs[1])
-    expect(container.querySelector('[role="tabpanel"]')!.textContent).toContain(SAMPLE_TABS[1].sentence)
+    expect(container.querySelector('[role="tabpanel"]')!.textContent).toContain(BLOCK_TABS[1].sentence)
+    expect(container.querySelector('.hd-blockchart')!.innerHTML).toContain('Delivery speed')
+  })
+
+  it('links to the real sample report', async () => {
+    await mount()
+    expect(Array.from(container.querySelectorAll('a')).some((a) => a.getAttribute('href') === '/sample' && /real report/.test(a.textContent ?? ''))).toBe(true)
   })
 
   it('lists the six map steps with the exact "what leaves your data" text for small screens', async () => {
@@ -140,12 +146,10 @@ describe('the map\'s privacy promise', () => {
 })
 
 describe('the sample report', () => {
-  it('has a chart for every tab, and tab sentences carry no figures', () => {
-    for (const t of SAMPLE_TABS) {
-      const f = t.pick(SAMPLE)
-      expect(f, t.name).toBeDefined()
-      expect(f!.chart_html.length).toBeGreaterThan(100)
+  it('the mockup tabs carry no figures in their sentences, and every chart has marks to reveal', () => {
+    for (const t of BLOCK_TABS) {
       expect(t.sentence).not.toMatch(/\d/)
+      expect(t.svg).toMatch(/class="cb-(c|d|r|rx|f)"/)
     }
   })
 
