@@ -30,8 +30,9 @@ def data(groups=2):
 def test_thin_hierarchy_tabs_are_not_exposed_and_rich_hierarchy_has_compact_pair():
     report = data()
     views = theme_views(report)
-    # BUG-038: only the views the page shows are built (the icicle, the tone split).
-    assert set(views) == {'icicle', 'diverge'}
+    # BUG-038: only the views the page shows are built (the icicle, the tone split, and over time when
+    # the data has periods, as the EV sample does).
+    assert set(views) == {'icicle', 'diverge', 'themesOverTime'}
     # BUG-037: the icicle stands in for the overview on phones, so it asks the overview's question.
     assert 'What are the themes?' in views['icicle']['chart_html']
     assert 'Themes and sub-themes' not in views['icicle']['chart_html']
@@ -219,3 +220,17 @@ def test_identifier_columns_are_never_used_as_numbers():
     assert all(looks_like_identifier(n) for n in ('ean', 'upc', 'asins', 'GTIN', 'barcode', 'manufacturerNumber',
                                                    'Order number'))
     assert not any(looks_like_identifier(n) for n in ('Number of children', 'Region', 'brand', 'Clean', 'Lupcake'))
+
+
+def test_over_time_section_shows_whenever_there_are_three_periods():
+    """T1: themes over time is always-on with a date column, not only when a trend finding fires."""
+    from dataclasses import replace
+    from app.chart_data import TrendData
+    from app.fixtures.ev_sample import EV
+    assert len(EV.trend.labels) >= 3
+    assert "themesOverTime" in theme_views(EV)
+    two = replace(EV, trend=replace(EV.trend, labels=EV.trend.labels[:2],
+                                    series=[replace(s, values=s.values[:2]) for s in EV.trend.series]))
+    assert "themesOverTime" not in theme_views(two)
+    none = replace(EV, trend=TrendData(labels=[], series=[], sentiment=[], hover_index=0, note=""))
+    assert "themesOverTime" not in theme_views(none)

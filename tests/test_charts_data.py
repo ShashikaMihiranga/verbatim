@@ -946,3 +946,23 @@ def test_rank_without_sub_themes_has_no_switch():
     for fn in (f_rank, f_rank_m):
         body = fn(bare)[0]
         assert "<input" not in body and 'class="vb-rank-sub"' not in body
+
+
+def test_themes_over_time_panels_share_one_real_scale_and_say_how_many_answers():
+    """T1: one panel per theme on a scale from the data (f_trend's fixed 0-40% clipped Other at 50%)."""
+    from dataclasses import replace
+    from app.charts import f_themes_over_time
+    from app.chart_data import TrendSeries
+    from app.fixtures.ev_sample import EV
+    tr = replace(EV.trend, labels=["2017", "2018", "2019"], counts=[120, 340, 90],
+                 series=[TrendSeries("Other", "other", [50.0, 55.5, 61.0]), TrendSeries("Cost", "t1", [10.0, 8.0, 4.0])])
+    html, _, h = f_themes_over_time(replace(EV, trend=tr))
+    assert "0-70% scale" in html  # 61% rounds up to the next step of 10
+    assert html.count("<svg") == 2 and 'data-theme="Other"' in html and 'data-theme="Cost"' in html
+    assert "50% <span aria-hidden=\"true\">&#8599;</span> <strong>61%</strong>" in html
+    assert "10% <span aria-hidden=\"true\">&#8600;</span> <strong>4%</strong>" in html
+    assert "90 to 340 answers per period." in html
+    assert ", 2017 to 2019. Each panel" in html  # names the periods drawn, not the note's full range
+    assert "<title>2018: 55.5% of 340 answers</title>" in html
+    short = replace(tr, labels=tr.labels[:2], series=[replace(s, values=s.values[:2]) for s in tr.series])
+    assert "Not enough answers" in f_themes_over_time(replace(EV, trend=short))[0]

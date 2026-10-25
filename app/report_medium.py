@@ -60,9 +60,11 @@ def view(chart_id: str, data: ReportData, label: str, note: str = '') -> dict:
 
 def theme_views(data: ReportData) -> dict[str, dict]:
     """The report's overview-level theme charts: `icicle` (the overview's phone layout, and the compact
-    layout of a finding's sunburst - see app/api_report.py) and `diverge` (the tone split section). The
-    page shows nothing else from here, so nothing else is built (BUG-038: `sentsun`, `rank` and
-    `sunburst` used to be rendered on every report load and never shown)."""
+    layout of a finding's sunburst - see app/api_report.py), `diverge` (the tone split section) and
+    `themesOverTime` (the over-time section, whenever the column has a date with at least 3 periods of 30+
+    answers, T1 2026-10-25; not only when a trend finding fires). The page shows nothing else from here,
+    so nothing else is built (BUG-038: `sentsun`, `rank` and `sunburst` used to be rendered on every
+    report load and never shown)."""
     result = {}
     for chart_id, slug, label in (
         ('icicle', 'theme_hierarchy_compact', 'Icicle'),
@@ -70,6 +72,8 @@ def theme_views(data: ReportData) -> dict[str, dict]:
     ):
         if BY_SLUG[slug].needs(data):
             result[chart_id] = view(chart_id, data, label)
+    if len(data.trend.labels) >= 3 and data.trend.series:
+        result['themesOverTime'] = view('themesOverTime', data, 'Over time')
     return result
 
 

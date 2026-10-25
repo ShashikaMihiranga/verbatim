@@ -139,6 +139,8 @@ export default function ReportView({
   const quotes = report.blocks.find((b) => b.kind === 'quotes')
   const phrases = report.blocks.find((b) => b.kind === 'phrases')
   const toneSplit = report.theme_chart_variants?.diverge
+  // Shown whenever the column has a date (T1): how each theme's share moves, not only when a finding fires.
+  const overTime = report.theme_chart_variants?.themesOverTime
   const [selectedThemeName, setSelectedThemeName] = useState<string | null>(null)
   const selectedTheme = themes?.find((t) => t.label === selectedThemeName) ?? null
 
@@ -172,6 +174,7 @@ export default function ReportView({
 
       <nav className="rp-outline" aria-label="Report sections">
         {overview && <a href="#report-overview">Themes</a>}
+        {overTime && <a href="#report-time">Over time</a>}
         {findings.length > 0 && <a href="#report-findings">Findings ({findings.length})</a>}
         {quality && <a href="#report-quality">Data quality</a>}
       </nav>
@@ -202,6 +205,12 @@ export default function ReportView({
       {toneSplit && (
         <Divider id="report-tone">
           <ThemeChart fragment={toneSplit} title={toneSplit.chart_title} selectedTheme={selectedThemeName} onThemeSelect={setSelectedThemeName} />
+        </Divider>
+      )}
+
+      {overTime && (
+        <Divider id="report-time">
+          <ThemeChart fragment={overTime} title={overTime.chart_title} selectedTheme={selectedThemeName} onThemeSelect={setSelectedThemeName} />
         </Divider>
       )}
 

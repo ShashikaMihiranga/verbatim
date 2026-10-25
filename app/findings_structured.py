@@ -932,6 +932,7 @@ def build_trend_data(
     return TrendData(
         labels=surviving_periods, series=series, sentiment=sentiment,
         hover_index=len(surviving_periods) - 1, note=date_note,
+        counts=[period_totals[p] for p in surviving_periods],
     )
 
 
@@ -1058,6 +1059,23 @@ def build_binned_grid_data(
 
 
 # -------------------------------------------------------------------- pick_structured_columns
+
+# Date columns that say when the ANSWER was given, rather than e.g. when a product was listed.
+_ANSWER_DATE_HINT = re.compile(r"review|response|respon|submit|survey|answer|feedback|comment|complet|record", re.I)
+
+
+def answer_date_columns(date_columns: list[str], text_column: str) -> list[str]:
+    """`date_columns` with the likeliest date of the answer itself first: one sharing the text column's
+    name prefix ("reviews.date" for "reviews.text"), then one whose name says response/review/survey...,
+    then the rest in position order. Dataset 1 used to trend by "dateAdded", the product's listing date."""
+    prefix = re.split(r"[._ ]", text_column, maxsplit=1)[0].lower() if re.search(r"[._ ]", text_column) else ""
+
+    def rank(name: str) -> int:
+        if prefix and name.lower().startswith(prefix):
+            return 0
+        return 1 if _ANSWER_DATE_HINT.search(name) else 2
+    return sorted(date_columns, key=rank)  # stable: position order within a rank
+
 
 def _read_periods(clean_df: pd.DataFrame, rows, date_col: str) -> tuple[dict[int, date], str]:
     """Each row's date in `date_col` (real dates, and years / fiscal years / quarters written as text,
@@ -1264,7 +1282,8 @@ def build_structured_context(
                 context.segment_raw_by_row = raw_yn
                 break
 
-    for date_col in columns.get("date", []):
+    text_column = themes[0].column_name if themes else ""
+    for date_col in answer_date_columns(columns.get("date", []), text_column):
         parsed_by_row, granularity = _read_periods(clean_df, rows, date_col)
         try:
             date_bands, date_note = band_dates(list(parsed_by_row.values()), granularity)

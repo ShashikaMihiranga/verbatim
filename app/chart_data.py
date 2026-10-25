@@ -114,6 +114,7 @@ class TrendData:
     sentiment: list[float]  # average sentiment per period
     hover_index: int  # period highlighted by the crosshair
     note: str  # subtitle, e.g. "Monthly, January to December."
+    counts: list[int] = field(default_factory=list)  # answers in each period; empty for older data
 
 
 @dataclass

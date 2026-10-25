@@ -3283,3 +3283,20 @@ existing theme; the report shows the finished run's result only, with no button.
 - Existing datasets keep their stored column kinds until re-uploaded; none of the current ones has a year
   column (the TSS files are one FY19 snapshot).
 
+## 2026-10-25 (T1: "How do themes change over time?" is always shown when there is a date)
+
+- Time charts existed but only appeared inside a trend finding. The report now has an always-on section
+  (`theme_views` -> `themesOverTime`, computed when the report loads, so existing reports get it without a
+  rebuild) whenever the column's date gives 3+ periods of 30+ answers.
+- New chart `f_themes_over_time`: small multiples, one panel per theme (the trend's top 5), all on one
+  scale taken from the data (`_panel_scale`); first -> last share with an arrow; each dot's tooltip gives
+  the period's share and answer count (`TrendData.counts`, new). Not `f_trend`: its axes are fixed at
+  0-40% share and 0 to -0.20 tone, and it labels every period, which real data breaks. Tone is left out:
+  per-period tone is only estimated from the theme mix.
+- The subtitle names the periods drawn and says periods under 30 answers are left out (the x spacing does
+  not show those gaps).
+- Date column choice (`answer_date_columns`): the date of the answer itself first, by the text column's
+  name prefix ("reviews.date" for "reviews.text") or a response/review/survey name; dataset 1 used to
+  trend by "dateAdded", the product listing date, which gave launch spikes.
+- Checked on dataset 1: yearly 2013-2017, five panels. The TSS datasets have no date, so no section.
+

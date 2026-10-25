@@ -1575,3 +1575,11 @@ def test_build_structured_context_skips_a_barcode_segment_for_the_next_real_one_
 
     assert context.segment_column_name == "Region"
     assert {g.label for g in context.segment.groups} == {"North", "South"}
+
+
+def test_the_answers_own_date_column_comes_first():
+    from app.findings_structured import answer_date_columns
+    assert answer_date_columns(["dateAdded", "dateUpdated", "reviews.date"], "reviews.text") == [
+        "reviews.date", "dateAdded", "dateUpdated"]
+    assert answer_date_columns(["Ship date", "Response date"], "Comment") == ["Response date", "Ship date"]
+    assert answer_date_columns(["A", "B"], "Comment") == ["A", "B"]  # nothing to go on: position order

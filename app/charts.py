@@ -750,6 +750,75 @@ def f_trend(data: ReportData):
             f'<div style="height:24px"></div>{chart}</div>')
     return body, 1180, 880
 
+# ---------- themes over time (small multiples) ----------
+# The report's always-on "over time" section whenever the column has a date (T1, 2026-10-25). One small
+# panel per theme on ONE shared scale, so panels compare at a glance and no line crosses another's label;
+# f_trend's single combined chart fixes its axes at 0-40% and labels every period, which real data breaks.
+PANEL_W, PANEL_H = 300, 96
+
+
+def _panel_scale(top: float) -> int:
+    """The shared y-axis top: the largest share rounded up to a step of 5 (10 above 30%)."""
+    step = 10 if top > 30 else 5
+    return max(step, int(math.ceil(top / step) * step))
+
+
+def f_themes_over_time(data: ReportData):
+    tr = data.trend
+    if len(tr.labels) < 3 or not tr.series or any(len(s.values) != len(tr.labels) for s in tr.series):
+        return frame("How do themes change over time?", "Not enough answers in enough periods to show a change.", "", 240)
+    n = len(tr.labels)
+    top = _panel_scale(max(v for s in tr.series for v in s.values))
+    counts = tr.counts if len(tr.counts) == n else [None] * n
+
+    def X(i):
+        return 6 + i * (PANEL_W - 12) / (n - 1)
+
+    def Y(v):
+        return PANEL_H - 4 - v / top * (PANEL_H - 10)
+
+    panels = ""
+    for s in tr.series:
+        pts = [(X(i), Y(v)) for i, v in enumerate(s.values)]
+        line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        area = f"{pts[0][0]:.1f},{PANEL_H - 4} {line} {pts[-1][0]:.1f},{PANEL_H - 4}"
+        dots = "".join(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" style="fill:var(--{s.color})">'
+            f'<title>{esc(tr.labels[i])}: {s.values[i]}%' + (f" of {fmt(counts[i])} answers" if counts[i] else "") + "</title></circle>"
+            for i, (x, y) in enumerate(pts))
+        first, last = s.values[0], s.values[-1]
+        change = round(last - first, 1)
+        arrow = "&#8599;" if change >= 1 else "&#8600;" if change <= -1 else "&#8594;"
+        panels += (
+            f'<div style="min-width:0" data-theme="{esc(s.theme)}">'
+            # Two lines for every name, so the panels' charts line up row by row.
+            f'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;height:42px">'
+            f'<div title="{esc(s.theme)}" style="font-size:16px;font-weight:600;line-height:1.3;min-width:0;'
+            f'overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">{esc(s.theme)}</div>'
+            f'<div style="flex:none;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap">'
+            f'{first:g}% <span aria-hidden="true">{arrow}</span> <strong>{last:g}%</strong></div></div>'
+            f'<svg width="100%" height="{PANEL_H}" viewBox="0 0 {PANEL_W} {PANEL_H}" preserveAspectRatio="none" '
+            f'style="display:block;margin-top:8px;overflow:visible" role="img" '
+            f'aria-label="{esc(s.theme)}: {first:g}% in {esc(tr.labels[0])}, {last:g}% in {esc(tr.labels[-1])}">'
+            f'<line x1="0" y1="{PANEL_H - 4}" x2="{PANEL_W}" y2="{PANEL_H - 4}" style="stroke:var(--line);stroke-width:1"/>'
+            f'<polygon points="{area}" style="fill:color-mix(in srgb,var(--{s.color}) 16%,transparent)"/>'
+            f'<polyline points="{line}" style="fill:none;stroke:var(--{s.color});stroke-width:2.5;stroke-linejoin:round" vector-effect="non-scaling-stroke"/>'
+            f'{dots}</svg>'
+            f'<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:13px;color:var(--muted)">'
+            f'<span>{esc(tr.labels[0])}</span><span>{esc(tr.labels[-1])}</span></div></div>')
+    rows = math.ceil(len(tr.series) / 3)
+    span = (f" {fmt(min(c for c in counts if c))} to {fmt(max(c for c in counts if c))} answers per period."
+            if any(counts) else "")
+    # The periods actually drawn: `tr.note` names the whole date range, including periods left out below.
+    every = tr.note.split(",")[0] if "," in tr.note else "Per period"
+    sub = (f"{every}, {tr.labels[0]} to {tr.labels[-1]}. Each panel is one theme's share of answers per period, "
+           f"all on the same 0-{top}% scale."
+           f"{span} Periods with under 30 answers are left out.")
+    inner = (f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:32px 40px">'
+             f'{panels}</div>')
+    return frame("How do themes change over time?", sub, inner, 200 + rows * 170)
+
+
 # ---------- freq ----------
 def f_freq(data: ReportData):
     fq = data.frequency
@@ -2210,6 +2279,7 @@ FRAMES = {
     "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
     "groupMix": f_group_mix,
     "phrases": f_phrases, "toneByNumber": f_tone_by_number, "themeMixOverTime": f_theme_mix_over_time,
+    "themesOverTime": f_themes_over_time,
     "quotes": f_quotes, "freq": f_freq, "vsAverage": f_vs_average,
     "trendGroups": f_trend_groups, "trendStyled": f_trend_styled, "binnedGrid": f_binned_grid,
 }
@@ -2226,6 +2296,7 @@ TITLES = {
     "groupSplitBars": "Two groups side by side", "compareDots": "Many groups, little space",
     "slopeChange": "First against last", "phrases": "Which phrases recur?",
     "toneByNumber": "Tone by number band", "themeMixOverTime": "Theme mix over time",
+    "themesOverTime": "Themes over time",
     "quotes": "What does it sound like?", "freq": "What did people say most?",
     "vsAverage": "Compared with average", "trendGroups": "Over time, by group",
     "trendStyled": "Over time, by dash and marker", "binnedGrid": "Two numbers together",
