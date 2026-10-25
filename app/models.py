@@ -84,6 +84,9 @@ class Theme(Base):
     # [] when this theme was not split (below the size floor, capped out at t1..t7, coverage/count
     # gates not met, or labeling failed) or is "Other" (never sub-clustered).
     sub_themes: Mapped[list | None] = mapped_column(JSON)
+    # Mean embedding of the theme's answers (rounded), stored at build so theme grouping can check how close
+    # two themes really are without re-embedding. None for themes built before 2026-10-25.
+    centroid: Mapped[list | None] = mapped_column(JSON)
     # 0..1 position on the theme-similarity map (chart-block stream, 2026-10-24, batch 3: theme_similarity
     # block) - a 2D PCA projection of this theme's real cluster centroid (already computed by HDBSCAN at
     # build time, see app/text_pipeline/clustering.py's `store_centers="centroid"` - no extra embedding

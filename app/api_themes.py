@@ -31,6 +31,7 @@ own open-text answers).
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import re
@@ -57,7 +58,7 @@ from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, question_kind_for, theme_nodes
 from .jobs import REPORT_JOB_MAX_AGE, _mark_failed, blocking_job, create_job, set_progress, start_job
-from . import theme_edits
+from . import theme_edits, theme_grouping
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
     AnswerScore,
@@ -385,10 +386,11 @@ def _write_theme_rows(
     # chart-block stream, 2026-10-24, batch 3 (theme_similarity): one real 2D position per REAL theme
     # (never "Other" - noise has no single centroid), recomputed from each theme's own real post-merge
     # member vectors - see _cluster_centroid's own docstring for why this is NOT cluster.centroid.
-    positions = _project_centroids_2d([_cluster_centroid(c, embedded) for c in result.clusters])
+    centroids = [_cluster_centroid(c, embedded) for c in result.clusters]
+    positions = _project_centroids_2d(centroids)
 
     new_rows: list[Theme] = []
-    for cluster, label, pos in zip(result.clusters, real_labels, positions):
+    for cluster, label, pos, centroid in zip(result.clusters, real_labels, positions, centroids):
         rows = [m.row for m in cluster.members]
         tone, sentiment = _aggregate_tone(rows, scores_by_row)
 
@@ -407,6 +409,7 @@ def _write_theme_rows(
             label=label.label, description=label.description, size=label.size,
             sentiment=sentiment, tone=tone, answer_refs=rows, sub_themes=sub_themes_json,
             map_x=pos[0] if pos else None, map_y=pos[1] if pos else None,
+            centroid=[round(float(v), 4) for v in centroid] if centroid is not None else None,
         ))
     for label in other_labels:
         rows = [m.row for m in result.noise]
@@ -1234,6 +1237,27 @@ def _merged_tone(rows: list[Theme]) -> tuple[dict, float | None]:
     return tone, sentiment
 
 
+def _merge_rows(db: Session, rows: list[Theme], label: str | None) -> Theme:
+    """Merges `rows` into the largest (theme editor rules): answers unioned, size-weighted tone and
+    sentiment, sub-themes carried over, centroid the size-weighted mean when every member has one. Deletes
+    the others; returns the survivor. Shared by a single merge and a batch."""
+    survivor = max(rows, key=lambda t: t.size)
+    tone, sentiment = _merged_tone(rows)
+    sub_themes = _merged_sub_themes(rows)
+    centroid = None
+    if all(t.centroid for t in rows) and len({len(t.centroid) for t in rows}) == 1:
+        weight = sum(t.size for t in rows) or 1
+        centroid = [round(sum(t.centroid[i] * t.size for t in rows) / weight, 4) for i in range(len(rows[0].centroid))]
+    survivor.label = (label or "").strip() or survivor.label
+    survivor.answer_refs = sorted({r for t in rows for r in (t.answer_refs or [])})
+    survivor.size = len(survivor.answer_refs)
+    survivor.tone, survivor.sentiment, survivor.sub_themes, survivor.centroid = tone, sentiment, sub_themes, centroid
+    for t in rows:
+        if t.id != survivor.id:
+            db.delete(t)
+    return survivor
+
+
 def _merged_sub_themes(rows: list[Theme]) -> list[dict]:
     """Every member's sub-themes carry over (theme editor hand-off); two with the same name become one.
     Largest first."""
@@ -1289,22 +1313,9 @@ def merge_themes(
     if any(t.label == "Other" for t in rows):
         raise HTTPException(422, "Other holds answers that fit no theme, so it cannot be merged.")
 
-    survivor = max(rows, key=lambda t: t.size)
-    label = (body.label or "").strip() or survivor.label
     before = theme_edits.snapshot(rows)
-
-    refs = sorted({r for t in rows for r in (t.answer_refs or [])})
-    tone, sentiment = _merged_tone(rows)
-
-    survivor.label = label
-    survivor.answer_refs = refs
-    survivor.size = len(refs)
-    survivor.tone = tone
-    survivor.sentiment = sentiment
-    survivor.sub_themes = _merged_sub_themes(rows)
-    for t in rows:
-        if t.id != survivor.id:
-            db.delete(t)
+    survivor = _merge_rows(db, rows, body.label)
+    label = survivor.label
     edit = theme_edits.record(db, ds.id, body.column, "merge", f"Merged {len(rows)} themes into “{label}”.",
                               before, [], [survivor], user.id)
 
@@ -1571,6 +1582,140 @@ def list_theme_edits(dataset_id: int, column: str, db: Session = Depends(get_db)
     """"Your edits": the column's undoable edits, newest first. Only the first can be undone next."""
     ds = _own_dataset(db, user, dataset_id)
     return {"edits": [theme_edits.edit_dict(e) for e in theme_edits.active_edits(db, ds.id, column)]}
+
+
+
+# ---------------------------------------------------------------- theme grouping with Claude (step 4)
+# One light Claude call per run, so its own small pool rather than the theme builds' slot.
+_GROUP_SLOTS = threading.BoundedSemaphore(2)
+GROUPING_SETTING = "VERBATIM_THEME_GROUPING"
+GROUP_MAX_TOKENS = 4000
+GROUP_SAMPLES_SHOWN = 2  # sample answers per member theme in the review screen ("See answers")
+
+
+def get_grouping_client() -> ClaudeClient:
+    """The Claude client for theme grouping, only when the server turns it on (`VERBATIM_THEME_GROUPING=
+    claude`); otherwise the button says why instead of spending anything."""
+    if os.environ.get(GROUPING_SETTING, "").strip().lower() != "claude":
+        raise HTTPException(503, f"Grouping themes with Claude is switched off on this server ({GROUPING_SETTING}=claude turns it on).")
+    return get_claude_client()
+
+
+def _grouping_inputs(db: Session, ds: Dataset, column: str) -> tuple[list[Theme], dict, dict[int, int]]:
+    themes = _stored_themes(db, ds.id, column)
+    clean_df, plan = _load_clean_df(ds, db)
+    try:
+        payload, id_of = theme_grouping.build_payload(themes, clean_df, plan, column)
+    except theme_grouping.GroupingRefused as e:
+        raise HTTPException(422, str(e)) from e
+    except CleaningError as e:
+        raise HTTPException(422, str(e)) from e
+    return themes, payload, id_of
+
+
+@router.get("/datasets/{dataset_id}/themes/group-payload")
+def group_payload(dataset_id: int, column: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Exactly what a grouping run sends Claude for this column, for the "What Claude sees" panel."""
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    _themes, payload, _id_of = _grouping_inputs(db, ds, column)
+    return {"payload": payload, "themes": len(payload["themes"]), "words": theme_grouping.payload_words(payload)}
+
+
+class GroupSuggestionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    column: str = Field(max_length=255)
+
+
+def _group_error(e: BaseException) -> str | None:
+    log.warning("theme grouping failed: %s", e)
+    return "Could not reach Claude. Try again."
+
+
+@router.post("/datasets/{dataset_id}/themes/group-suggestions", status_code=202)
+def group_suggestions(
+    dataset_id: int, body: GroupSuggestionsRequest,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+    claude_client: ClaudeClient = Depends(get_grouping_client),
+):
+    """Starts a grouping run (one Claude call; the same payload again is served from the cache and costs
+    nothing). The job's result holds the validated groups, the near-misses and the payload's size."""
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    _grouping_inputs(db, ds, body.column)  # refuse now, not inside the job, when there is nothing to group
+    if not _GROUP_SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "Grouping is busy. Try again in a moment.")
+    job = create_job(db, ds.id, body.column, "theme_groups")
+    dataset_id_, column = ds.id, body.column
+
+    def _work(step: Callable[[str], None]) -> None:
+        step("Claude is reading the topics")
+        with _db.SessionLocal() as job_db:
+            job_ds = job_db.get(Dataset, dataset_id_)
+            themes, payload, id_of = _grouping_inputs(job_db, job_ds, column)
+            key = theme_grouping.payload_hash(payload)
+            cache = ((job_ds.profile or {}).get("theme_grouping_cache") or {}).get(column) or {}
+            cached = cache.get("hash") == key and isinstance(cache.get("reply"), str)
+            reply = cache["reply"] if cached else claude_client.complete(
+                theme_grouping.SYSTEM, json.dumps(payload, ensure_ascii=False), max_tokens=GROUP_MAX_TOKENS)
+            if not cached:
+                profile = dict(job_ds.profile or {})
+                profile["theme_grouping_cache"] = {**(profile.get("theme_grouping_cache") or {}),
+                                                   column: {"hash": key, "reply": reply}}
+                job_ds.profile = profile  # reassign: the JSON column only notices a new object
+            by_id = {t.id: t for t in themes}
+            groups, kept, dropped = theme_grouping.validate(reply, id_of, by_id)
+            total = sum(t.size for t in themes) or 1
+            samples = {id_of[p["id"]]: p["samples"][:GROUP_SAMPLES_SHOWN] for p in payload["themes"]}
+            for i, g in enumerate(groups):
+                g["id"] = f"g{i + 1}"
+                g["share"] = round(g.pop("share_answers") / total * 100, 1)
+                g["members"] = [{"id": m, "label": by_id[m].label, "size": by_id[m].size,
+                                 "share": round(by_id[m].size / total * 100, 1), "samples": samples.get(m, [])}
+                                for m in g["member_ids"]]
+            job_row = job_db.get(Job, job.id)
+            job_row.result = {"groups": groups, "kept_apart": kept, "dropped": dropped, "cached": cached,
+                              "themes": len(payload["themes"]), "words": theme_grouping.payload_words(payload)}
+            job_db.commit()
+
+    start_job(job, _GROUP_SLOTS, _work, _group_error, deadline_seconds=120,
+              deadline_message="Could not reach Claude. Try again.")
+    return {"job_id": job.id, "status": "running"}
+
+
+class MergeGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, max_length=255)
+    theme_ids: list[int] = Field(min_length=2, max_length=20)
+
+
+class MergeBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    column: str = Field(max_length=255)
+    groups: list[MergeGroup] = Field(min_length=1, max_length=50)
+
+
+@router.post("/datasets/{dataset_id}/themes/merge-batch")
+def merge_batch(
+    dataset_id: int, body: MergeBatchRequest, db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Applies several merges in one transaction with one undo token (the grouping review's Apply). The
+    groups must be disjoint, at least 2 themes each, and never include Other; one bad group refuses all."""
+    ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    _refuse_while_report_builds(db, ds.id, body.column)
+    ids = [i for g in body.groups for i in g.theme_ids]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(422, "A theme can only be in one group.")
+    rows = _column_themes(db, ds, body.column, ids)
+    by_id = {t.id: t for t in rows}
+    before = theme_edits.snapshot(rows)
+    survivors = [_merge_rows(db, [by_id[i] for i in g.theme_ids], g.name) for g in body.groups]
+    edit = theme_edits.record(
+        db, ds.id, body.column, "merge_batch",
+        f"Merged {len(rows)} themes into {len(survivors)} group{'s' if len(survivors) != 1 else ''}.",
+        before, [], survivors, user.id)
+    _invalidate_report_for_edit(db, ds.id, body.column)
+    db.commit()
+    total = sum(t.size for t in _stored_themes(db, ds.id, body.column))
+    return {"themes": [_theme_dict(t, total) for t in survivors], "undo_token": edit.id}
 
 
 def _split_theme_error(e: BaseException) -> str | None:

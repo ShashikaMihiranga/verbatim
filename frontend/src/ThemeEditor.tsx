@@ -4,6 +4,7 @@ import { ChevronDown, Clock, ICON, Info, List, Merge, Pencil, Quote, Search, Spl
 import JobProgress from './JobProgress'
 import type { MergePreview, SplitPreview, ThemeEditEntry } from './themeEditorApi'
 import type { Job } from './jobsApi'
+import ThemeGrouping, { type GroupingProps } from './ThemeGrouping'
 import ThemeRow from './ThemeRows'
 import {
   colorTokens, combine, fmt, formatTone, isOther, largestName, selectionText, SMALL_SHARE, visibleThemes, type Chip,
@@ -19,7 +20,7 @@ type Toast = { text: string; token?: number }
 
 export default function ThemeEditor({
   themes, totalAnswers, canEdit, edited = new Set<number>(), splitJob = null, onRename, onMerge, onSplit,
-  onSplitParts, onPromote, onUndo, loadEdits, loadMergePreview, loadSplitPreview,
+  onSplitParts, onPromote, onUndo, loadEdits, loadMergePreview, loadSplitPreview, grouping,
 }: {
   themes: ThemeCard[]
   totalAnswers: number
@@ -35,6 +36,10 @@ export default function ThemeEditor({
   loadEdits: () => Promise<ThemeEditEntry[]>
   loadMergePreview: (themeIds: number[]) => Promise<MergePreview>
   loadSplitPreview: (themeId: number, parts?: number) => Promise<SplitPreview>
+  // Claude grouping (ThemeGrouping_UIHandoff.md); left out, the section is not shown.
+  grouping?: Pick<GroupingProps, 'loadPayload' | 'start' | 'poll'> & {
+    applyBatch: (groups: Array<{ name: string; theme_ids: number[] }>) => Promise<number>
+  }
 }) {
   const [query, setQuery] = useState('')
   const [chip, setChip] = useState<Chip>('all')
@@ -45,6 +50,7 @@ export default function ThemeEditor({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [edits, setEdits] = useState<ThemeEditEntry[] | null>(null)
+  const [undone, setUndone] = useState<number | null>(null) // the last undone edit, for the grouping section
   const side = useRef<HTMLElement>(null)
   // In the one-column layout the panel sits above the list: bring it into view when it opens.
   useEffect(() => {
@@ -86,6 +92,7 @@ export default function ThemeEditor({
     setError(null)
     try {
       await onUndo(token)
+      setUndone(token)
       setToast({ text: 'Undone.' })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not undo that edit.')
@@ -105,6 +112,18 @@ export default function ThemeEditor({
     <div className="te-wrap">
       <section className="te" aria-label="Theme editor">
         <div className="te-main">
+          {canEdit && grouping && (
+            <ThemeGrouping
+              themeIds={new Set(themes.map((t) => t.id))} totalThemes={themes.length} undoneToken={undone}
+              loadPayload={grouping.loadPayload} start={grouping.start} poll={grouping.poll}
+              onApply={async (groups, summary) => {
+                const token = await grouping.applyBatch(groups)
+                setToast({ text: summary, token })
+                setPanel({ kind: 'idle' })
+                return token
+              }}
+            />
+          )}
           <div className="te-toolbar">
             <label className="te-filter">
               <Search size={16} {...ICON} />

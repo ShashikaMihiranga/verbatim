@@ -53,3 +53,19 @@ def model_safe_column(clean_df: pd.DataFrame, plan: CleaningPlan, column: str) -
     meta = _checked_text_column(clean_df, plan, column)
     kind = meta.get("kind", "")
     return [_mask(v, kind) for v in clean_df[column]]
+
+
+def model_safe_rows(clean_df: pd.DataFrame, plan: CleaningPlan, column: str, rows: list[int]) -> dict[int, str]:
+    """The masked text of the given rows of `column`, keyed by row, for a model prompt about one group of
+    answers (a theme's samples). Same refusal rules and masking as the functions above; rows that are
+    missing or not text are left out."""
+    meta = _checked_text_column(clean_df, plan, column)
+    kind = meta.get("kind", "")
+    out: dict[int, str] = {}
+    for r in rows:
+        if r in clean_df.index:
+            masked = _mask(clean_df.at[r, column], kind)
+            if masked is not None:
+                out[r] = masked
+    return out
+

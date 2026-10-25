@@ -67,3 +67,51 @@ export async function listEdits(id: number, column: string): Promise<ThemeEditEn
   if (!r.ok) throw await asError(r)
   return (await r.json()).edits
 }
+
+// ---- Grouping with Claude (ThemeGrouping_UIHandoff.md)
+export interface GroupMember {
+  id: number
+  label: string
+  size: number
+  share: number
+  samples: string[] // masked, as sent to Claude
+}
+
+export interface GroupSuggestion {
+  id: string
+  name: string
+  member_ids: number[]
+  confidence: number // 0-100, as Claude gave it
+  band: 'High' | 'Medium' | 'Low' // High drops to Medium when the themes' answers are not close in meaning
+  similarity: number | null // lowest centroid similarity in the group; null when not stored
+  reason: string
+  share: number
+  members: GroupMember[]
+}
+
+export interface GroupingResult {
+  groups: GroupSuggestion[]
+  kept_apart: Array<{ names: string[]; reason: string }>
+  dropped: number // proposals that failed validation
+  cached: boolean // same themes as last time: no new Claude call
+  themes: number
+  words: number
+}
+
+export interface GroupingPayload {
+  payload: { themes: Array<{ id: number; name: string; answers: number; share: number; samples: string[] }> }
+  themes: number
+  words: number
+}
+
+export async function getGroupPayload(id: number, column: string): Promise<GroupingPayload> {
+  const r = await authFetch(`/api/datasets/${id}/themes/group-payload?${new URLSearchParams({ column })}`)
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
+export const startGrouping = (id: number, column: string) =>
+  post<{ job_id: number }>(`/api/datasets/${id}/themes/group-suggestions`, { column })
+
+export const mergeBatch = (id: number, column: string, groups: Array<{ name: string; theme_ids: number[] }>) =>
+  post<Edited<{ themes: ThemeCard[] }>>(`/api/datasets/${id}/themes/merge-batch`, { column, groups })

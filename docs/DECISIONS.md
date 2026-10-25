@@ -3377,3 +3377,36 @@ existing theme; the report shows the finished run's result only, with no button.
   `_invalidate_report_for_edit`), and undo cannot bring it back. Keeping the report and letting it read
   as out of date (the `themes_signature` check from BUG-053) would let an undo make it current again.
 
+## 2026-10-25 (Theme editor, steps 4 and 5: grouping with Claude)
+
+- The user's extra Claude call ("suggest which themes can group together") is this flow
+  (`design/handoffs/ThemeGrouping_UIHandoff.md`). One request per column's theme list.
+- Privacy: `app.cleaning.payload.model_safe_rows` (new) masks a theme's own rows with the same refusal
+  rules and masks as `model_safe_samples`. `app/theme_grouping.py` `build_payload` sends, per theme, a
+  number (1..N, not the theme id), name, answer count, share and 3 masked samples (4-60 words where
+  possible); "Other", row ids and every other column stay out. `GET /themes/group-payload` returns exactly
+  that for the "What Claude sees" panel, and the test checks the Claude call received the same object.
+- Validation never trusts the reply: unknown numbers, a theme listed twice, under 2 members, Other, or a
+  theme already in a stronger group drop that group (counted in `dropped`), never the job; prose around
+  the JSON is tolerated. Bands: 85+ High, 60-84 Medium, else Low, with the number shown. Blend: new
+  `Theme.centroid` (migration `7f1c3b9e5a24`, the mean embedding stored at build, rounded; a merge keeps
+  the size-weighted mean, split parts get none); High becomes Medium when the group's lowest centroid
+  cosine similarity is under 0.6. Themes without a stored centroid (all built before today) say
+  "Similarity not checked". Thresholds are the hand-off's proposals, to tune on real data.
+- Order: confidence, then combined share. Over 150 themes the run is refused with a message; the
+  hand-off's neighbourhood batching is not built (no current dataset is over 150).
+- `POST /themes/group-suggestions` is a background job (kind `theme_groups`, its own 2-slot pool); any
+  failure or the 120 s deadline gives "Could not reach Claude. Try again." The reply is cached per column
+  in `Dataset.profile["theme_grouping_cache"]` by a SHA-256 of the payload, so the same themes again cost
+  nothing (the result says `cached`).
+- Step 5: the real Claude client only when the server sets `VERBATIM_THEME_GROUPING=claude`
+  (`get_grouping_client`); otherwise 503 with that sentence, shown in the section. It is off on every
+  environment until someone sets it. Same client and model setting as theme labelling.
+- `POST /themes/merge-batch`: every accepted group in one transaction, one `merge_batch` edit, one undo
+  token; overlaps or Other refuse the whole batch.
+- UI `ThemeGrouping.tsx` at the top of the editor: idle (three steps, "What Claude sees"), running
+  (spinner and bar that stop under reduced motion), review (badges with word and number, state labels,
+  editable names, reasons, member pills with x, Accept / Skip / Answers, Accept all High, "Left apart on
+  purpose", sticky Apply bar), applied (one line; the editor's toast has the one Undo). Undo returns to
+  the review with the choices kept.
+

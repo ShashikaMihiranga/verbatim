@@ -18,6 +18,7 @@ const KIND_LABEL: Record<JobListEntry['kind'], string> = {
   report: 'Build report',
   look_inside_other: 'Look inside Other',
   split_theme: 'Split theme',
+  theme_groups: 'Group themes',
 }
 
 const STATUS_TABS: Array<{ id: JobStatus | 'all'; label: string }> = [

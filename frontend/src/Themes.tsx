@@ -16,7 +16,9 @@ import ReportView from './Report'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
 import ThemeEditor from './ThemeEditor'
-import { listEdits, mergePreview, promoteSubTheme, splitPreview, splitSubThemes, undoEdit } from './themeEditorApi'
+import {
+  getGroupPayload, listEdits, mergeBatch, mergePreview, promoteSubTheme, splitPreview, splitSubThemes, startGrouping, undoEdit,
+} from './themeEditorApi'
 import './upload.css'
 import './themes.css'
 import './report.css'
@@ -234,6 +236,7 @@ export default function Themes() {
   const loadSplitPreview = useCallback(
     (themeId: number, parts?: number) => splitPreview(id, themeId, parts), [id])
   const loadEdits = useCallback(() => listEdits(id, column as string), [id, column])
+  const loadGroupPayload = useCallback(() => getGroupPayload(id, column as string), [id, column])
   const [splitThemeJob, setSplitThemeJob] = useState<Job | null>(null)
 
   // Both builds now run as background jobs (see docs/DECISIONS.md): starting one only creates a `Job` row
@@ -589,6 +592,13 @@ export default function Themes() {
   const handleMerge = (themeIds: number[], label: string) => afterEdit(mergeThemes(id, column as string, themeIds, label))
   const handleSplitParts = (themeId: number, parts: number) => afterEdit(splitSubThemes(id, themeId, parts))
   const handlePromote = (themeId: number, index: number) => afterEdit(promoteSubTheme(id, themeId, index))
+  const grouping = {
+    loadPayload: loadGroupPayload,
+    start: () => startGrouping(id, column as string),
+    poll: (jobId: number, onUpdate: (job: Job) => void) => pollJob(id, jobId, onUpdate),
+    applyBatch: (groups: Array<{ name: string; theme_ids: number[] }>) => afterEdit(mergeBatch(id, column as string, groups)),
+  }
+
   async function handleUndo(token: number) {
     await undoEdit(id, column as string, token)
     setReport(null)
@@ -801,7 +811,7 @@ export default function Themes() {
                 themes={themes} totalAnswers={themes.reduce((n, t) => n + t.size, 0)}
                 canEdit={themesRole === 'owner' || themesRole === 'editor'} splitJob={splitThemeJob} edited={editedIds}
                 onRename={handleRename} onMerge={handleMerge} onSplit={startSplitTheme} onSplitParts={handleSplitParts}
-                onPromote={handlePromote} onUndo={handleUndo} loadEdits={loadEdits}
+                onPromote={handlePromote} onUndo={handleUndo} loadEdits={loadEdits} grouping={grouping}
                 loadMergePreview={loadMergePreview} loadSplitPreview={loadSplitPreview}
               />
             </>

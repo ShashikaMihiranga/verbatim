@@ -2270,3 +2270,112 @@ def test_viewers_cannot_undo(env, monkeypatch):
         return real(db, user, dataset_id)
     monkeypatch.setattr(api_themes, "_own_dataset", as_viewer)
     assert _undo(env, did, token).status_code == 403
+
+
+# ---------------------------------------------------------------- theme grouping with Claude (step 4)
+class _GroupingClaude:
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def complete(self, system, prompt, **kw):
+        self.calls.append(json.loads(prompt))
+        return self.reply(self.calls[-1]) if callable(self.reply) else self.reply
+
+
+def _grouping_env(env, monkeypatch, reply):
+    from app.api_themes import get_grouping_client
+    fake = _GroupingClaude(reply)
+    app.dependency_overrides[get_grouping_client] = lambda: fake
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    ids = [seed_theme(env, did, label=l, size=n, answer_refs=list(range(a, a + n)), **_neutral())
+           for l, n, a in (("Cleaning", 4, 0), ("Janitors", 3, 4), ("Parking", 2, 7), ("Other", 3, 9))]
+    return did, ids, fake
+
+
+def _by_name(payload):
+    return {t["name"]: t["id"] for t in payload["themes"]}
+
+
+def test_grouping_is_off_unless_the_server_switches_it_on(env, monkeypatch):
+    monkeypatch.delenv("VERBATIM_THEME_GROUPING", raising=False)
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    r = env.client.post(f"/api/datasets/{did}/themes/group-suggestions", json={"column": Q})
+    assert r.status_code == 503 and "VERBATIM_THEME_GROUPING" in r.json()["detail"]
+
+
+def test_grouping_job_validates_the_reply_and_caches_it(env, monkeypatch):
+    def reply(payload):
+        n = _by_name(payload)
+        return json.dumps({"groups": [
+            {"name": "Cleanliness", "members": [n["Cleaning"], n["Janitors"]], "confidence": 92, "reason": "Same topic."},
+            {"name": "Bad", "members": [n["Parking"], 99], "confidence": 80, "reason": "Unknown id."},
+        ], "kept_apart": [{"members": [n["Cleaning"], n["Parking"]], "reason": "Different places."}]})
+    did, ids, fake = _grouping_env(env, monkeypatch, reply)
+    preview = env.client.get(f"/api/datasets/{did}/themes/group-payload", params={"column": Q}).json()
+    assert preview["themes"] == 3 and preview["words"] > 0 and "Other" not in _by_name(preview["payload"])
+    r = env.client.post(f"/api/datasets/{did}/themes/group-suggestions", json={"column": Q})
+    assert r.status_code == 202, r.text
+    job = wait_for_job(env.client, did, r.json()["job_id"], timeout=10)
+    assert job["status"] == "done", job
+    res = job["result"]
+    assert fake.calls[0] == preview["payload"]  # Claude got exactly what the panel shows
+    assert [(g["name"], g["member_ids"], g["band"]) for g in res["groups"]] == [("Cleanliness", ids[:2], "High")]
+    assert res["dropped"] == 1 and res["cached"] is False
+    assert res["kept_apart"] == [{"names": ["Cleaning", "Parking"], "reason": "Different places."}]
+    assert [m["label"] for m in res["groups"][0]["members"]] == ["Cleaning", "Janitors"]
+    assert all(len(m["samples"]) <= 2 for m in res["groups"][0]["members"])
+    again = env.client.post(f"/api/datasets/{did}/themes/group-suggestions", json={"column": Q}).json()
+    job2 = wait_for_job(env.client, did, again["job_id"], timeout=10)
+    assert job2["result"]["cached"] is True and len(fake.calls) == 1  # same themes: no second call
+
+
+def test_grouping_failure_says_try_again(env, monkeypatch):
+    def boom(payload):
+        raise TimeoutError("timed out")
+    did, _ids, _fake = _grouping_env(env, monkeypatch, boom)
+    r = env.client.post(f"/api/datasets/{did}/themes/group-suggestions", json={"column": Q})
+    job = wait_for_job(env.client, did, r.json()["job_id"], timeout=10)
+    assert job["status"] == "failed" and job["error"] == "Could not reach Claude. Try again."
+
+
+def test_merge_batch_applies_every_group_with_one_undo(env, monkeypatch):
+    did, ids, _fake = _grouping_env(env, monkeypatch, "{}")
+    cleaning, janitors, parking, other = ids
+    extra = seed_theme(env, did, label="Car park", size=1, answer_refs=[12], **_neutral())
+    before, _ = _themes(env, did)
+    r = env.client.post(f"/api/datasets/{did}/themes/merge-batch", json={"column": Q, "groups": [
+        {"name": "Cleanliness", "theme_ids": [cleaning, janitors]}, {"name": "Parking", "theme_ids": [parking, extra]}]})
+    assert r.status_code == 200, r.text
+    after, edited = _themes(env, did)
+    assert sorted(after.values()) == [("Cleanliness", 7), ("Other", 3), ("Parking", 3)]
+    assert sorted(edited) == sorted([cleaning, parking])
+    edits = env.client.get(f"/api/datasets/{did}/themes/edits", params={"column": Q}).json()["edits"]
+    assert [e["summary"] for e in edits] == ["Merged 4 themes into 2 groups."]
+    assert _undo(env, did, r.json()["undo_token"]).status_code == 200
+    assert _themes(env, did)[0] == before
+
+
+def test_merge_batch_refuses_overlaps_and_other(env, monkeypatch):
+    did, ids, _fake = _grouping_env(env, monkeypatch, "{}")
+    cleaning, janitors, parking, other = ids
+    url = f"/api/datasets/{did}/themes/merge-batch"
+    r = env.client.post(url, json={"column": Q, "groups": [{"theme_ids": [cleaning, janitors]}, {"theme_ids": [janitors, parking]}]})
+    assert r.status_code == 422 and "one group" in r.json()["detail"]
+    assert env.client.post(url, json={"column": Q, "groups": [{"theme_ids": [cleaning, other]}]}).status_code == 422
+    assert len(_themes(env, did)[0]) == 4  # nothing applied
+
+
+def test_a_theme_build_stores_each_real_themes_centroid(env):
+    """Theme grouping's similarity check needs every real theme's mean embedding, stored at build."""
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    assert build_themes_job(env, did, timeout=30)["status"] == "done"
+    from app.models import Theme
+    with env.Session() as s:
+        rows = s.query(Theme).filter_by(dataset_id=did).all()
+    real = [t for t in rows if t.label != "Other"]
+    assert real and all(t.centroid and all(isinstance(v, float) for v in t.centroid) for t in real)
+    assert all(t.centroid is None for t in rows if t.label == "Other")

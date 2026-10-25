@@ -14,6 +14,7 @@ const KIND_VERB: Record<Job['kind'], string> = {
   report: 'Building your report',
   look_inside_other: 'Looking inside Other',
   split_theme: 'Splitting this theme',
+  theme_groups: 'Grouping themes',
 }
 
 export default function JobProgress({ job }: { job: Job }) {

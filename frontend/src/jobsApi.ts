@@ -1,7 +1,7 @@
 import { authFetch } from './authFetch'
 import type { ToneSplit } from './themesApi'
 
-export type JobKind = 'themes' | 'report' | 'look_inside_other' | 'split_theme'
+export type JobKind = 'themes' | 'report' | 'look_inside_other' | 'split_theme' | 'theme_groups'
 export type JobStatus = 'running' | 'done' | 'failed'
 
 // Stage 3a (docs/TODO.md, fixed 2026-10-23): one newly-found theme's real numbers, same shape
