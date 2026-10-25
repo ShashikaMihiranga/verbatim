@@ -37,6 +37,20 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-057 — On Railway, theme builds fail at the end and Look inside Other can never start**
+  - Found: 2026-10-25, the user (Jobs page on Railway devapp: tss_fy19_comments_10k.csv, Build themes,
+    "Something went wrong while building this"). Railway log: `StringDataRightTruncation: value too long
+    for type character varying(16)` on `INSERT INTO jobs ... kind='look_inside_other'`.
+  - Cause: `jobs.kind` is VARCHAR(16) and "look_inside_other" is 17 characters. Postgres enforces it;
+    SQLite (local and tests) does not, so every Look inside job had always failed on Railway, and since the
+    automatic run (2026-10-25) the theme build that queues it failed too, after its themes were saved.
+  - **Fixed:** (this commit). Migration `5d2b8e7c1f03` widens `jobs.kind` to VARCHAR(32) (Railway runs
+    `alembic upgrade head` before each deploy). `_queue_auto_look_inside` now catches a failure to create
+    the job: the theme build stays done and its result says Look inside could not start on its own.
+    Tests: `test_theme_build_stays_done_when_look_inside_cannot_start`, and
+    `test_every_job_kind_fits_the_kind_column`, which checks every kind passed to `create_job` against the
+    column length, since SQLite will not.
+
 - [x] **BUG-056 — Question-type menu opens as a huge system popup, and changing the type changes nothing**
   - Found: 2026-10-25, the user (screenshot of the macOS popup over "This question asks for ..."): "fix
     these formatting and change the rest of the themes or report according to this".

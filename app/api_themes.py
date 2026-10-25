@@ -945,10 +945,17 @@ def _queue_auto_look_inside(
     except _LookInsideRefused as e:
         info["skipped"] = e.message
     else:
-        look_job = create_job(db, dataset_id, column, "look_inside_other")
-        look_job.step = "Waiting to start"
-        info["job_id"] = look_job.id
-        queued = (look_job, prep, jev)
+        try:
+            look_job = create_job(db, dataset_id, column, "look_inside_other")
+            look_job.step = "Waiting to start"
+            info["job_id"] = look_job.id
+            queued = (look_job, prep, jev)
+        except Exception:
+            # The themes are already saved: a failure here must not fail the theme build (BUG-057, where
+            # Postgres refused the job row). Say so, and the Look inside button still works.
+            db.rollback()
+            log.exception("Could not start Look inside Other for dataset %s column %r", dataset_id, column)
+            info["skipped"] = "Looking inside Other could not start on its own. Click Look inside to run it."
     themes_job = db.get(Job, themes_job_id)
     if themes_job is not None:
         themes_job.result = {**(themes_job.result or {}), "auto_look_inside": info}

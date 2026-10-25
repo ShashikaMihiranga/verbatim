@@ -149,7 +149,8 @@ class Job(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
     column_name: Mapped[str] = mapped_column(String(255), index=True)
-    kind: Mapped[str] = mapped_column(String(16))  # "themes" | "report"
+    # "themes" | "report" | "look_inside_other" | "split_theme". 32: Postgres enforces the length (BUG-057).
+    kind: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(16), default="running")  # running | done | failed
     # short plain-English phase, e.g. "Turning answers into vectors" - never jargon, never a raw percentage
     step: Mapped[str] = mapped_column(String(255), default="Starting")

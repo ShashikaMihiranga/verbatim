@@ -2023,3 +2023,37 @@ def test_layout_2d_keeps_separate_groups_apart():
     assert np.array_equal(xy, _layout_2d(np.vstack([a, b])))  # fixed seed: reproducible
     small = _layout_2d(rng.normal(size=(MIN_POINTS_FOR_UMAP - 1, 4)))  # PCA below the floor
     assert small.shape == (MIN_POINTS_FOR_UMAP - 1, 2)
+
+
+def test_theme_build_stays_done_when_look_inside_cannot_start(env, monkeypatch):
+    """BUG-057: Postgres refused the look_inside_other job row and the finished theme build was failed."""
+    import app.api_themes as api_themes
+    monkeypatch.setattr(api_themes, "AUTO_LOOK_INSIDE_OTHER_SHARE", 10.0)
+    real = api_themes.create_job
+
+    def refuse_look_inside(db, dataset_id, column, kind):
+        if kind == "look_inside_other":
+            raise RuntimeError("value too long for type character varying(16)")
+        return real(db, dataset_id, column, kind)
+    monkeypatch.setattr(api_themes, "create_job", refuse_look_inside)
+    _install_auto_fakes()
+    did = upload_csv(env, _df_with_noise())
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done", job
+    auto = job["result"]["auto_look_inside"]
+    assert "could not start" in auto["skipped"] and "job_id" not in auto
+    assert env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+
+
+def test_every_job_kind_fits_the_kind_column():
+    """BUG-057: SQLite ignores VARCHAR lengths, Postgres does not; check the lengths here instead."""
+    import pathlib
+    import re
+    from app.models import Job
+    limit = Job.__table__.c.kind.type.length
+    kinds = set()
+    for path in pathlib.Path("app").rglob("*.py"):
+        kinds |= set(re.findall(r'create_job\([^)]*?"([a-z_]+)"\)', path.read_text()))
+    assert {"themes", "report", "look_inside_other", "split_theme"} <= kinds
+    assert all(len(k) <= limit for k in kinds), {k: len(k) for k in kinds if len(k) > limit}
