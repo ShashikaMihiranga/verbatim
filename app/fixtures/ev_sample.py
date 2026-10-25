@@ -8,7 +8,7 @@ from ..chart_data import (
     BinCell, BinnedGridData, CategoryAvg, CategoryAvgData, ContextData, CoPair, FreqData, FreqItem,
     GroupTrendData, GroupTrendSeries, MapData, OverviewData, Phrase, PhraseData, QualityData, Quote,
     QuoteData, ReportData, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, SubTheme,
-    ThemeNode, ToneSplit, TrendData, TrendSeries,
+    ThemeNode, ThemeScoreData, ToneSplit, TrendData, TrendSeries,
 )
 
 
@@ -165,5 +165,17 @@ EV = ReportData(
         framing="negatively",
         length="a sentence or two",
         columns_note="Also found a score column (Likelihood to buy), a date column (Survey date, grouped by month), and a segment column (Age group).",
+    ),
+    theme_scores=ThemeScoreData(
+        columns=["Likelihood to buy", "Household income ($k)", "Age"],
+        overall=[6.4, 58.2, 44.1],
+        themes=["Cost", "Charging", "Range and battery", "Not needed", "Doubts about the technology",
+                "Availability", "Uncertainty", "Other"],
+        colors=["t1", "t2", "t3", "t4", "t5", "t6", "t7", "other"],
+        diffs=[[-0.82, -6.4, 1.2], [-0.35, 4.1, -3.8], [-0.12, 2.0, 0.4], [-1.9, -1.1, 6.2],
+               [-0.64, -0.5, 2.9], [0.31, 1.2, -0.7], [0.05, None, None], [0.2, -0.3, 0.1]],
+        notable=[[True, True, False], [True, True, True], [False, False, False], [True, False, True],
+                 [True, False, True], [False, False, False], [False, False, False], [False, False, False]],
+        decimals=[2, 1, 1],
     ),
 )

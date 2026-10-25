@@ -108,6 +108,22 @@ class TrendSeries:
 
 
 @dataclass
+class ThemeScoreData:
+    """How each theme's answers score on every score/number column, against everyone else's
+    (`app.findings_structured.build_theme_score_data`). `diffs[i][j]`: theme i's mean on column j minus the
+    mean of all other answers with a value; None when theme i has too few answers with a value.
+    `notable[i][j]`: that difference passed a Welch t-test after Benjamini-Hochberg at 5% and is at least
+    a small effect (Cohen's d 0.2)."""
+    columns: list[str]
+    overall: list[float]  # each column's mean across every answer with a value
+    themes: list[str]
+    colors: list[str]  # theme colour tokens
+    diffs: list[list[Optional[float]]]
+    notable: list[list[bool]]
+    decimals: list[int]  # how many decimals each column's numbers print with
+
+
+@dataclass
 class TrendData:
     labels: list[str]  # period labels, e.g. months
     series: list[TrendSeries]  # theme share lines
@@ -294,3 +310,5 @@ class ReportData:
     # report API (app/api_report.py) so the report overview can name that box honestly (BUG-043);
     # None everywhere else, where the box stays plain "Other".
     other_breakdown: Optional[OtherBreakdown] = None
+    # Scores by theme (P1, 2026-10-25): None when there is no usable score or number column.
+    theme_scores: Optional["ThemeScoreData"] = None

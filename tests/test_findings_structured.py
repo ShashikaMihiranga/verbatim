@@ -1583,3 +1583,32 @@ def test_the_answers_own_date_column_comes_first():
         "reviews.date", "dateAdded", "dateUpdated"]
     assert answer_date_columns(["Ship date", "Response date"], "Comment") == ["Response date", "Ship date"]
     assert answer_date_columns(["A", "B"], "Comment") == ["A", "B"]  # nothing to go on: position order
+
+
+def _score_nodes(groups):
+    from app.chart_data import ThemeNode, ToneSplit
+    return [ThemeNode(name, 0, 0.0, len(refs), f"t{i + 1}", ToneSplit(0, 100, 0), answer_refs=list(refs))
+            for i, (name, refs) in enumerate(groups)]
+
+
+def test_theme_scores_mark_only_real_gaps():
+    """P1: a theme whose answers score clearly lower is tinted; a chance gap and a row-id column are not."""
+    import numpy as np
+    import pandas as pd
+    from app.findings_structured import build_theme_score_data
+    rng = np.random.default_rng(3)
+    n = 600
+    df = pd.DataFrame({
+        "Satisfaction": np.r_[rng.normal(2.0, 1, 200), rng.normal(4.0, 1, 400)].round(),
+        "Noise": rng.normal(50, 10, n),  # nothing to do with any theme
+        "Row": np.arange(n),  # a row id
+    })
+    nodes = _score_nodes([("Broken lifts", range(0, 200)), ("Nice staff", range(200, 400)), ("Other", range(400, 600))])
+    ts = build_theme_score_data(df, list(range(n)), nodes, ["Satisfaction", "Noise", "Row"], floor=30)
+    assert ts.columns == ["Satisfaction", "Noise"]  # biggest gap first; the row id is skipped
+    lifts = ts.themes.index("Broken lifts")
+    assert ts.diffs[lifts][0] < -1.5 and ts.notable[lifts][0]
+    assert not any(ts.notable[i][1] for i in range(3))  # pure noise: nothing tinted
+    small = _score_nodes([("Tiny", range(0, 5)), ("Rest", range(5, 600))])
+    assert build_theme_score_data(df, list(range(n)), small, ["Satisfaction"], floor=30).diffs[0] == [None]
+    assert build_theme_score_data(df, list(range(n)), nodes, [], floor=30) is None

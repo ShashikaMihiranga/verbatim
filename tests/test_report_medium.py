@@ -32,7 +32,7 @@ def test_thin_hierarchy_tabs_are_not_exposed_and_rich_hierarchy_has_compact_pair
     views = theme_views(report)
     # BUG-038: only the views the page shows are built (the icicle, the tone split, and over time when
     # the data has periods, as the EV sample does).
-    assert set(views) == {'icicle', 'diverge', 'themesOverTime'}
+    assert set(views) == {'icicle', 'diverge', 'themesOverTime', 'themeScores'}
     # BUG-037: the icicle stands in for the overview on phones, so it asks the overview's question.
     assert 'What are the themes?' in views['icicle']['chart_html']
     assert 'Themes and sub-themes' not in views['icicle']['chart_html']

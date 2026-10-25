@@ -74,6 +74,9 @@ def theme_views(data: ReportData) -> dict[str, dict]:
             result[chart_id] = view(chart_id, data, label)
     if len(data.trend.labels) >= 3 and data.trend.series:
         result['themesOverTime'] = view('themesOverTime', data, 'Over time')
+    # P1: how each theme's answers score on every score/number column, whenever there is one.
+    if data.theme_scores is not None and data.theme_scores.columns:
+        result['themeScores'] = view('themeScores', data, 'Scores by theme')
     return result
 
 

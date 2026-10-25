@@ -3300,3 +3300,21 @@ existing theme; the report shows the finished run's result only, with no button.
   trend by "dateAdded", the product listing date, which gave launch spikes.
 - Checked on dataset 1: yearly 2013-2017, five panels. The TSS datasets have no date, so no section.
 
+## 2026-10-25 (P1: "How do scores differ by theme?")
+
+- Other columns stay out of embedding and clustering (themes come from the text alone; grouping by
+  Region or a score would make themes say who answered, not what they said). They are used to explain
+  themes instead. Recorded in answer to the user's question.
+- `build_theme_score_data`: for every confirmed score and number column (identifiers, code-like values
+  and row ids such as "Column 1" skipped), each theme's mean minus the mean of every other answer with a
+  value. Welch t-test per cell, Benjamini-Hochberg across all cells at 5%, and at least a small effect
+  (Cohen's d 0.2), the same caution as segment findings (BUG-050); a theme needs the report's minimum
+  group size on both sides. Up to 8 columns, largest gap (in standard deviations) first.
+- `f_theme_scores`: themes down, columns across; tested gaps tinted with the accent (darker = bigger
+  within its column) and marked up/down; the rest plain and muted. Not tone colours: Age or a vote count
+  is not sentiment. Always-on report section (`theme_views` -> `themeScores`), computed at load, so
+  existing reports have it. Checked on TSS dataset 13 (8 columns) and dataset 2 (rating, feedback count,
+  age).
+- Pair plot dropped by the user. Survey waves (T2) need only an extra upload choice ("new wave of"), a
+  per-sheet option for workbooks, and a wave picker in the report; not started.
+

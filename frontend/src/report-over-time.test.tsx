@@ -22,4 +22,11 @@ describe('report over time section (T1)', () => {
     const html = renderToStaticMarkup(<ReportView datasetId={1} report={{ ...base, theme_chart_variants: {} }} />)
     expect(html).not.toContain('report-time')
   })
+
+  it('shows scores by theme when there is a score column', () => {
+    const scores = { chart_title: 'Scores by theme', chart_html: '<div>SCORE-MATRIX</div>', chart_width: 1180, chart_height: 500 }
+    const html = renderToStaticMarkup(<ReportView datasetId={1} report={{ ...base, theme_chart_variants: { themeScores: scores } }} />)
+    expect(html).toContain('SCORE-MATRIX')
+    expect(html).toContain('href="#report-scores"')
+  })
 })

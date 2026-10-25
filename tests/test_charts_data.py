@@ -966,3 +966,16 @@ def test_themes_over_time_panels_share_one_real_scale_and_say_how_many_answers()
     assert "<title>2018: 55.5% of 340 answers</title>" in html
     short = replace(tr, labels=tr.labels[:2], series=[replace(s, values=s.values[:2]) for s in tr.series])
     assert "Not enough answers" in f_themes_over_time(replace(EV, trend=short))[0]
+
+
+def test_theme_scores_chart_tints_only_tested_gaps():
+    from app.charts import f_theme_scores
+    from app.fixtures.ev_sample import EV
+    html = f_theme_scores(EV)[0]
+    assert "How do scores differ by theme?" in html and "avg 6.40" in html
+    assert html.count("a tested difference\"") == sum(map(sum, EV.theme_scores.notable))
+    assert "&#9660;</span>-1.90" in html  # Not needed: well below on likelihood to buy
+    assert 'title="Availability: +0.31 on Likelihood to buy, within chance">+0.31</td>' in html  # untested: plain
+    assert 'title="Too few answers with a value">&ndash;' in html
+    from dataclasses import replace
+    assert "No score or number column" in f_theme_scores(replace(EV, theme_scores=None))[0]

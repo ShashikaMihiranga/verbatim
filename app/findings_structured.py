@@ -41,7 +41,8 @@ from sqlalchemy.orm import Session
 
 from .chart_data import (
     BinCell, BinnedGridData, CategoryAvg, CategoryAvgData, FreqData, FreqItem, GroupTrendData,
-    GroupTrendSeries, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries,
+    GroupTrendSeries, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, ThemeScoreData, TrendData,
+    TrendSeries,
 )
 from .models import Column, Theme
 from .periods import parse_period
@@ -51,7 +52,7 @@ __all__ = [
     "StructuredContext", "theme_answer_rows", "build_score_data", "build_segment_data", "build_trend_data",
     "build_frequency_data", "build_category_avg_data", "build_group_trend_data", "build_binned_grid_data",
     "pick_structured_columns", "build_structured_context", "resolve_filter_rows", "segment_skew_candidates", "segment_cell_tests",
-    "score_correlation_candidates", "trend_shift_candidates",
+    "score_correlation_candidates", "trend_shift_candidates", "build_theme_score_data",
 ]
 
 
@@ -443,6 +444,7 @@ class StructuredContext:
     segment: SegmentData | None = None
     segment_column_name: str = ""
     trend: TrendData | None = None
+    theme_scores: ThemeScoreData | None = None  # scores by theme (P1)
     trend_column_name: str = ""
     frequency: FreqData | None = None
     frequency_column_name: str = ""
@@ -1064,6 +1066,70 @@ def build_binned_grid_data(
 _ANSWER_DATE_HINT = re.compile(r"review|response|respon|submit|survey|answer|feedback|comment|complet|record", re.I)
 
 
+# Scores by theme (P1): most columns one matrix shows, the smallest effect worth tinting (Cohen's d), and
+# the false-discovery rate across every cell.
+MAX_SCORE_COLUMNS = 8
+SCORE_EFFECT_MIN = 0.2
+SCORE_FDR = 0.05
+
+
+def build_theme_score_data(
+    clean_df: pd.DataFrame, rows, nodes: list["ThemeNode"], score_columns: list[str], floor: int,
+) -> "ThemeScoreData | None":
+    """Each theme's mean on each score/number column against the mean of every other answer with a value.
+    A cell needs `floor` answers on both sides. The p-values of every cell are adjusted together
+    (Benjamini-Hochberg), the same caution segment findings take (BUG-050), so with many themes and
+    columns a chance gap is not tinted as real. Columns that look like codes (BUG-051) are skipped;
+    columns are ordered by their largest gap in standard deviations, at most `MAX_SCORE_COLUMNS`."""
+    from scipy import stats as _stats
+
+    row_set = set(rows)
+    candidates = []
+    for col in score_columns:
+        if col not in clean_df.columns:
+            continue
+        values = pd.to_numeric(clean_df.loc[clean_df.index.isin(row_set), col], errors="coerce").dropna()
+        if len(values) < 2 * floor or values.nunique() < 2 or looks_like_code_values(values.tolist()):
+            continue
+        if values.nunique() > 0.95 * len(values) and (values % 1 == 0).all():
+            continue  # a different whole number on nearly every row: a row id ("Column 1"), not a score
+        candidates.append((col, values))
+    if not candidates or len(nodes) < 2:
+        return None
+
+    columns, overall, decimals, cells = [], [], [], []
+    for col, values in candidates:
+        sd = float(values.std(ddof=1)) or 1.0
+        col_cells, best = [], 0.0
+        for node in nodes:
+            mine = values[values.index.isin(node.answer_refs)]
+            rest = values[~values.index.isin(node.answer_refs)]
+            if len(mine) < floor or len(rest) < floor:
+                col_cells.append(None)
+                continue
+            diff = float(mine.mean() - rest.mean())
+            p = float(_stats.ttest_ind(mine, rest, equal_var=False).pvalue)
+            col_cells.append((diff, 1.0 if math.isnan(p) else p, abs(diff) / sd))
+            best = max(best, abs(diff) / sd)
+        columns.append((best, col, float(values.mean()), 2 if values.abs().max() < 20 else 1, col_cells))
+    columns.sort(key=lambda c: -c[0])
+    columns = columns[:MAX_SCORE_COLUMNS]
+
+    flat = [c for *_, col_cells in columns for c in col_cells if c is not None]
+    qs = iter(_stats.false_discovery_control([c[1] for c in flat]) if flat else [])
+    q_of = {id(c): float(next(qs)) for c in flat}
+    return ThemeScoreData(
+        columns=[c[1] for c in columns],
+        overall=[round(c[2], c[3]) for c in columns],
+        themes=[n.name for n in nodes],
+        colors=[n.color for n in nodes],
+        diffs=[[None if c[4][i] is None else round(c[4][i][0], c[3]) for c in columns] for i in range(len(nodes))],
+        notable=[[c[4][i] is not None and q_of[id(c[4][i])] < SCORE_FDR and c[4][i][2] >= SCORE_EFFECT_MIN
+                  for c in columns] for i in range(len(nodes))],
+        decimals=[c[3] for c in columns],
+    )
+
+
 def answer_date_columns(date_columns: list[str], text_column: str) -> list[str]:
     """`date_columns` with the likeliest date of the answer itself first: one sharing the text column's
     name prefix ("reviews.date" for "reviews.text"), then one whose name says response/review/survey...,
@@ -1281,6 +1347,9 @@ def build_structured_context(
                 context.segment_column_name = yes_no_col
                 context.segment_raw_by_row = raw_yn
                 break
+
+    context.theme_scores = build_theme_score_data(
+        clean_df, rows, nodes, columns.get("score", []) + columns.get("numeric", []), floor)
 
     text_column = themes[0].column_name if themes else ""
     for date_col in answer_date_columns(columns.get("date", []), text_column):

@@ -580,6 +580,7 @@ def build_report_data(
         frequency=structured.frequency if structured and structured.frequency else FreqData(question="", answered=0, items=[], highlight="", footnote=""),
         category_avg=structured.category_avg if structured and structured.category_avg else CategoryAvgData(category_name="", number_name="", overall_avg=0.0, items=[]),
         phrases=(build_phrase_data(answer_texts) if answer_texts else None) or PhraseData(phrases=[], highlight=""),
+        theme_scores=structured.theme_scores if structured else None,
         quotes=(build_quote_data(quote_theme_texts) if quote_theme_texts else None) or QuoteData(quotes=[], highlight_index=0),
         quality=quality,
         context=context,

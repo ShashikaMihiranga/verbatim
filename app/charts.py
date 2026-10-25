@@ -819,6 +819,54 @@ def f_themes_over_time(data: ReportData):
     return frame("How do themes change over time?", sub, inner, 200 + rows * 170)
 
 
+# ---------- scores by theme (P1) ----------
+def f_theme_scores(data: ReportData):
+    """Themes down the side, score/number columns across: each cell is the theme's mean minus everyone
+    else's. Only differences that passed the test in `build_theme_score_data` are tinted (accent, darker
+    for a bigger gap within that column) and carry an up/down mark; the rest print plain and muted. Not
+    tone colours: a column like Age or a helpful-vote count is not sentiment."""
+    ts = data.theme_scores
+    if ts is None or not ts.columns:
+        return frame("How do scores differ by theme?", "No score or number column to compare themes on.", "", 240)
+    gaps = [max((abs(r[j]) for r in ts.diffs if r[j] is not None), default=0) or 1 for j in range(len(ts.columns))]
+    head = ('<th style="text-align:left;padding:0 12px 10px 0"></th>' + "".join(
+        f'<th style="padding:0 8px 10px;font-size:13px;font-weight:500;color:var(--muted);text-align:center;'
+        f'vertical-align:bottom;min-width:76px;max-width:120px;overflow-wrap:anywhere">{esc(c.replace("_", " "))}'
+        f'<div style="font-weight:400;margin-top:2px">avg {ts.overall[j]:.{ts.decimals[j]}f}</div></th>'
+        for j, c in enumerate(ts.columns)))
+    body = ""
+    for i, name in enumerate(ts.themes):
+        cells = ""
+        for j, d in enumerate(ts.diffs[i]):
+            if d is None:
+                cells += '<td style="padding:6px 8px;text-align:center;color:var(--muted)" title="Too few answers with a value">&ndash;</td>'
+                continue
+            num = f"{d:+.{ts.decimals[j]}f}"
+            if ts.notable[i][j]:
+                mix = 18 + round(42 * abs(d) / gaps[j])
+                mark = "&#9650;" if d > 0 else "&#9660;"
+                cells += (f'<td style="padding:6px 8px;text-align:center;font-weight:600;'
+                          f'background:color-mix(in srgb,var(--accent) {mix}%,var(--surface));'
+                          f'color:{"var(--on-accent)" if mix >= 45 else "var(--ink)"}" '
+                          f'title="{esc(name)}: {num} against everyone else on {esc(ts.columns[j])}, a tested difference">'
+                          f'<span aria-hidden="true" style="font-size:10px;margin-right:4px">{mark}</span>{num}</td>')
+            else:
+                cells += (f'<td style="padding:6px 8px;text-align:center;color:var(--muted)" '
+                          f'title="{esc(name)}: {num} on {esc(ts.columns[j])}, within chance">{num}</td>')
+        body += (f'<tr style="border-top:1px solid var(--line)">'
+                 f'<th scope="row" style="text-align:left;padding:8px 12px 8px 0;font-size:15px;font-weight:500;min-width:180px">'
+                 f'<span style="display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px;'
+                 f'background:var(--{ts.colors[i]})"></span>{esc(name)}</th>{cells}</tr>')
+    table = (f'<div style="overflow-x:auto"><table style="border-collapse:separate;border-spacing:2px;'
+             f'font-variant-numeric:tabular-nums;font-size:15px;width:100%">'
+             f'<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+             f'<div style="margin-top:16px;font-size:14px;color:var(--muted);max-width:820px">Tinted: a tested '
+             f'difference (5% false-discovery rate, at least a small effect); darker is a bigger gap. '
+             f'&#9650; above everyone else, &#9660; below. Plain numbers are within chance.</div>')
+    sub = "Each cell is the theme's average minus everyone else's average on that column."
+    return frame("How do scores differ by theme?", sub, table, 240 + 44 * len(ts.themes))
+
+
 # ---------- freq ----------
 def f_freq(data: ReportData):
     fq = data.frequency
@@ -2279,7 +2327,7 @@ FRAMES = {
     "groupSplitBars": f_group_split_bars, "compareDots": f_compare_dots, "slopeChange": f_slope_change,
     "groupMix": f_group_mix,
     "phrases": f_phrases, "toneByNumber": f_tone_by_number, "themeMixOverTime": f_theme_mix_over_time,
-    "themesOverTime": f_themes_over_time,
+    "themesOverTime": f_themes_over_time, "themeScores": f_theme_scores,
     "quotes": f_quotes, "freq": f_freq, "vsAverage": f_vs_average,
     "trendGroups": f_trend_groups, "trendStyled": f_trend_styled, "binnedGrid": f_binned_grid,
 }
@@ -2296,7 +2344,7 @@ TITLES = {
     "groupSplitBars": "Two groups side by side", "compareDots": "Many groups, little space",
     "slopeChange": "First against last", "phrases": "Which phrases recur?",
     "toneByNumber": "Tone by number band", "themeMixOverTime": "Theme mix over time",
-    "themesOverTime": "Themes over time",
+    "themesOverTime": "Themes over time", "themeScores": "Scores by theme",
     "quotes": "What does it sound like?", "freq": "What did people say most?",
     "vsAverage": "Compared with average", "trendGroups": "Over time, by group",
     "trendStyled": "Over time, by dash and marker", "binnedGrid": "Two numbers together",
