@@ -86,9 +86,9 @@ html:has(.hd) { scroll-behavior: smooth; }
 .hd-st-top { display: flex; align-items: center; justify-content: space-between; }
 .hd-ico { width: 84px; height: 84px; border-radius: 22px; background: color-mix(in srgb, var(--accent) 10%, var(--surface)); display: flex; align-items: center; justify-content: center; }
 .hd-num { width: 34px; height: 34px; border-radius: 17px; background: var(--accent); color: var(--on-accent); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; }
-.hd-st-t { font-size: 23px; font-weight: 500; line-height: 1.2; margin-top: 20px; }
-.hd-st-b { font-size: 17px; line-height: 1.5; color: var(--muted); margin-top: 8px; flex: 1; }
-.hd-who { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; margin-top: 18px; padding: 6px 12px 6px 8px; border-radius: 16px; background: var(--bg); font-size: 14px; font-weight: 600; }
+.hd-st-t { font-size: 20px; font-weight: 500; line-height: 1.25; margin-top: 18px; }
+.hd-st-b { font-size: 15px; line-height: 1.55; color: var(--muted); margin-top: 6px; flex: 1; }
+.hd-who { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; margin-top: 16px; padding: 5px 11px 5px 8px; border-radius: 15px; background: var(--bg); font-size: 13px; font-weight: 600; }
 .hd-arr { width: 26px; display: flex; align-items: center; justify-content: center; flex: none; }
 
 /* ---- 4. report tabs */
