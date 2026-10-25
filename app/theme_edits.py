@@ -11,11 +11,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
-from .models import Theme, ThemeEdit
+from .models import Finding, Theme, ThemeEdit
 
 THEME_COLUMNS = [c.name for c in Theme.__table__.columns]
+FINDINGS_KEY = "finding_ids"  # in a snapshot: findings that pointed at the theme when it was taken
 
 
 class UndoRefused(Exception):
@@ -23,8 +24,16 @@ class UndoRefused(Exception):
 
 
 def snapshot(rows: list[Theme]) -> list[dict]:
-    """Every column of each row, as it is now. Call before changing them."""
-    return [{c: getattr(t, c) for c in THEME_COLUMNS} for t in rows]
+    """Every column of each row, as it is now, plus the findings that point at it (`FINDINGS_KEY`): deleting
+    a theme sets their `theme_id` to NULL on Postgres, so undo has to link them again. Call before
+    changing the rows."""
+    snaps = []
+    for t in rows:
+        db = object_session(t)
+        findings = [] if db is None or t.id is None else list(
+            db.scalars(select(Finding.id).where(Finding.theme_id == t.id)).all())
+        snaps.append({**{c: getattr(t, c) for c in THEME_COLUMNS}, FINDINGS_KEY: findings})
+    return snaps
 
 
 def record(
@@ -73,10 +82,16 @@ def undo(db: Session, dataset_id: int, column: str, edit_id: int) -> ThemeEdit:
     for snap in edit.before or []:
         row = db.get(Theme, snap["id"])
         if row is None:
-            db.add(Theme(**snap))
+            db.add(Theme(**{c: snap[c] for c in THEME_COLUMNS}))
         else:
             for c in THEME_COLUMNS:
                 setattr(row, c, snap[c])
+    db.flush()
+    for snap in edit.before or []:
+        for finding_id in snap.get(FINDINGS_KEY) or []:
+            finding = db.get(Finding, finding_id)
+            if finding is not None:
+                finding.theme_id = snap["id"]
     edit.undone_at = datetime.now(timezone.utc)
     db.flush()
     return edit

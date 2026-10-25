@@ -1510,7 +1510,7 @@ def test_rename_theme_404_for_a_theme_from_another_dataset(env):
     assert r.status_code == 404
 
 
-def test_rename_theme_invalidates_the_existing_report(env):
+def test_rename_theme_keeps_the_existing_report(env):
     did = upload_csv(env, theme_df())
     clean_and_apply(env, did)
     theme_id = seed_theme(
@@ -1525,10 +1525,11 @@ def test_rename_theme_invalidates_the_existing_report(env):
     r = env.client.patch(f"/api/datasets/{did}/themes/{theme_id}", json={"label": "Reliability"})
     assert r.status_code == 200, r.text
 
+    # Edits keep the report (2026-10-25): its charts follow the live themes, its findings read as stale.
     with env.Session() as s:
         from app.models import Report
         from sqlalchemy import select
-        assert s.scalars(select(Report).where(Report.dataset_id == did)).all() == []
+        assert len(s.scalars(select(Report).where(Report.dataset_id == did)).all()) == 1
 
 
 # ==================================================================== theme editing: merge
@@ -1602,7 +1603,7 @@ def test_merge_themes_422_when_fewer_than_two_resolve(env):
     assert r.status_code == 404  # unknown id still wins over the "too few resolved" check - see route
 
 
-def test_merge_themes_invalidates_the_existing_report(env):
+def test_merge_themes_keeps_the_existing_report(env):
     did = upload_csv(env, theme_df())
     clean_and_apply(env, did)
     a_id = seed_theme(
@@ -1624,7 +1625,7 @@ def test_merge_themes_invalidates_the_existing_report(env):
     with env.Session() as s:
         from app.models import Report
         from sqlalchemy import select
-        assert s.scalars(select(Report).where(Report.dataset_id == did)).all() == []
+        assert len(s.scalars(select(Report).where(Report.dataset_id == did)).all()) == 1
 
 
 # ==================================================================== theme editing: split (docs/TODO.md,
@@ -2210,6 +2211,58 @@ def test_undo_reverses_a_merge_with_the_same_ids(env):
     assert restored == before and edited == []
     assert env.client.get(f"/api/datasets/{did}/themes/edits", params={"column": Q}).json()["edits"] == []
     assert _undo(env, did, merged["undo_token"]).status_code == 409  # already undone
+
+
+def test_an_edit_marks_the_report_stale_and_undo_makes_it_current_again(env):
+    """A real report survives a rename: it reads as out of date, and undoing the rename brings it back to
+    current without a rebuild."""
+    app.dependency_overrides[get_claude_client] = lambda: FakeLabelingClaudeClient(_reply_with_headlines)
+    did = _seed_cost_and_other(env)
+    _build_report(env, did)
+    report = lambda: env.client.get(f"/api/datasets/{did}/report", params={"column": Q})
+    assert report().json()["stale"] is False
+    cost_id = next(t["id"] for t in env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+                   if t["label"] == "Cost")
+
+    renamed = env.client.patch(f"/api/datasets/{did}/themes/{cost_id}", json={"label": "Price"}).json()
+    r = report()
+    assert r.status_code == 200 and r.json()["stale"] is True and r.json()["stale_reason"] == "themes"
+
+    assert _undo(env, did, renamed["undo_token"]).status_code == 200
+    assert report().json()["stale"] is False
+
+
+def test_undo_links_findings_back_to_the_themes_a_merge_deleted(env):
+    """On Postgres deleting a theme sets its findings' theme_id to NULL (SQLite here does not enforce the
+    foreign key, so the test does it by hand). Undo must point them at the restored theme again."""
+    from app.models import Finding
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a = seed_theme(env, did, label="A", size=3, answer_refs=[0, 1, 2], **_neutral())
+    b = seed_theme(env, did, label="B", size=2, answer_refs=[3, 4], **_neutral())
+    with env.Session() as s:
+        f = Finding(dataset_id=did, theme_id=b, sentence="B is small.")
+        s.add(f)
+        s.commit()
+        finding_id = f.id
+    merged = env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a, b]}).json()
+    with env.Session() as s:
+        s.get(Finding, finding_id).theme_id = None  # what Postgres' ON DELETE SET NULL does
+        s.commit()
+
+    assert _undo(env, did, merged["undo_token"]).status_code == 200
+    with env.Session() as s:
+        assert s.get(Finding, finding_id).theme_id == b
+
+
+def test_grouping_runs_on_the_cheap_model_unless_overridden(monkeypatch):
+    from app import api_themes
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setenv(api_themes.GROUPING_SETTING, "claude")
+    monkeypatch.delenv("VERBATIM_GROUPING_MODEL", raising=False)
+    assert api_themes.get_grouping_client().model == "claude-haiku-5-5"
+    monkeypatch.setenv("VERBATIM_GROUPING_MODEL", "claude-sonnet-5-5")
+    assert api_themes.get_grouping_client().model == "claude-sonnet-5-5"
 
 
 def test_undo_runs_newest_first(env):

@@ -3410,3 +3410,26 @@ existing theme; the report shows the finished run's result only, with no button.
   purpose", sticky Apply bar), applied (one line; the editor's toast has the one Undo). Undo returns to
   the review with the choices kept.
 
+## 2026-10-25: theme edits keep the report; grouping runs on Claude Haiku 5.5
+
+User's decisions, after the theme editor (steps 1-5) was handed over:
+
+- **Edits keep the report.** Rename, merge, split, "Own theme", batch merge and undo no longer delete the
+  column's report (`_invalidate_report_for_edit` is now called only by a full theme rebuild, whose themes
+  share nothing with the old ones). Charts are drawn from the live themes on every read, so they show the
+  edit at once. The stored findings are flagged by the existing `themes_signature` check ("The themes
+  changed after this report was built..." with Rebuild report). Undo restores ids, sizes and labels, so
+  the signature matches again and the banner goes away without a paid rebuild. A finding about a theme
+  a merge absorbed shows the existing "no longer exists" placeholder until undo or rebuild.
+- **Undo re-links findings.** A theme snapshot now also stores the ids of the findings pointing at it
+  (`theme_edits.FINDINGS_KEY`, inside the existing `before` JSON, so no migration). Undo sets their
+  `theme_id` back: on Postgres, deleting a theme had set it to NULL. BUG-058.
+- **The page** reloads the report after an edit or undo (`reloadReportAfterEdit` in `Themes.tsx`) rather
+  than clearing it.
+- **Grouping model.** The user asked for the cheapest model, since grouping is an easy task:
+  `GROUPING_MODEL = "claude-haiku-5-5"` ($0.10 / $0.50 per million tokens), overridable with
+  `VERBATIM_GROUPING_MODEL`. Thinking stays off, as for every Claude call here (allowed on Haiku 5.5 at
+  its default effort). The cache key now starts with the model, so changing models asks again.
+- **Switched on locally** (`VERBATIM_THEME_GROUPING=claude` in the gitignored `.env`); `.env.example`
+  documents both settings. Railway devapp and production are not set; that is the user's call.
+

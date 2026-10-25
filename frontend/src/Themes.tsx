@@ -568,10 +568,17 @@ export default function Themes() {
     }
   }
 
-  // Theme editing (docs/TODO.md, fixed 2026-10-22): both invalidate the server-side report (see
-  // app/api_themes.py's own comment), so the local `report` state is cleared too - the user sees the
-  // existing "no report built yet" / "Rebuild report" state next time they leave Manage themes, the
-  // same state a fresh build-themes run already produces, not a new UI path.
+  // Theme edits keep the server-side report (2026-10-25): its charts are drawn from the live themes, and
+  // it comes back marked out of date until an undo puts the themes back or the user rebuilds it.
+  async function reloadReportAfterEdit() {
+    if (!column) return
+    try {
+      setReport(await getReport(id, column, filters))
+    } catch {
+      setReport(null) // no report yet: the themes screen offers Build report
+    }
+  }
+
   async function refreshThemesChartAndList() {
     if (!column) return
     const existing = await getThemes(id, column)
@@ -584,8 +591,8 @@ export default function Themes() {
   // Each edit resolves to the token that undoes it.
   async function afterEdit<T extends { undo_token: number }>(edit: Promise<T>): Promise<number> {
     const { undo_token } = await edit
-    setReport(null)
     await refreshThemesChartAndList()
+    await reloadReportAfterEdit()
     return undo_token
   }
   const handleRename = (themeId: number, label: string) => afterEdit(renameTheme(id, themeId, label))
@@ -601,8 +608,8 @@ export default function Themes() {
 
   async function handleUndo(token: number) {
     await undoEdit(id, column as string, token)
-    setReport(null)
     await refreshThemesChartAndList()
+    await reloadReportAfterEdit()
   }
 
   async function startSplitTheme(themeId: number) {
@@ -614,8 +621,7 @@ export default function Themes() {
       },
       setSplitThemeJob,
       () => {
-        setReport(null)
-        void refreshThemesChartAndList()
+        void refreshThemesChartAndList().then(reloadReportAfterEdit)
       },
     )
   }

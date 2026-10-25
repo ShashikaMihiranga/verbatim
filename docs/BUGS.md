@@ -37,6 +37,15 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-058 — Undoing a theme edit could not bring the report back, and on Railway left findings unlinked**
+  - Found: 2026-10-25, Claude, review of the theme editor before handing it over.
+  - Cause: every edit deleted the column's report, so after an undo only a paid Rebuild report brought
+    it back. Separately, deleting a theme sets its findings' `theme_id` to NULL on Postgres (ON DELETE
+    SET NULL; SQLite does not enforce it locally), and undo restored the theme but not those links.
+  - Fix: commit "Theme edits keep the report; undo links findings again; grouping on Haiku". Edits keep
+    the report, marked out of date; snapshots record each theme's finding ids and undo re-links them ·
+    Test: `test_an_edit_marks_the_report_stale_and_undo_makes_it_current_again`,
+    `test_undo_links_findings_back_to_the_themes_a_merge_deleted`.
 - [x] **BUG-057 — On Railway, theme builds fail at the end and Look inside Other can never start**
   - Found: 2026-10-25, the user (Jobs page on Railway devapp: tss_fy19_comments_10k.csv, Build themes,
     "Something went wrong while building this"). Railway log: `StringDataRightTruncation: value too long

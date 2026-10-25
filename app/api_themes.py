@@ -430,8 +430,8 @@ def _write_theme_rows(
         db.delete(old)
     db.add_all(new_rows)
     # New themes make every stored finding sentence describe themes that no longer exist (found live on
-    # dataset 12: five findings about deleted themes all fell back to the same chart). Same policy as
-    # rename/merge/split: drop the report so the page offers "Build report" again.
+    # dataset 12: five findings about deleted themes all fell back to the same chart), so drop the report
+    # and the page offers "Build report" again. Theme edits keep it instead, marked out of date.
     _invalidate_report_for_edit(db, dataset_id, column)
     db.commit()
     return new_rows
@@ -1176,16 +1176,12 @@ def _refuse_while_report_builds(db: Session, dataset_id: int, column: str) -> No
 
 
 def _invalidate_report_for_edit(db: Session, dataset_id: int, column: str) -> None:
-    """Theme editing (docs/TODO.md, fixed 2026-10-22: rename/merge/split). A rename/merge/split changes
-    what a theme IS, which makes every stored `Finding.sentence` for this column (plain-English prose
-    written about the theme's OLD shape) stale - deletes the dataset+column's `Report` row outright,
-    rather than trying to patch individual `Finding` rows (which would still need a real Claude call to
-    write a correct replacement sentence anyway). This is the SAME "no report built yet" state `GET
-    /report` already handles gracefully (`app/api_report.py::get_report`'s own 404), so the owner just
-    re-clicks the existing "Build report"/"Rebuild report" button to get fresh, correct findings - no new
-    rebuild-trigger plumbing needed. Mirrors `app/api_report.py::_latest_report_for_column`'s own
-    "match by stored content.column" lookup (not imported from there - that module imports FROM this one,
-    so importing back would be circular)."""
+    """Drops the dataset+column's `Report` row, so the page offers "Build report" again. Only a full theme
+    rebuild calls this now: its new themes share nothing with the old ones. Theme edits (rename, merge,
+    split, promote, undo) keep the report since 2026-10-25 (user's decision): its charts are drawn from
+    the live themes on every read, and `api_report._stale_reason` marks its findings out of date until an
+    undo puts the themes back or the user rebuilds. Matches reports by stored `content.column`, like
+    `app/api_report.py::_latest_report_for_column` (not imported: that module imports from this one)."""
     for report in db.scalars(select(Report).where(Report.dataset_id == dataset_id)).all():
         if isinstance(report.content, dict) and report.content.get("column") == column:
             db.delete(report)
@@ -1219,7 +1215,6 @@ def rename_theme(
         theme.description = body.description.strip() or None
     edit = theme_edits.record(db, ds.id, theme.column_name, "rename", f"Renamed “{old_label}” to “{theme.label}”.",
                               before, [], [theme], user.id)
-    _invalidate_report_for_edit(db, ds.id, theme.column_name)
     db.commit()
 
     total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
@@ -1294,7 +1289,7 @@ def merge_themes(
     rows into the largest one (the same "largest wins" survivor convention
     `app/text_pipeline/merging.py::_merge_one_level` already uses for the pipeline's own automatic
     same-label merging) and deletes the absorbed rows (cascading any `Finding.theme_id` pointing at one
-    to `NULL` - handled by `_invalidate_report_for_edit` below regardless). Theme editor (2026-10-25): tone
+    to `NULL`; the report stays, marked out of date, and undo links those findings again). Theme editor (2026-10-25): tone
     and sentiment are the members' size-weighted averages (`_merged_tone`), every member's sub-themes carry
     over (`_merged_sub_themes`), and "Other" cannot be merged."""
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
@@ -1319,7 +1314,6 @@ def merge_themes(
     edit = theme_edits.record(db, ds.id, body.column, "merge", f"Merged {len(rows)} themes into “{label}”.",
                               before, [], [survivor], user.id)
 
-    _invalidate_report_for_edit(db, ds.id, body.column)
     db.commit()
 
     total = sum(t.size for t in _stored_themes(db, ds.id, body.column))
@@ -1510,7 +1504,6 @@ def split_sub_themes(
     theme.size = len(keep["refs"])
     edit = theme_edits.record(db, ds.id, theme.column_name, "split",
                               f"Split “{theme.label}” into {len(created) + 1} themes.", before, created, [theme], user.id)
-    _invalidate_report_for_edit(db, ds.id, theme.column_name)
     db.commit()
     total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
     return {"theme": _theme_dict(theme, total), "new_themes": [_theme_dict(t, total) for t in created],
@@ -1549,7 +1542,6 @@ def promote_sub_theme(
     theme.sub_themes = [x for i, x in enumerate(subs) if i != index]
     edit = theme_edits.record(db, ds.id, theme.column_name, "promote",
                               f"Made “{s['label']}” its own theme.", before, [new], [theme], user.id)
-    _invalidate_report_for_edit(db, ds.id, theme.column_name)
     db.commit()
     total = sum(t.size for t in _stored_themes(db, ds.id, theme.column_name))
     return {"theme": _theme_dict(theme, total), "new_theme": _theme_dict(new, total), "undo_token": edit.id}
@@ -1572,7 +1564,6 @@ def undo_theme_edit(
         edit = theme_edits.undo(db, ds.id, body.column, body.undo_token)
     except theme_edits.UndoRefused as e:
         raise HTTPException(409, str(e)) from e
-    _invalidate_report_for_edit(db, ds.id, body.column)
     db.commit()
     return {"undone": theme_edits.edit_dict(edit)}
 
@@ -1589,6 +1580,9 @@ def list_theme_edits(dataset_id: int, column: str, db: Session = Depends(get_db)
 # One light Claude call per run, so its own small pool rather than the theme builds' slot.
 _GROUP_SLOTS = threading.BoundedSemaphore(2)
 GROUPING_SETTING = "VERBATIM_THEME_GROUPING"
+# Grouping is a small, rule-bound JSON task, so it runs on the cheapest model rather than the labelling
+# model (user's call, 2026-10-25). VERBATIM_GROUPING_MODEL overrides it.
+GROUPING_MODEL = "claude-haiku-5-5"
 GROUP_MAX_TOKENS = 4000
 GROUP_SAMPLES_SHOWN = 2  # sample answers per member theme in the review screen ("See answers")
 
@@ -1598,7 +1592,10 @@ def get_grouping_client() -> ClaudeClient:
     claude`); otherwise the button says why instead of spending anything."""
     if os.environ.get(GROUPING_SETTING, "").strip().lower() != "claude":
         raise HTTPException(503, f"Grouping themes with Claude is switched off on this server ({GROUPING_SETTING}=claude turns it on).")
-    return get_claude_client()
+    try:
+        return AnthropicClaudeClient(model=os.environ.get("VERBATIM_GROUPING_MODEL") or GROUPING_MODEL)
+    except LabelingClaudeNotConfigured as e:
+        raise HTTPException(503, "Grouping themes needs a Claude key (ANTHROPIC_API_KEY) that is not configured yet.") from e
 
 
 def _grouping_inputs(db: Session, ds: Dataset, column: str) -> tuple[list[Theme], dict, dict[int, int]]:
@@ -1651,7 +1648,8 @@ def group_suggestions(
         with _db.SessionLocal() as job_db:
             job_ds = job_db.get(Dataset, dataset_id_)
             themes, payload, id_of = _grouping_inputs(job_db, job_ds, column)
-            key = theme_grouping.payload_hash(payload)
+            # The model is part of the key: switching models asks again rather than reusing another's reply.
+            key = f"{getattr(claude_client, 'model', '')}:{theme_grouping.payload_hash(payload)}"
             cache = ((job_ds.profile or {}).get("theme_grouping_cache") or {}).get(column) or {}
             cached = cache.get("hash") == key and isinstance(cache.get("reply"), str)
             reply = cache["reply"] if cached else claude_client.complete(
@@ -1712,7 +1710,6 @@ def merge_batch(
         db, ds.id, body.column, "merge_batch",
         f"Merged {len(rows)} themes into {len(survivors)} group{'s' if len(survivors) != 1 else ''}.",
         before, [], survivors, user.id)
-    _invalidate_report_for_edit(db, ds.id, body.column)
     db.commit()
     total = sum(t.size for t in _stored_themes(db, ds.id, body.column))
     return {"themes": [_theme_dict(t, total) for t in survivors], "undo_token": edit.id}
@@ -1806,7 +1803,6 @@ def _apply_theme_split(
                        f"{len(created) + (1 if remainder else 0)} themes by wording.", before, created,
                        [original] if remainder else [], None)
 
-    _invalidate_report_for_edit(db, dataset_id, column)
     db.commit()
     return {"new_themes": new_themes_summary, "remainder_count": len(remainder)}
 
