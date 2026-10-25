@@ -34,8 +34,10 @@ describe('question context', () => {
     const html = renderToStaticMarkup(
       <QuestionContext datasetId={1} column="Why" block={block(SERVER_FRAGMENT)} data={data} />,
     )
-    expect(html).toContain('<select')
-    expect(html).toMatch(/<option value="opinions" selected="">opinions<\/option>/)
+    // A styled menu button, not a native <select> (that opens at 36px in the system font).
+    expect(html).not.toContain('<select')
+    expect(html).toContain('aria-haspopup="listbox"')
+    expect(html).toContain('What the question asks for: opinions')
     expect(html).toContain('Use Verbatim')
     expect(html).toContain('negatively')
   })
@@ -47,9 +49,9 @@ describe('question context', () => {
       filters_applied: {}, other_breakdown: null, all_themes: [], theme_chart_variants: {},
     } as unknown as ReportResponse
     const withPayload = renderToStaticMarkup(<ReportView datasetId={1} report={{ ...base, blocks: [block(SERVER_FRAGMENT)] }} />)
-    expect(withPayload).toContain('<select')
+    expect(withPayload).toContain('aria-haspopup="listbox"')
     const legacy = renderToStaticMarkup(<ReportView datasetId={1} report={{ ...base, blocks: [block('<div>LEGACY-CONTEXT</div>')] }} />)
     expect(legacy).toContain('LEGACY-CONTEXT')
-    expect(legacy).not.toContain('<select')
+    expect(legacy).not.toContain('aria-haspopup="listbox"')
   })
 })

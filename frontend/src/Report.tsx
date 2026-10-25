@@ -97,6 +97,7 @@ export default function ReportView({
   filters,
   onFiltersChange,
   lookInsideOtherJob,
+  onQuestionKindChange,
 }: {
   report: ReportResponse
   datasetId: number
@@ -114,6 +115,8 @@ export default function ReportView({
   onFiltersChange?: (next: ReportFiltersValue) => void
   // "Look inside Other": the finished run's result, shown read-only. Optional, like `filters` above.
   lookInsideOtherJob?: Job | null
+  // The question type was changed: the caller reloads the report, which comes back out of date.
+  onQuestionKindChange?: () => void
 }) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
@@ -145,7 +148,8 @@ export default function ReportView({
       <div className="rp-summary">{report.summary}</div>
 
       {context && (contextData
-        ? <QuestionContext datasetId={datasetId} column={report.column} block={context} data={contextData} />
+        ? <QuestionContext datasetId={datasetId} column={report.column} block={context} data={contextData}
+            onKindChange={onQuestionKindChange} />
         : <SupplementBlock block={context} />)}
 
       <div className="rp-toolbar">

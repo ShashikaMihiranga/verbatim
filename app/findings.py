@@ -63,7 +63,7 @@ from .models import Dataset, Finding, Report, Theme
 from .report_blocks import max_tone_spread, sub_theme_total
 from .text_pipeline import AnthropicClaudeClient, ClaudeClient
 from .text_pipeline import LabelingClaudeNotConfigured as FindingsClaudeNotConfigured
-from .text_pipeline.labeling import OTHER_LABEL
+from .text_pipeline.labeling import OTHER_LABEL, kind_payload
 from .text_pipeline.phrases import build_phrase_data
 from .text_pipeline.quotes import build_quote_data
 
@@ -687,6 +687,18 @@ def stored_question_kind(dataset: Any, column: str | None) -> str | None:
     return kind if kind in QUESTION_KINDS else None
 
 
+def question_kind_for(dataset: Any, column: str) -> str:
+    """What the question asks for, as used when naming themes and writing findings: the user's
+    correction, else Verbatim's keyword guess."""
+    return stored_question_kind(dataset, column) or _classify_question_kind(question_for(dataset, column))
+
+
+def built_question_kind(dataset: Any, column: str, stored: str | None) -> str:
+    """The kind a build used. Builds before 2026-10-25 sent none; they count as the guess, so only a
+    user's correction marks them out of date."""
+    return stored if stored in QUESTION_KINDS else _classify_question_kind(question_for(dataset, column))
+
+
 def _classify_question_kind(question: str) -> str:
     q = question.lower()
     for kind, needles in _KIND_PATTERNS:
@@ -944,11 +956,17 @@ HEADLINE_SYSTEM = (
     "exact statistical jargon or p-values, never claims a cause, and is a single sentence with no line "
     "breaks. Never invent, guess, or state any number that was not given to you."
 )
+# Added when the question type is known: "the most common reason", not "the most common topic".
+HEADLINE_KIND_SYSTEM = (
+    ' If you are given "question_asks_for", the question asks people for that kind of answer (e.g. '
+    '"reasons", "improvements", "facts"): describe the themes as that kind of thing.'
+)
 
 
-def _build_headline_prompt(candidates: list[Candidate], question: str) -> str:
+def _build_headline_prompt(candidates: list[Candidate], question: str, question_kind: str | None = None) -> str:
     payload = {
         "survey_question": question,
+        **kind_payload(question_kind),
         "findings": [{"id": c.id, "kind": c.kind, **c.numbers} for c in candidates],
     }
     return json.dumps(payload)
@@ -1000,7 +1018,8 @@ def _parse_headlines(text: str, expected_ids: set[str]) -> dict[str, str]:
     return by_id
 
 
-def write_headline(candidates: list[Candidate], client: ClaudeClient, question: str) -> dict[str, str]:
+def write_headline(candidates: list[Candidate], client: ClaudeClient, question: str,
+                   question_kind: str | None = None) -> dict[str, str]:
     """Writes one plain sentence per candidate finding, in ONE batched Claude call - never one call per
     candidate (this codebase's existing convention, SPEC.md section 2's "Headline sentences" row and
     `app.text_pipeline.labeling.label_clusters`'s own "one batched call for all clusters" precedent).
@@ -1020,8 +1039,8 @@ def write_headline(candidates: list[Candidate], client: ClaudeClient, question: 
     if not candidates:
         return {}
     expected_ids = {c.id for c in candidates}
-    prompt = _build_headline_prompt(candidates, question)
-    raw = client.complete(HEADLINE_SYSTEM, prompt)
+    prompt = _build_headline_prompt(candidates, question, question_kind)
+    raw = client.complete(HEADLINE_SYSTEM + HEADLINE_KIND_SYSTEM if kind_payload(question_kind) else HEADLINE_SYSTEM, prompt)
     return _parse_headlines(raw, expected_ids)
 
 
@@ -1091,8 +1110,9 @@ def build_findings(
         raise NoThemesForColumn(f"No stored themes for dataset {dataset.id}, column {column!r}. Build themes first.")
 
     question = question_for(dataset, column)
+    kind = question_kind_for(dataset, column)
     candidates = candidate_findings(themes, min_group_size=min_group_size, structured=structured)
-    sentences = write_headline(candidates, claude_client, question)
+    sentences = write_headline(candidates, claude_client, question, kind)
     report_data = build_report_data(
         dataset, themes, cleaning_report, question, answer_lengths=answer_lengths,
         answer_texts=answer_texts, quote_theme_texts=quote_theme_texts,
@@ -1146,6 +1166,7 @@ def build_findings(
         "column": column, "question": question, "blocks": blocks,
         "also_checked_nothing_notable": len(candidates) == 0,
         "themes_signature": themes_signature(themes),
+        "question_kind": kind,
     })
     db_session.add(report)
     db_session.commit()

@@ -99,3 +99,68 @@ def test_report_data_and_its_context_chart_use_the_saved_correction(env):
     payload = json.loads(html.unescape(body.split('data-context="', 1)[1].split('"', 1)[0]))
     assert payload["kind"] == "reasons" and payload["guessed_kind"] == "facts" and payload["corrected"] is True
     assert "reasons" in payload["options"]
+
+
+def test_themes_kind_follows_the_build_and_old_builds_count_as_the_guess(env):
+    from app.api_themes import _record_themes_question_kind
+    got = env.client.get(url(env), params={"column": "Why"}).json()
+    assert got["themes_kind"] == "facts"  # no record yet: counts as the guess, so nothing to rebuild
+    env.client.put(url(env), json={"column": "Why", "kind": "reasons"})
+    assert env.client.get(url(env), params={"column": "Why"}).json()["themes_kind"] == "facts"
+    with env.Session() as s:
+        _record_themes_question_kind(s, env.ids.ds, "Why", "reasons")
+    got = env.client.get(url(env), params={"column": "Why"}).json()
+    assert (got["kind"], got["themes_kind"]) == ("reasons", "reasons")
+
+
+def test_report_is_stale_after_the_question_kind_changes(env):
+    from app.api_report import _stale_reason
+    with env.Session() as s:
+        ds = s.get(Dataset, env.ids.ds)
+        built_with_guess = {"question_kind": "facts"}
+        assert _stale_reason(ds, "Why", built_with_guess, [], False) is None
+        assert _stale_reason(ds, "Why", {}, [], False) is None  # older report: counts as the guess
+    env.client.put(url(env), json={"column": "Why", "kind": "reasons"})
+    with env.Session() as s:
+        ds = s.get(Dataset, env.ids.ds)
+        assert _stale_reason(ds, "Why", {"question_kind": "facts"}, [], False) == "question_kind"
+        assert _stale_reason(ds, "Why", {}, [], False) == "question_kind"
+        assert _stale_reason(ds, "Why", {"question_kind": "reasons"}, [], False) is None
+        assert _stale_reason(ds, "Why", {"question_kind": "reasons"}, [], True) == "themes"
+
+
+def test_prompts_carry_the_question_kind_only_when_it_says_something():
+    from app.findings import HEADLINE_KIND_SYSTEM, _build_headline_prompt
+    from app.text_pipeline.labeling import QUESTION_KIND_SYSTEM, _build_prompt
+    assert json.loads(_build_prompt([], "Why?", 3, None, "reasons"))["question_asks_for"] == "reasons"
+    assert "question_asks_for" not in json.loads(_build_prompt([], "Why?", 3, None, "anything else"))
+    assert "question_asks_for" not in json.loads(_build_prompt([], "Why?", 3))
+    assert json.loads(_build_headline_prompt([], "Why?", "improvements"))["question_asks_for"] == "improvements"
+    assert "question_asks_for" not in json.loads(_build_headline_prompt([], "Why?"))
+    assert "question_asks_for" in QUESTION_KIND_SYSTEM and "question_asks_for" in HEADLINE_KIND_SYSTEM
+
+
+def test_labelling_and_headline_send_the_kind_to_claude():
+    from app.findings import Candidate, write_headline
+    from app.text_pipeline.labeling import label_sub_clusters
+
+    class Fake:
+        def __init__(self, reply):
+            self.reply, self.calls = reply, []
+
+        def complete(self, system, prompt, **kw):
+            self.calls.append((system, json.loads(prompt)))
+            return self.reply
+
+    fake = Fake(json.dumps({"headlines": [{"id": "c1", "sentence": "Cost is the most common reason."}]}))
+    cand = Candidate(id="c1", kind="dominant_theme", theme_id=1, theme_name="Cost", count=10, score=1.0,
+                     numbers={"theme": "Cost"})
+    write_headline([cand], fake, "Why?", "reasons")
+    system, payload = fake.calls[0]
+    assert payload["question_asks_for"] == "reasons" and "question_asks_for" in system
+
+    from app.text_pipeline.schema import Cluster, ThemeLabel
+    fake = Fake(json.dumps({"themes": [{"cluster_id": 0, "label": "Price", "description": "d", "merge_with": [], "note": None}]}))
+    parent = ThemeLabel(cluster_id=5, label="Cost", description="d", size=4, merge_with=[], note=None)
+    label_sub_clusters({5: [Cluster(id=0, members=[], centroid=None)]}, {5: parent}, "Why?", fake, question_kind="reasons")
+    assert fake.calls[0][1]["question_asks_for"] == "reasons"

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .api_upload import _own_dataset, current_user
 from .db import get_db
-from .findings import QUESTION_KINDS, _classify_question_kind, question_for, stored_question_kind
+from .findings import QUESTION_KINDS, _classify_question_kind, built_question_kind, question_for, stored_question_kind
 from .models import Column, User
 
 router = APIRouter(prefix="/api")
@@ -28,8 +28,11 @@ class QuestionKindUpdate(BaseModel):
 def _state(ds, column: str) -> dict:
     guessed = _classify_question_kind(question_for(ds, column))
     kind = stored_question_kind(ds, column) or guessed
+    # The kind the current themes were named for (`app.api_themes._record_themes_question_kind`); the
+    # page asks for a theme rebuild when it differs from `kind`.
+    themes_kind = built_question_kind(ds, column, ((ds.profile or {}).get("themes_question_kinds") or {}).get(column))
     return {"column": column, "kind": kind, "guessed_kind": guessed, "corrected": kind != guessed,
-            "options": list(QUESTION_KINDS)}
+            "options": list(QUESTION_KINDS), "themes_kind": themes_kind}
 
 
 def _require_column(db: Session, dataset_id: int, column: str) -> None:

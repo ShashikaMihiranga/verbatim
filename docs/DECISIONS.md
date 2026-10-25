@@ -3213,3 +3213,16 @@ existing theme; the report shows the finished run's result only, with no button.
   while a run is going). The page follows the automatic run from the theme job's result, and resumes it
   on reload. The report shows Inside Other only after a finished run, read-only.
 
+## 2026-10-25 (BUG-056: the question type now shapes themes and findings)
+
+- The user asked that changing "This question asks for ..." change the themes and report. The type is sent
+  to Claude as `question_asks_for` in theme, sub-theme and finding-sentence prompts; "anything else" sends
+  nothing, so those prompts stay as before.
+- Changing it does not rebuild anything by itself: both rebuilds are paid Claude calls. The report is
+  marked out of date (`stale_reason: "question_kind"`) and offers Rebuild report; the sentence says when the
+  themes were named for a different type and points to Manage themes. Builds made before this count as
+  the guessed type, so only a user's correction marks them.
+- Not covered yet: Look inside Other's labelling and split-theme labelling still ignore the type.
+- The native `<select>` became a styled listbox: a native menu opens at the sentence's 36px in the system
+  font.
+

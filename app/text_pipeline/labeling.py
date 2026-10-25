@@ -255,12 +255,26 @@ def _representative_texts(cluster: Cluster, n: int) -> list[str]:
     return [m.text for m in members[:n]]
 
 
+# What the question asks for (the report's "This question asks for ..." choice, `app.findings.QUESTION_KINDS`).
+# Sent as `question_asks_for` only when it says something; "anything else" adds nothing.
+QUESTION_KIND_SYSTEM = (
+    ' If you are given "question_asks_for", the survey question asks people for that kind of answer '
+    '(e.g. "reasons", "improvements", "facts"): name every theme as that kind of thing, e.g. a reason '
+    "people give, an improvement they ask for, or a fact they report."
+)
+
+
+def kind_payload(question_kind: str | None) -> dict[str, str]:
+    return {"question_asks_for": question_kind} if question_kind and question_kind != "anything else" else {}
+
+
 def _build_prompt(
     clusters: list[Cluster], question: str, samples_per_cluster: int,
-    existing_themes: dict[str, str | None] | None = None,
+    existing_themes: dict[str, str | None] | None = None, question_kind: str | None = None,
 ) -> str:
     payload: dict[str, Any] = {
         "survey_question": question,
+        **kind_payload(question_kind),
         "clusters": [
             {"cluster_id": cluster.id, "sample_answers": _representative_texts(cluster, samples_per_cluster)}
             for cluster in clusters
@@ -382,6 +396,7 @@ def label_clusters(
     *,
     flag_non_answers: bool = False,
     existing_themes: dict[str, str | None] | None = None,
+    question_kind: str | None = None,
 ) -> list[ThemeLabel]:
     """Label every cluster in `result.clusters` with one batched call to `client` (SPEC.md: "One
     batched call for all clusters" - never one call per cluster), plus a locally-synthesized "Other"
@@ -403,12 +418,14 @@ def label_clusters(
 
     if result.clusters:
         expected_ids = {cluster.id for cluster in result.clusters}
-        prompt = _build_prompt(result.clusters, question, samples_per_cluster, existing_themes)
+        prompt = _build_prompt(result.clusters, question, samples_per_cluster, existing_themes, question_kind)
         max_tokens = _max_tokens_for(len(result.clusters))
         log.info("Theme labeling: %d clusters, max_tokens=%d", len(result.clusters), max_tokens)
         system = SYSTEM + NON_ANSWER_SYSTEM if flag_non_answers else SYSTEM
         if existing_themes:
             system += PARENT_SYSTEM
+        if kind_payload(question_kind):
+            system += QUESTION_KIND_SYSTEM
         raw_response = client.complete(system, prompt, max_tokens=max_tokens)
         parsed = _parse_response(raw_response, expected_ids, set(existing_themes) if existing_themes else None)
         for cluster in result.clusters:
@@ -467,6 +484,7 @@ def label_clusters_with_retry(
     *,
     flag_non_answers: bool = False,
     existing_themes: dict[str, str | None] | None = None,
+    question_kind: str | None = None,
 ) -> list[ThemeLabel]:
     """`label_clusters`, retried once on `LabelingError` before giving up - see
     `_retry_on_labeling_error`'s own docstring for why. This is the one real top-level theme labeling
@@ -475,7 +493,7 @@ def label_clusters_with_retry(
     retry matters most for."""
     return _retry_on_labeling_error(
         lambda: label_clusters(result, question, client, samples_per_cluster, flag_non_answers=flag_non_answers,
-                               existing_themes=existing_themes),
+                               existing_themes=existing_themes, question_kind=question_kind),
         what="Theme labeling",
     )
 
@@ -486,6 +504,8 @@ def label_sub_clusters_with_retry(
     question: str,
     client: ClaudeClient,
     samples_per_cluster: int = DEFAULT_SAMPLES_PER_SUBCLUSTER,
+    *,
+    question_kind: str | None = None,
 ) -> dict[int, list[ThemeLabel]]:
     """`label_sub_clusters`, retried once on `LabelingError` before giving up - same reasoning as
     `label_clusters_with_retry`. Sub-theme labeling already has its own graceful "fall back to no
@@ -493,7 +513,8 @@ def label_sub_clusters_with_retry(
     the retry doesn't recover - this just means that fallback is reached less often, not a replacement
     for it."""
     return _retry_on_labeling_error(
-        lambda: label_sub_clusters(sub_clusters, parent_labels, question, client, samples_per_cluster),
+        lambda: label_sub_clusters(sub_clusters, parent_labels, question, client, samples_per_cluster,
+                                   question_kind=question_kind),
         what="Sub-theme labeling",
     )
 
@@ -504,6 +525,8 @@ def label_sub_clusters(
     question: str,
     client: ClaudeClient,
     samples_per_cluster: int = DEFAULT_SAMPLES_PER_SUBCLUSTER,
+    *,
+    question_kind: str | None = None,
 ) -> dict[int, list[ThemeLabel]]:
     """Label every sub-cluster across every parent in `sub_clusters` (see `subthemes.sub_cluster_themes`)
     with ONE batched `client.complete()` call total, not one call per parent and not one per sub-cluster.
@@ -553,8 +576,9 @@ def label_sub_clusters(
             )
             flat_id += 1
 
-    prompt = json.dumps({"survey_question": question, "clusters": clusters_payload})
-    raw_response = client.complete(SUB_SYSTEM, prompt, max_tokens=_max_tokens_for(len(clusters_payload)))
+    prompt = json.dumps({"survey_question": question, **kind_payload(question_kind), "clusters": clusters_payload})
+    system = SUB_SYSTEM + QUESTION_KIND_SYSTEM if kind_payload(question_kind) else SUB_SYSTEM
+    raw_response = client.complete(system, prompt, max_tokens=_max_tokens_for(len(clusters_payload)))
     parsed = _parse_response(raw_response, set(flat_by_id))
 
     result: dict[int, list[ThemeLabel]] = {parent_id: [] for parent_id in sub_clusters}

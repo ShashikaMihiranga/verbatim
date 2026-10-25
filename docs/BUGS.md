@@ -37,6 +37,21 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-056 — Question-type menu opens as a huge system popup, and changing the type changes nothing**
+  - Found: 2026-10-25, the user (screenshot of the macOS popup over "This question asks for ..."): "fix
+    these formatting and change the rest of the themes or report according to this".
+  - Cause: a native `<select>` set in the 36px sentence; macOS draws its menu at that size in the system
+    font. The saved type was only displayed: theme naming and finding sentences never received it.
+  - **Fixed:** (this commit). `QuestionContext.tsx` has a styled menu (button + listbox, keyboard model,
+    page font at 17px, spans so it is valid inside the `<p>`). The type now goes to Claude as
+    `question_asks_for` when naming themes and sub-themes (`labeling.py`, `QUESTION_KIND_SYSTEM`) and
+    writing findings (`findings.py`, `HEADLINE_KIND_SYSTEM`); "anything else" sends nothing. Each build
+    records the type it used (report content `question_kind`, `profile["themes_question_kinds"]`). Changing
+    it reloads the report, which reads out of date ("You changed what the question asks for...") until
+    Rebuild report; if the themes were named for another type, the page says to rebuild themes. Builds
+    from before this count as the guessed type. No paid call runs on its own. Tests: 4 in
+    `tests/test_api_context.py`, `frontend/src/question-context-menu.test.tsx`.
+
 - [x] **BUG-055 — "What should we fix first?" has a Themes / Sub-themes switch that cannot be clicked**
   - Found: 2026-10-25, the user (screenshot of a dominant-theme finding): "this is supposed to have
     clickable sub-themes, why can't I click it".

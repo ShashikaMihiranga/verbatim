@@ -57,7 +57,9 @@ from .findings import (
     NoThemesForColumn,
     build_findings,
     build_report_data,
+    built_question_kind,
     other_breakdown,
+    question_kind_for,
     theme_nodes,
     themes_signature,
 )
@@ -256,6 +258,17 @@ def _filter_options_for(structured: StructuredContext) -> dict[str, Any]:
             "max": max(values).isoformat(),
         }
     return {"segment": segment_opts, "score_band": score_opts, "date_range": date_opts}
+
+
+def _stale_reason(ds: Dataset, column: str, content: dict, themes: list[Theme], orphaned: bool) -> str | None:
+    """Why the findings are out of date, or None. "themes": a finding is about a theme that no longer
+    exists, or (reports built since 2026-10-25) the themes' ids, sizes or labels changed, e.g. after Look
+    inside Other. "question_kind": the user changed what the question asks for since this build."""
+    if orphaned or ("themes_signature" in content and content["themes_signature"] != themes_signature(themes)):
+        return "themes"
+    if built_question_kind(ds, column, content.get("question_kind")) != question_kind_for(ds, column):
+        return "question_kind"
+    return None
 
 
 def _render_report(
@@ -493,8 +506,9 @@ def _render_report(
         # True when the findings were written from different themes than the live ones: a finding about a
         # theme that no longer exists, or (reports built since 2026-10-25) any change in the themes' ids,
         # sizes or labels, e.g. after Look inside Other - the page offers a rebuild.
-        "stale": orphaned_findings > 0 or (
-            "themes_signature" in content and content["themes_signature"] != themes_signature(themes)),
+        "stale": (stale_reason := _stale_reason(ds, column, content, themes, orphaned_findings > 0)) is not None,
+        # "themes" or "question_kind" (the user changed what the question asks for since this build).
+        "stale_reason": stale_reason,
         "explorations": explorations,
     }
 

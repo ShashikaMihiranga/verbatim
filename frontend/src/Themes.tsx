@@ -742,7 +742,11 @@ export default function Themes() {
         <>
           {report.stale && (
             <div className="report-stale" role="status">
-              <span>The themes changed after this report was built, so its findings are out of date.</span>
+              <span>
+                {report.stale_reason === 'question_kind'
+                  ? 'You changed what the question asks for, so the findings are out of date.'
+                  : 'The themes changed after this report was built, so its findings are out of date.'}
+              </span>
               <button type="button" className="btn" onClick={() => void buildTheReport()} disabled={reportRunning || themesRunning || lookRunning}>
                 {reportRunning ? 'Rebuilding report...' : 'Rebuild report'}
               </button>
@@ -755,6 +759,9 @@ export default function Themes() {
             filters={filters}
             onFiltersChange={setFilters}
             lookInsideOtherJob={lookInsideOtherJob}
+            onQuestionKindChange={() => {
+              if (column) getReport(id, column, filters).then(setReport).catch(() => { /* keeps the current view */ })
+            }}
           />
           <div className="foot report-foot">
             <div className="report-foot-group">

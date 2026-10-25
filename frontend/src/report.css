@@ -276,12 +276,27 @@
 
 /* Question context (QuestionContext.tsx): the type is a real dropdown; framing/length are measured facts. */
 .qc-sentence { font-size: 36px; font-weight: 300; line-height: 1.35; max-width: 1020px; margin: 0; }
+.qc-kind { position: relative; display: inline-block; }
 .qc-select {
   font: inherit; color: var(--accent); background: transparent; border: none;
-  border-bottom: 2px dotted var(--accent); padding: 0 2px; cursor: pointer;
+  border-bottom: 2px dotted var(--accent); padding: 0 2px; cursor: pointer; line-height: inherit;
 }
+.qc-caret { font-size: 0.45em; margin-left: 6px; vertical-align: middle; }
 .qc-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .qc-select:disabled { opacity: 0.6; cursor: progress; }
+/* The open menu: page font at body size, on the page's own surface (no shadow, per the design rules). */
+.qc-menu {
+  display: block; position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; min-width: 220px;
+  margin: 0; padding: 6px; list-style: none; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 10px;
+  font-size: 17px; font-weight: 400; line-height: 1.3; color: var(--ink);
+}
+.qc-menu:focus { outline: none; }
+.qc-menu:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.qc-option { display: flex; align-items: center; gap: 8px; padding: 9px 14px 9px 10px; border-radius: 6px; cursor: pointer; }
+.qc-option.is-active { background: var(--bg); }
+.qc-option[aria-selected="true"] { color: var(--accent); font-weight: 500; }
+.qc-check { width: 16px; flex: none; color: var(--accent); }
 .qc-fact { color: var(--accent); }
 .qc-note, .qc-meta, .qc-error { font-size: 16px; line-height: 1.55; max-width: 820px; margin: 14px 0 0; }
 .qc-meta { color: var(--muted); }

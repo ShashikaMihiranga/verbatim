@@ -55,7 +55,7 @@ from .chart_data import (
 from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
-from .findings import question_for, theme_nodes
+from .findings import question_for, question_kind_for, theme_nodes
 from .jobs import REPORT_JOB_MAX_AGE, _mark_failed, blocking_job, create_job, set_progress, start_job
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
 from .text_pipeline import (
@@ -737,6 +737,18 @@ def _look_inside_other_error(e: BaseException) -> str | None:
     return None
 
 
+def _record_themes_question_kind(db: Session, dataset_id: int, column: str, kind: str) -> None:
+    """Which question type these themes were named for, so the report can say when the user's choice
+    has changed since (`app/api_context.py`)."""
+    ds = db.get(Dataset, dataset_id)
+    if ds is None:
+        return
+    profile = dict(ds.profile or {})
+    profile["themes_question_kinds"] = {**(profile.get("themes_question_kinds") or {}), column: kind}
+    ds.profile = profile  # reassign: the JSON column only notices a new object
+    db.commit()
+
+
 # ---------------------------------------------------------------- routes
 @router.post("/datasets/{dataset_id}/themes/build", status_code=202)
 def build_themes(
@@ -774,6 +786,8 @@ def build_themes(
     question = (confirmed.get("question") or "").strip()
     if not question:
         question = ((ds.profile or {}).get("question") or {}).get("text") or column
+    # The report's "This question asks for ..." choice: themes are named as that kind of thing.
+    question_kind = question_kind_for(ds, column)
 
     # The only check left that can still fail synchronously: a full slot is knowable instantly, with no
     # thread started, so it stays an immediate 429 exactly like before - see app/jobs.py:start_job's
@@ -799,7 +813,7 @@ def build_themes(
         step("Turning answers into vectors")
         result, embedded = embed_and_cluster_with_vectors(clean_df, plan, column, embedding_client)
         step("Naming each group")
-        labels = label_clusters_with_retry(result, question, claude_client)
+        labels = label_clusters_with_retry(result, question, claude_client, question_kind=question_kind)
         # Claude's reply already flags clusters it thinks are really the same theme (SYSTEM prompt, see
         # labeling.py) - apply_merges actually consolidates them (no new LLM call) before anything else
         # reads `result`/`labels`, so sub-clustering below splits each merged theme's full combined
@@ -812,7 +826,8 @@ def build_themes(
             cluster.id: label for cluster, label in zip(result.clusters, labels[: len(result.clusters)])
         }
         try:
-            sub_labels = label_sub_clusters_with_retry(sub_clusters, parent_labels, question, claude_client)
+            sub_labels = label_sub_clusters_with_retry(sub_clusters, parent_labels, question, claude_client,
+                                                       question_kind=question_kind)
         except LabelingError as e:
             # Sub-themes are an optional enhancement (plan decision 10): a broken/untrusted reply here must
             # not fail the whole theme build - log it and fall back to no sub-themes for every theme, not
@@ -828,6 +843,7 @@ def build_themes(
             scores = score_column(clean_df, plan, column)
         with _db.SessionLocal() as job_db:
             _write_theme_rows(job_db, dataset_id_, column, result, labels, scores, sub_clusters, sub_labels, embedded)
+            _record_themes_question_kind(job_db, dataset_id_, column, question_kind)
             # chart-block stream, 2026-10-24, batch 4 (answer_map): a real per-answer position sample,
             # stored on this dataset+column's own Column row - independent of theme assignment (see
             # Column.answer_positions' own docstring for why it lives here, not on Theme).

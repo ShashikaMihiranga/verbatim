@@ -102,6 +102,8 @@ export interface ReportResponse {
   explorations?: ReportThemeChartVariant[]
   // True when a finding describes a theme that no longer exists (themes changed after the build).
   stale?: boolean
+  // Why: the themes changed, or the user changed what the question asks for since the build.
+  stale_reason?: 'themes' | 'question_kind' | null
   dataset_id: number
   column: string
   question: string
@@ -171,6 +173,13 @@ export interface QuestionKindState {
   guessed_kind: string
   corrected: boolean
   options: string[]
+  themes_kind?: string // the type the current themes were named for
+}
+
+export async function getQuestionKind(id: number, column: string): Promise<QuestionKindState> {
+  const r = await authFetch(`/api/datasets/${id}/question-kind?column=${encodeURIComponent(column)}`)
+  if (!r.ok) throw await asError(r)
+  return r.json()
 }
 
 export async function saveQuestionKind(id: number, column: string, kind: string | null): Promise<QuestionKindState> {
