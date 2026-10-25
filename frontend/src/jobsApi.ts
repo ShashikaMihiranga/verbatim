@@ -47,12 +47,6 @@ export interface LookInsideOtherResult {
   // form a sub-theme; the answers still joined the parent), and the themes chart as it was before the run.
   sub_theme_gains?: Array<{ label: string; parent: string; count: number; is_sub_theme: boolean }>
   before_chart?: { chart_html: string; chart_width: number; chart_height: number }
-  // A sample of Other's answers laid out by meaning (app/api_themes.py `_other_point_map`): x/y in 0..1,
-  // y down; the third number indexes `groups`, where each answer ended up. Null when too few answers.
-  point_map?: {
-    groups: Array<{ kind: 'known' | 'new' | 'still'; label: string }>
-    points: Array<[number, number, number]>
-  } | null
 }
 
 // A theme build's own result: whether it started Look inside Other on its own (Other over 20% of the

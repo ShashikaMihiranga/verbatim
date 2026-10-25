@@ -1,7 +1,8 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import InsideOtherFlow from './InsideOtherFlow'
 import { prefersReducedMotion } from './insideOtherGeometry'
-import { hasShare, insideOtherModel, listValue, STEPS, type InsideOtherModel, type Leaf, type PointMap } from './insideOtherModel'
+import { hasShare, insideOtherModel, listValue, STEPS, answerMapModel, isResult, type InsideOtherModel, type Leaf, type PointMap } from './insideOtherModel'
+import { getAnswerMap, type AnswerMapResponse } from './themesApi'
 import type { Job } from './jobsApi'
 import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
 import ThemeChart from './ThemeChart'
@@ -143,8 +144,8 @@ const MAP_W = 1000
 const MAP_H = 520
 const MAP_PAD = 12
 
-// Each dot is one answer from Other, placed by meaning (the run's own embeddings, laid out with UMAP), so
-// the groups it found show as clouds; the colour says where the answer went.
+// Each dot is one answer from the whole column, placed by meaning (the theme build's embeddings, laid out
+// in 2D), so themes show as clouds; the colour is the answer's theme now, after this run.
 function PointMapChart({ map }: { map: PointMap }) {
   const [focus, setFocus] = useState<number | null>(null)
   const legend = [...map.groups.keys()].sort((a, b) => {
@@ -156,10 +157,10 @@ function PointMapChart({ map }: { map: PointMap }) {
   const x = (v: number) => MAP_PAD + v * (MAP_W - 2 * MAP_PAD)
   const y = (v: number) => MAP_PAD + v * (MAP_H - 2 * MAP_PAD)
   return (
-    <section className="io-chart io-map" aria-label="Where Other's answers went, as a map">
-      <h4 className="io-chart-title">How Other's answers group</h4>
+    <section className="io-chart io-map" aria-label="Every theme's answers, as a map">
+      <h4 className="io-chart-title">How all answers group</h4>
       <p className="io-map-note">
-        Each dot is one answer{map.sampled ? ` (a sample of ${fmt(total)})` : ''}. Answers that say similar things sit close together. Colour shows where it went.
+        Each dot is one answer{map.sampled ? ` (a sample of ${fmt(total)})` : ''}. Answers that say similar things sit close together. Colour shows its theme now; new themes are outlined.
       </p>
       <svg className="io-map-svg" viewBox={`0 0 ${MAP_W} ${MAP_H}`} role="img"
         aria-label={`${fmt(total)} answers: ${shown.map((i) => `${map.groups[i].label} ${fmt(map.groups[i].dots)}`).join(', ')}`}>
@@ -197,7 +198,22 @@ function PointMapChart({ map }: { map: PointMap }) {
   )
 }
 
-function Results({ m }: { m: InsideOtherModel }) {
+// Fetched once the run is done: the map needs the themes as this run left them.
+function AnswerMap({ job, realThemes }: { job: Job; realThemes: string[] }) {
+  const [raw, setRaw] = useState<AnswerMapResponse | null>(null)
+  useEffect(() => {
+    let live = true
+    getAnswerMap(job.dataset_id, job.column)
+      .then((r) => { if (live) setRaw(r) })
+      .catch(() => { /* the map is optional; the rest of the panel stands on its own */ })
+    return () => { live = false }
+  }, [job.id, job.dataset_id, job.column])
+  const map = useMemo(() => answerMapModel(raw, isResult(job.result) ? job.result : null, realThemes),
+    [raw, job.result, realThemes])
+  return map ? <PointMapChart map={map} /> : null
+}
+
+function Results({ m, mapSlot }: { m: InsideOtherModel; mapSlot?: ReactNode }) {
   const largest = Math.max(0, ...m.known.map((l) => l.count))
   const largestNew = Math.max(0, ...m.newThemes.map((l) => l.count))
   const newValue = listValue(m.newThemes)
@@ -229,7 +245,7 @@ function Results({ m }: { m: InsideOtherModel }) {
           ))}
         </ul>
       )}
-      {m.pointMap && <PointMapChart map={m.pointMap} />}
+      {mapSlot}
       {m.known.length > 0 && (
         <section className="io-chart">
           <h4 className="io-chart-title">What each known theme gained</h4>
@@ -287,6 +303,7 @@ export default function InsideOther({
 }) {
   const m = useMemo(() => insideOtherModel(job, allThemes, breakdown, context), [job, allThemes, breakdown, context])
   const reducedMotion = useMemo(() => prefersReducedMotion(), [])
+  const realThemes = useMemo(() => allThemes.map((t) => t.name), [allThemes])
   const [showAll, setShowAll] = useState(false)
   // The full list only adds something when real themes are folded into Other; otherwise it repeats the treemap.
   const canShowAll = (breakdown?.hidden_real_theme_count ?? 0) > 0 && allThemes.length > 0
@@ -318,7 +335,9 @@ export default function InsideOther({
       <Columns m={m} allThemesToggle={toggle} />
       {canShowAll && showAll && <AllThemes themes={allThemes} />}
       {m.phase !== 'idle' && <Steps m={m} />}
-      {m.phase === 'done' && m.banner && <Results m={m} />}
+      {m.phase === 'done' && m.banner && (
+        <Results m={m} mapSlot={job && <AnswerMap job={job} realThemes={realThemes} />} />
+      )}
     </section>
   )
 }

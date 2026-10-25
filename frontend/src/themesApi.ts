@@ -153,6 +153,20 @@ export async function getThemes(id: number, column: string): Promise<ThemesRespo
   return r.json()
 }
 
+// Every theme's answers on one map (app/api_themes.py GET /themes/answer-map): a sample of positions
+// stored at theme build, each dot's group is the theme its answer is in now. x/y in 0..1, y down.
+export interface AnswerMapResponse {
+  answers: number
+  groups: Array<{ label: string; other: boolean }>
+  points: Array<[number, number, number]>
+}
+
+export async function getAnswerMap(id: number, column: string): Promise<AnswerMapResponse> {
+  const r = await authFetch(`/api/datasets/${id}/themes/answer-map?${new URLSearchParams({ column })}`)
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
 // One-chart-at-a-glance treemap fragment for a column's stored themes (app/api_themes.py's
 // GET /themes/chart) - the Themes screen's browse view calls this instead of rendering one Card per theme.
 export async function getThemesChart(id: number, column: string): Promise<ThemeChartResponse> {

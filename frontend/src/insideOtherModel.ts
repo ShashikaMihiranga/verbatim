@@ -3,6 +3,7 @@
 // `job.progress` while answers are matched; the finished picture comes from `job.result`.
 import type { Job, LookInsideOtherChart, LookInsideOtherResult } from './jobsApi'
 import type { ReportOtherBreakdown, ReportThemeSummary } from './reportApi'
+import type { AnswerMapResponse } from './themesApi'
 
 // Same labels the server sets in app/api_themes.py `_start_look_inside`.
 export const STEPS = ['Finding new groups', 'Sorting into main themes and sub-themes', 'Matching answers to themes', 'Updating the themes'] as const
@@ -57,8 +58,6 @@ export interface InsideOtherModel {
   banner: string | null
   failedCount: number
   subThemes: Array<{ label: string; parent: string; count: number }> // new sub-themes inside known themes
-  // The scatter plot: each group's colour matches its numbered row (known themes) or leaf (new themes).
-  pointMap: PointMap | null
   error: string | null
   charts: { icicle?: LookInsideOtherChart }
 }
@@ -111,11 +110,20 @@ function leaves(
 
 const fromRecord = (r: Record<string, number> | undefined) => Object.entries(r ?? {}).map(([label, count]) => ({ label, count }))
 
-function pointMap(r: LookInsideOtherResult, realThemes: string[], answers: number): PointMap | null {
-  const pm = r.point_map
-  if (!pm || pm.points.length === 0) return null
+// The scatter plot under Inside Other: every theme's answers (GET /themes/answer-map), coloured like the
+// panel's numbered rows (known themes) and leaves (this run's new themes); Other is grey and drawn first.
+export function answerMapModel(
+  raw: AnswerMapResponse | null, r: LookInsideOtherResult | null, realThemes: string[],
+): PointMap | null {
+  if (!raw || raw.points.length === 0) return null
+  const newThemes = r?.new_themes ?? []
+  const isNew = new Set(newThemes.map((t) => t.label))
+  const pm = {
+    groups: raw.groups.map((g) => ({ label: g.label, kind: g.other ? 'still' : isNew.has(g.label) ? 'new' : 'known' })),
+    points: raw.points,
+  }
   // New themes take the same accent step as their leaf in the columns: ranked by size.
-  const newRank = [...r.new_themes].sort((a, b) => b.count - a.count).map((t) => t.label)
+  const newRank = [...newThemes].sort((a, b) => b.count - a.count).map((t) => t.label)
   const colorOf = (g: { kind: string; label: string }) => {
     if (g.kind === 'new') return newColor(Math.max(0, newRank.indexOf(g.label))).color
     if (g.kind === 'known') {
@@ -127,12 +135,12 @@ function pointMap(r: LookInsideOtherResult, realThemes: string[], answers: numbe
   const dots = pm.groups.map(() => 0)
   for (const [, , g] of pm.points) dots[g] = (dots[g] ?? 0) + 1
   const rank = (k: string) => ['still', 'known', 'new'].indexOf(k)
-  const sorted = pm.groups.map((g, i) => ({ ...g, i })).sort((a, b) => rank(a.kind) - rank(b.kind) || dots[b.i] - dots[a.i])
+  const sorted = pm.groups.map((g, i) => ({ ...g, i })).filter((g) => dots[g.i] > 0).sort((a, b) => rank(a.kind) - rank(b.kind) || dots[b.i] - dots[a.i])
   const remap = new Map(sorted.map((g, j) => [g.i, j]))
   return {
-    groups: sorted.map((g) => ({ kind: g.kind, label: g.label, color: colorOf(g), dots: dots[g.i] })),
+    groups: sorted.map((g) => ({ kind: g.kind as PointGroup['kind'], label: g.label, color: colorOf(g), dots: dots[g.i] })),
     points: pm.points.filter(([, , g]) => remap.has(g)).map(([x, y, g]) => [x, y, remap.get(g)!]),
-    sampled: pm.points.length < answers,
+    sampled: pm.points.length < raw.answers,
   }
 }
 
@@ -155,7 +163,7 @@ export function insideOtherModel(
     known: [], knownMore: 0, knownTotal: 0, newThemes: [], newMore: 0, newTotal: 0,
     still: breakdown?.noise_count ?? null, sourceTotal: null, answeredTotal: null, otherBeforePct: null,
     otherNowPct: breakdown?.noise_share ?? null,
-    banner: null, failedCount: 0, subThemes: [], pointMap: null, error: null, charts: {},
+    banner: null, failedCount: 0, subThemes: [], error: null, charts: {},
   }
   if (!job) return base
 
@@ -224,7 +232,6 @@ export function insideOtherModel(
     banner: `Done. ${found}${moved}`,
     failedCount: r.failed_classification_count ?? 0,
     subThemes: subThemes.map(({ label, parent, count }) => ({ label, parent, count })),
-    pointMap: pointMap(r, realThemes, before ?? r.known_added + newTotal + r.still_other_count),
     charts: { icicle: r.charts?.icicle },
   }
 }

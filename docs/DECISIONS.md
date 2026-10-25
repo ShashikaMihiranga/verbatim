@@ -3241,3 +3241,17 @@ existing theme; the report shows the finished run's result only, with no button.
   when the map is a sample, so they never contradict the answer counts above.
 - Runs finished before this have no map; the plot appears from the next Look inside run.
 
+## 2026-10-25 (the answer map covers the whole column, not only Other)
+
+- User: the scatter plot "needs to cover the whole data set, not only Other". Replaces the Other-only
+  `point_map` from `9403f5d` (that code and its tests are removed; runs no longer compute a layout).
+- New `GET /datasets/{id}/themes/answer-map?column=`: the positions sample stored at theme build
+  (`Column.answer_positions`, up to 3,000 answers), each dot grouped by the theme its answer is in now, so
+  answers Look inside Other moved show in their new theme. No paid call.
+- Theme builds now lay those positions out with UMAP (`_layout_2d`, cosine, fixed seed; PCA below 50
+  answers) instead of PCA, which squeezed every theme into one blob. This also feeds the report's
+  `answer_map` block. Positions stored before this stay PCA until the next theme build (checked on
+  dataset 14: one blob). The backend suite takes ~15 s longer (UMAP in theme-build tests).
+- The panel's "How all answers group" plot fetches the map when a run is done; colours match the numbered
+  rows, this run's new themes are outlined, Other is grey underneath.
+

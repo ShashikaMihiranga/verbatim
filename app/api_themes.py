@@ -297,71 +297,26 @@ def _sample_answer_positions(embedded: "EmbeddedAnswers | None", seed: int = 0) 
         sample_idx = np.arange(len(embedded.row_indexes))
     else:
         sample_idx = rng.choice(len(embedded.row_indexes), size=MAX_ANSWER_POSITIONS, replace=False)
-    xy = _pca_normalize_01(np.asarray(embedded.vectors)[sample_idx])
+    xy = _layout_2d(np.asarray(embedded.vectors)[sample_idx])
     return {embedded.row_indexes[i]: (float(x), float(y)) for i, (x, y) in zip(sample_idx, xy)}
 
 
-# Inside Other's scatter plot: a sample of Other's answers, laid out so similar answers sit together and
-# coloured by where each one went. 1,500 dots already read as a dense map.
-MAX_OTHER_POINTS = 1500
-# Below this many answers UMAP's neighbour graph is not trustworthy (same floor clustering uses).
+# Below this many answers UMAP's neighbour graph is not trustworthy (the same floor clustering uses).
 MIN_POINTS_FOR_UMAP = 50
 
 
-def _other_point_map(
-    rows: list[int], vec_by_row: dict[int, list[float]], dest_by_row: dict[int, tuple[str, str]], seed: int,
-) -> dict | None:
-    """2D positions for a reproducible sample of Look inside Other's answers, from the embeddings the run
-    already computed (no new call). `dest_by_row` maps a row to (kind, label): kind "known", "new" or
-    "still". UMAP with the clustering's own metric, so the groups HDBSCAN found show as separate clouds; a
-    plain PCA below `MIN_POINTS_FOR_UMAP`. Returns `{"groups": [{"kind", "label"}], "points": [[x, y, g]]}`
-    with x/y in 0..1 (y down) and g an index into groups, or None with fewer than 2 points."""
-    have = [r for r in rows if r in vec_by_row]
-    if len(have) < 2:
-        return None
-    rng = np.random.default_rng(seed)
-    if len(have) > MAX_OTHER_POINTS:
-        have = [have[i] for i in sorted(rng.choice(len(have), size=MAX_OTHER_POINTS, replace=False))]
-    vectors = np.asarray([vec_by_row[r] for r in have], dtype=float)
-    if len(have) >= MIN_POINTS_FOR_UMAP:
-        import umap  # heavy import, only when a run actually needs it
-        xy = umap.UMAP(n_components=2, n_neighbors=min(15, len(have) - 1), min_dist=0.1, metric="cosine",
-                       random_state=42).fit_transform(vectors)
-        lo, span = xy.min(axis=0), np.ptp(xy, axis=0)
-        span[span == 0] = 1.0
-        xy = (xy - lo) / span
-    else:
-        xy = _pca_normalize_01(vectors)
-    groups: list[dict[str, str]] = []
-    index: dict[tuple[str, str], int] = {}
-    points = []
-    for r, (x, y) in zip(have, xy):
-        key = dest_by_row.get(r, ("still", "Other"))
-        if key not in index:
-            index[key] = len(groups)
-            groups.append({"kind": key[0], "label": key[1]})
-        points.append([round(float(x), 3), round(float(y), 3), index[key]])
-    return {"groups": groups, "points": points}
-
-
-def _other_destinations(
-    rows: list[int], by_row: dict[int, str], known_themes: dict, summary: dict,
-) -> dict[int, tuple[str, str]]:
-    """Where each Other answer ended up, by the same rules `_apply_other_classification` applied: a
-    sub-theme's answers count for its parent; a new group that was too small to keep went back to Other."""
-    parent = {g["label"]: g["parent"] for g in summary.get("sub_theme_gains") or []}
-    kept_new = {t["label"] for t in summary.get("new_themes") or []}
-    out: dict[int, tuple[str, str]] = {}
-    for r in rows:
-        choice = by_row.get(r)
-        choice = parent.get(choice, choice)
-        if choice in known_themes:
-            out[r] = ("known", choice)
-        elif choice in kept_new:
-            out[r] = ("new", choice)
-        else:
-            out[r] = ("still", "Other")
-    return out
+def _layout_2d(vectors: np.ndarray) -> np.ndarray:
+    """Per-answer 2D layout, both columns scaled to 0..1. UMAP with the clustering's own cosine metric, so
+    the groups HDBSCAN found show as separate clouds on the answer map (a plain PCA squeezes them into one
+    blob); PCA below `MIN_POINTS_FOR_UMAP`. Local only, no network cost; fixed seed, so reproducible."""
+    if len(vectors) < MIN_POINTS_FOR_UMAP:
+        return _pca_normalize_01(vectors)
+    import umap  # heavy import, only when a build needs it
+    xy = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, metric="cosine",
+                   random_state=42).fit_transform(vectors)
+    lo, span = xy.min(axis=0), np.ptp(xy, axis=0)
+    span[span == 0] = 1.0
+    return (xy - lo) / span
 
 
 def _project_centroids_2d(centroids: list[list[float] | None]) -> list[tuple[float, float] | None]:
@@ -1136,12 +1091,7 @@ def _start_look_inside(
                 summary["charts"] = _build_other_result_charts(new_theme_rows)
             if summary is not None:
                 summary["before_chart"] = before_chart
-                try:
-                    summary["point_map"] = _other_point_map(
-                        rows, vec_by_row, _other_destinations(rows, classification.by_row, known_themes, summary),
-                        seed=dataset_id_)
-                except Exception:  # the map is a picture of the result; never fail a finished run over it
-                    log.exception("Inside Other point map failed for dataset %s column %r", dataset_id_, column)
+
             # Written in the SAME session/commit as the Theme-row changes above, not via jobs.py's own
             # `_set_step`/`_mark_done` (those only ever touch a still-"running" job, guarding against a
             # watchdog that already failed it out from under this thread - writing `result` here, before
@@ -1504,6 +1454,30 @@ def list_themes(dataset_id: int, column: str, db: Session = Depends(get_db), use
     return {
         "dataset_id": ds.id, "column": column, "total_answers": total,
         "themes": [_theme_dict(t, total) for t in rows],
+    }
+
+
+@router.get("/datasets/{dataset_id}/themes/answer-map")
+def answer_map(dataset_id: int, column: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Every theme's answers on one map, for the scatter plot under Inside Other: the sample of positions
+    stored at theme build (`Column.answer_positions`, up to `MAX_ANSWER_POSITIONS`), each dot coloured by
+    the theme its answer is in NOW, so answers Look inside Other moved show in their new theme.
+    `{"answers": total answers, "groups": [{"label", "other"}], "points": [[x, y, group]]}`; x/y in 0..1;
+    empty `points` when the themes were built before positions were stored."""
+    ds = _own_dataset(db, user, dataset_id)
+    rows = _stored_themes(db, ds.id, column)
+    col_row = db.scalar(select(Column).where(Column.dataset_id == ds.id, Column.name == column))
+    positions = (col_row.answer_positions if col_row is not None else None) or {}
+    theme_of: dict[int, int] = {}
+    for gi, t in enumerate(rows):
+        for r in t.answer_refs or []:
+            theme_of[int(r)] = gi
+    points = [[round(float(xy[0]), 3), round(float(xy[1]), 3), theme_of[int(r)]]
+              for r, xy in positions.items() if int(r) in theme_of]
+    return {
+        "answers": sum(t.size for t in rows),
+        "groups": [{"label": t.label, "other": t.label == "Other"} for t in rows],
+        "points": points,
     }
 
 

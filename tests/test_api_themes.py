@@ -1104,9 +1104,6 @@ def test_look_inside_other_end_to_end_matches_everything_to_a_known_theme(env):
     assert job["error"] is None
     # The themes chart as it was before the run, shown above the updated one (user flow, 2026-10-25).
     before = job["result"].pop("before_chart")
-    point_map = job["result"].pop("point_map")
-    assert point_map["groups"] == [{"kind": "known", "label": "Cost"}]
-    assert len(point_map["points"]) == 3 and all(0 <= x <= 1 and 0 <= y <= 1 and g == 0 for x, y, g in point_map["points"])
     assert "Other" in before["chart_html"] and before["chart_width"] > 0
     # Stage 3 (docs/TODO.md, 2026-10-21): the job's own `result` carries the real Known/New/Still-in-Other
     # counts the animated flow's results panel needs - written in the same commit as the Theme-row changes,
@@ -1981,32 +1978,42 @@ def test_rebuilding_themes_drops_the_previous_look_inside_result(env):
 
 
 
-def test_other_point_map_lays_out_a_sample_and_names_each_dots_destination():
-    from app.api_themes import MAX_OTHER_POINTS, _other_destinations, _other_point_map
+def test_answer_map_puts_every_themes_answers_on_one_map(env):
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    assert build_themes_job(env, did, timeout=30)["status"] == "done"
+    themes = env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["themes"]
+    got = env.client.get(f"/api/datasets/{did}/themes/answer-map", params={"column": Q})
+    assert got.status_code == 200, got.text
+    assert got.json()["points"] == []  # this test upload has no Column row, so no stored positions
+    # Positions as a theme build stores them: a sample keyed by row, here every answer plus a stray row.
+    from app.models import Column as ColumnRow, Theme as ThemeRow
+    with env.Session() as s:
+        refs = [r for t in s.query(ThemeRow).filter_by(dataset_id=did).all() for r in t.answer_refs]
+        s.add(ColumnRow(dataset_id=did, name=Q, position=0, kind="open_text", stats={},
+                        answer_positions={**{str(r): [0.5, 0.25] for r in refs}, "999999": [0.1, 0.1]}))
+        s.commit()
+    body = env.client.get(f"/api/datasets/{did}/themes/answer-map", params={"column": Q}).json()
+    assert len(body["points"]) == len(refs)  # the stray row belongs to no theme: no dot
+    assert body["answers"] == sum(t["size"] for t in themes)
+    assert [g["label"] for g in body["groups"]] == [t["label"] for t in themes]
+    assert [g["other"] for g in body["groups"]] == [t["label"] == "Other" for t in themes]
+    # Whole dataset, not only Other: every theme with answers has dots, each in the 0..1 square.
+    assert {g for _, _, g in body["points"]} == {i for i, t in enumerate(themes) if t["size"] > 0}
+    assert all(0 <= x <= 1 and 0 <= y <= 1 for x, y, _ in body["points"])
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(id=999_999)
+    assert env.client.get(f"/api/datasets/{did}/themes/answer-map", params={"column": Q}).status_code == 404
+
+
+def test_layout_2d_keeps_separate_groups_apart():
+    from app.api_themes import MIN_POINTS_FOR_UMAP, _layout_2d
     rng = np.random.default_rng(0)
-    # Two well-separated clouds of 60 answers each.
-    vec_by_row = {r: list(rng.normal(0 if r < 60 else 5, 0.1, 8)) for r in range(120)}
-    rows = list(vec_by_row)
-    by_row = {r: ("Cost" if r < 60 else "Parking woes") for r in range(110)}  # 110..119 unmatched
-    summary = {"new_themes": [{"label": "Parking woes", "count": 50}], "sub_theme_gains": []}
-    dest = _other_destinations(rows, by_row, {"Cost": None}, summary)
-    assert dest[0] == ("known", "Cost") and dest[70] == ("new", "Parking woes") and dest[115] == ("still", "Other")
-    pm = _other_point_map(rows, vec_by_row, dest, seed=1)
-    assert {(g["kind"], g["label"]) for g in pm["groups"]} == {("known", "Cost"), ("new", "Parking woes"), ("still", "Other")}
-    assert len(pm["points"]) == 120 and all(0 <= x <= 1 and 0 <= y <= 1 for x, y, _ in pm["points"])
-    # UMAP keeps the two clouds apart: the Cost dots' mean sits far from the Parking dots' mean.
-    cost = [i for i, g in enumerate(pm["groups"]) if g["label"] == "Cost"][0]
-    cx = np.mean([[x, y] for x, y, g in pm["points"] if g == cost], axis=0)
-    px = np.mean([[x, y] for x, y, g in pm["points"] if g != cost], axis=0)
-    assert np.linalg.norm(cx - px) > 0.3
-    assert pm == _other_point_map(rows, vec_by_row, dest, seed=1)  # reproducible
-    many = {r: list(rng.normal(0, 1, 4)) for r in range(MAX_OTHER_POINTS + 200)}
-    assert len(_other_point_map(list(many), many, {}, seed=2)["points"]) == MAX_OTHER_POINTS
-    assert _other_point_map([1], {1: [0.0, 1.0]}, {}, seed=0) is None
-
-
-def test_other_destinations_follow_sub_themes_and_folded_groups():
-    from app.api_themes import _other_destinations
-    summary = {"new_themes": [], "sub_theme_gains": [{"label": "Price rises", "parent": "Cost", "count": 3, "is_sub_theme": False}]}
-    dest = _other_destinations([1, 2], {1: "Price rises", 2: "Tiny group"}, {"Cost": None}, summary)
-    assert dest == {1: ("known", "Cost"), 2: ("still", "Other")}
+    a = rng.normal(0, 0.05, (60, 16)) + np.eye(16)[0]
+    b = rng.normal(0, 0.05, (60, 16)) + np.eye(16)[1]
+    xy = _layout_2d(np.vstack([a, b]))
+    assert xy.shape == (120, 2) and xy.min() >= 0 and xy.max() <= 1
+    assert np.linalg.norm(xy[:60].mean(axis=0) - xy[60:].mean(axis=0)) > 0.3
+    assert np.array_equal(xy, _layout_2d(np.vstack([a, b])))  # fixed seed: reproducible
+    small = _layout_2d(rng.normal(size=(MIN_POINTS_FOR_UMAP - 1, 4)))  # PCA below the floor
+    assert small.shape == (MIN_POINTS_FOR_UMAP - 1, 2)
