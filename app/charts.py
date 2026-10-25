@@ -419,21 +419,86 @@ def rank_legend():
                 f'<span style="width:16px;height:16px;border-radius:3px;background:{c}"></span>{t}</span>')
     return (sw("var(--neg)", "More negative than average") + sw("var(--neu)", "About average") + sw("var(--pos)", "Milder than average"))
 
+def rank_sub_rows(data, mobile=False):
+    """Each theme's sub-themes under it, bar length on the same share-of-answered scale as rank_rows.
+    Sub-themes keep no tone or exact count of their own (only `SubTheme.share`), so their bars are
+    neutral and the sentiment column is blank rather than borrowing the parent's numbers."""
+    mx = max((t.share for t in data.themes), default=0) or 1
+    o = ""
+    for t in data.themes:
+        if not t.children:
+            continue
+        o += (f'<div style="padding:{"14px 12px 2px" if mobile else "18px 16px 4px"};font-size:{15 if mobile else 17}px;font-weight:600">'
+              f'{esc(t.name)} <span style="font-weight:400;color:var(--muted)">{t.share}%</span></div>')
+        for c in t.children:
+            pct = c.share / mx * 100
+            if mobile:
+                o += (f'<div style="padding:6px 12px 6px 24px"><div style="font-size:15px">{esc(c.name)}</div>'
+                      f'<div style="display:flex;align-items:center;gap:10px;margin-top:4px"><div style="width:{c.share / mx * 236:.0f}px;height:18px;border-radius:3px;background:var(--neu);flex:none"></div>'
+                      f'<div style="font-size:15px;font-weight:600">{c.share}%</div></div></div>')
+            else:
+                o += (f'<div style="display:flex;align-items:center;height:48px;padding:0 16px 0 36px">'
+                      f'<div style="flex:0 0 calc(clamp(160px,18%,280px) - 20px);font-size:16px">{esc(c.name)}</div>'
+                      f'<div style="flex:1;display:flex;align-items:center;gap:14px">'
+                      f'<div style="flex:1;min-width:0"><div style="width:{pct:.1f}%;height:22px;border-radius:3px;background:var(--neu)"></div></div>'
+                      f'<div style="font-size:17px;font-weight:600;flex:none">{c.share}%</div></div>'
+                      f'<div style="flex:0 0 clamp(70px,8%,110px);text-align:right;color:var(--muted)">&mdash;</div></div>')
+    return o
+
+def rank_switch(data, themes_html, subs_html, small=False):
+    """A working Themes / Sub-themes switch (BUG-055: it used to be a drawing of one). Chart fragments are
+    injected as HTML and cannot run scripts, so each label wraps a hidden radio and `:has()` rules pick
+    the list; no element ids, so two copies of a chart on one page cannot steer each other. The radio
+    group name hashes the chart's themes and selected theme. Returns (uid, switch, body), both to sit
+    inside one element with class `uid`; with no sub-themes there is nothing to switch to: None."""
+    if not subs_html:
+        return None
+    key = repr([data.selected_theme] + [(t.name, t.share, [c.name for c in t.children]) for t in data.themes]).encode()
+    uid = f"vbrk{zlib.crc32(key):08x}{'m' if small else ''}"
+    # Colour and weight live in the rules, not inline: an inline colour would beat the checked state's.
+    btn = f'padding:8px {14 if small else 18}px;font-size:{14 if small else 15}px;cursor:pointer;user-select:none'
+    style = (f'<style>.{uid} label{{color:var(--muted);font-weight:500}}'
+             f'.{uid} label>input{{position:absolute;opacity:0;width:1px;height:1px;margin:0}}'
+             f'.{uid} label:has(input:checked){{background:var(--accent);color:var(--on-accent);font-weight:600}}'
+             f'.{uid} label:has(input:focus-visible){{outline:2px solid var(--ink);outline-offset:-3px}}'
+             f'.{uid}-sub{{display:none}}'
+             f'.{uid}:has(input[value=sub]:checked) .{uid}-th{{display:none}}'
+             f'.{uid}:has(input[value=sub]:checked) .{uid}-sub{{display:block}}</style>')
+    switch = (f'{style}<div role="radiogroup" aria-label="Show" style="position:relative;display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)">'
+              f'<label style="{btn}"><input type="radio" name="{uid}" value="themes" checked>Themes</label>'
+              f'<label style="{btn};border-left:1px solid var(--line)"><input type="radio" name="{uid}" value="sub">Sub-themes</label></div>')
+    body = f'<div class="{uid}-th">{themes_html}</div><div class="{uid}-sub">{subs_html}</div>'
+    return uid, switch, body
+
+RANK_SUBS_NOTE = "Bar length is share of all answered. Sub-themes have no tone of their own yet."
+
 def f_rank(data: ReportData):
-    body = (f'<div style="padding:56px 48px"><div style="display:flex;justify-content:space-between;align-items:flex-start">'
-            f'<div>{hdr("What should we fix first?", f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f}).")}</div>'
-            f'{seg(["Themes", "Sub-themes"], "Themes")}</div>'
-            f'<div style="margin-top:22px;display:flex;flex-wrap:wrap">{rank_legend()}</div>'
-            f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="flex:0 0 clamp(160px,18%,280px)">Theme</div><div style="flex:1">Share of answered, with count</div><div style="flex:0 0 clamp(70px,8%,110px);text-align:right">Avg sentiment</div></div>'
-            f'{rank_rows(data, False, None, data.selected_theme)}</div>')
+    head = hdr("What should we fix first?", f"Bar length is share of answered. Tint compares each theme with the overall average ({data.overall_sentiment:.2f}).")
+    themes_html = (f'<div style="margin-top:22px;display:flex;flex-wrap:wrap">{rank_legend()}</div>'
+                   f'<div style="display:flex;padding:22px 16px 8px;font-size:13px;font-weight:500;color:var(--muted)"><div style="flex:0 0 clamp(160px,18%,280px)">Theme</div><div style="flex:1">Share of answered, with count</div><div style="flex:0 0 clamp(70px,8%,110px);text-align:right">Avg sentiment</div></div>'
+                   f'{rank_rows(data, False, None, data.selected_theme)}')
+    subs = rank_sub_rows(data)
+    sw = rank_switch(data, themes_html, f'<div style="margin-top:22px;font-size:14px;color:var(--muted)">{RANK_SUBS_NOTE}</div>{subs}' if subs else "")
+    if sw is None:
+        return f'<div style="padding:56px 48px">{head}{themes_html}</div>', 1180, 860
+    uid, switch, inner = sw
+    body = (f'<div class="{uid}" style="padding:56px 48px">'
+            f'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">'
+            f'<div>{head}</div>{switch}</div>{inner}</div>')
     return body, 1180, 860
 
 def f_rank_m(data: ReportData):
-    body = (f'<div style="padding:24px 16px">{hdr("What should we fix first?")}'
-            f'<div style="margin-top:14px">{seg(["Themes", "Sub-themes"], "Themes", None, True)}</div>'
-            f'<div style="margin-top:14px;display:flex;flex-wrap:wrap;row-gap:6px">{rank_legend()}</div>'
-            f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">{esc(data.selected_theme)} selected, others dimmed</div>'
-            f'<div style="margin-top:6px">{rank_rows(data, True, data.selected_theme)}</div></div>')
+    head = hdr("What should we fix first?")
+    themes_html = (f'<div style="margin-top:14px;display:flex;flex-wrap:wrap;row-gap:6px">{rank_legend()}</div>'
+                   f'<div style="margin-top:12px;font-size:13px;color:var(--muted)">{esc(data.selected_theme)} selected, others dimmed</div>'
+                   f'<div style="margin-top:6px">{rank_rows(data, True, data.selected_theme)}</div>')
+    subs = rank_sub_rows(data, True)
+    sw = rank_switch(data, themes_html, f'<div style="margin-top:14px;font-size:13px;color:var(--muted)">{RANK_SUBS_NOTE}</div>{subs}' if subs else "", small=True)
+    if sw is None:
+        return f'<div style="padding:24px 16px">{head}{themes_html}</div>', 390, 960
+    uid, switch, inner = sw
+    body = (f'<div class="{uid}" style="padding:24px 16px">{head}'
+            f'<div style="margin-top:14px">{switch}</div>{inner}</div>')
     return body, 390, 960
 
 # ---------- other-growth (docs/TODO.md, 2026-10-23 - "Look inside Other"'s own result-chart tabs) ----------

@@ -37,6 +37,19 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-055 — "What should we fix first?" has a Themes / Sub-themes switch that cannot be clicked**
+  - Found: 2026-10-25, the user (screenshot of a dominant-theme finding): "this is supposed to have
+    clickable sub-themes, why can't I click it".
+  - Cause: `f_rank`/`f_rank_m` drew the switch with `seg()`, a static picture of a segmented control copied
+    from the design. Nothing behind it; there was no sub-theme list to switch to.
+  - **Fixed:** (this commit). `rank_switch` makes it two hidden radios inside labels, and `:has()` rules
+    show either the theme rows or a new `rank_sub_rows` list (each top theme's sub-themes, bar on the same
+    share scale). Chart fragments are injected HTML and can't run scripts, hence CSS only; no element ids,
+    so two copies of the chart on one page don't steer each other. Sub-themes store no tone, so their bars
+    are neutral and the sentiment column shows a dash. With no sub-themes (or a filter active) the switch
+    is not drawn. Checked live on dataset 12. Tests: `test_rank_sub_themes_switch_is_a_real_control`,
+    `test_rank_without_sub_themes_has_no_switch`; `rank`/`rank-mobile` goldens regenerated.
+
 - [x] **BUG-054 — Tone sunburst prints "34.262107828205906%" for All other answers**
   - Found: 2026-10-25, the user (screenshot of a finding's "Which themes sound negative or positive?"
     chart): "there is no point showing all the decimals". The long labels also overlap in the table.

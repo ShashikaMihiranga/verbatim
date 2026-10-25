@@ -915,3 +915,27 @@ def test_narrow_tall_other_box_keeps_a_compact_pointer():
     # The name is still there for screen readers and on hover, and the share is never word-broken.
     assert 'title="113 more themes 50.7%"' in cell
     assert "overflow-wrap:break-word" not in cell
+
+
+def test_rank_sub_themes_switch_is_a_real_control():
+    """BUG-055: the Themes / Sub-themes switch was a drawing; it must be inputs that show the sub-theme list."""
+    from app.charts import f_rank, f_rank_m
+    from app.fixtures.ev_sample import EV
+    for fn in (f_rank, f_rank_m):
+        body = fn(EV)[0]
+        assert body.count('type="radio"') == 2 and 'value="sub"' in body
+        assert ":has(input[value=sub]:checked)" in body
+        for t in EV.themes:
+            for c in t.children:
+                assert c.name in body
+        assert " id=" not in body  # no ids: two copies of the chart on one page must not steer each other
+
+
+def test_rank_without_sub_themes_has_no_switch():
+    from dataclasses import replace
+    from app.charts import f_rank, f_rank_m
+    from app.fixtures.ev_sample import EV
+    bare = replace(EV, themes=[replace(t, children=[]) for t in EV.themes])
+    for fn in (f_rank, f_rank_m):
+        body = fn(bare)[0]
+        assert "Sub-themes" not in body and "<input" not in body
