@@ -3499,3 +3499,11 @@ made-up example numbers, not customer data. The 10k survey stays the sample behi
 (`/sample`), linked under the panel as "See a real report built from a workplace survey". This supersedes
 the "Report tabs" bullet of the entry above; `SAMPLE_TABS` is gone.
 
+### 2026-10-26 follow-up: no pause buttons on the home page
+
+User's call: the pause/play buttons are removed from the hero, the steps, the report tabs and the map. The
+hand-off (and WCAG 2.2.2) asks for a way to stop moving content, so each section now pauses while the
+pointer is over it or keyboard focus is inside it, and arrow keys on the tabs stop their auto-advance for
+good. Reduced motion still shows finished states with nothing moving. Noted for the team: a visible
+control is the more robust way to meet 2.2.2 (hover does not exist on touch screens).
+

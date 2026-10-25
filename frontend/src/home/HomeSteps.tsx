@@ -1,7 +1,6 @@
 import { animate, createScope, createTimeline, stagger, svg, utils, type JSAnimation, type Timeline } from 'animejs'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Icon, StepIcon } from './homeArt'
-import { PauseButton } from './homeFit'
 import { onView, useReducedMotion, watchVisible } from './homeMotion'
 
 // Five steps (hand-off section 3): cards zoom up into place, then each takes a turn (about 3.4s): it
@@ -24,7 +23,6 @@ export default function HomeSteps() {
   const root = useRef<HTMLDivElement | null>(null)
   const api = useRef<{ jump: (i: number) => void; setPaused: (p: boolean) => void } | null>(null)
   const [active, setActive] = useState(-1)
-  const [playing, setPlaying] = useState(true)
 
   useEffect(() => {
     const el = root.current
@@ -106,11 +104,9 @@ export default function HomeSteps() {
     return () => { cleanups.forEach((c) => c()); api.current = null; scope.revert() }
   }, [reduce])
 
-  const toggle = () => { api.current?.setPaused(playing); setPlaying(!playing) }
-
   return (
     <>
-      <div ref={root} className="hd-steps">
+      <div ref={root} className="hd-steps" onFocus={() => api.current?.setPaused(true)} onBlur={() => api.current?.setPaused(false)}>
         {STEPS.map((s, i) => (
           <Fragment key={s.title}>
             {i > 0 && (
@@ -131,7 +127,6 @@ export default function HomeSteps() {
           </Fragment>
         ))}
       </div>
-      {!reduce && <div className="hd-steps-ctl"><PauseButton playing={playing} onToggle={toggle} label="the steps animation" /></div>}
     </>
   )
 }

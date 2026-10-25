@@ -83,9 +83,10 @@ describe('home page D', () => {
     expect(text).not.toContain('Claude reads the topics') // Voyage embeds; Claude only names groups from samples
   })
 
-  it('shows no pause controls and no looping under reduced motion', async () => {
+  it('has no pause or play buttons (hovering or focusing a section pauses it instead)', async () => {
     await mount()
-    expect(Array.from(container.querySelectorAll('button')).some((b) => /^(Pause|Play) /.test(b.getAttribute('aria-label') ?? ''))).toBe(false)
+    const buttons = Array.from(container.querySelectorAll('button'))
+    expect(buttons.some((b) => /\b(pause|play)\b/i.test(`${b.textContent} ${b.getAttribute('aria-label') ?? ''}`))).toBe(false)
   })
 
   it('has real tabs with arrow keys, each showing the mockup chart and sentence', async () => {

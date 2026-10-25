@@ -35,11 +35,6 @@ html:has(.hd) { scroll-behavior: smooth; }
 .hd-btn.ghost { border-color: var(--ink); padding: 0 26px; }
 .hd-btn:focus-visible, .hd-outline:focus-visible, .hd-links a:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 3px; }
 
-/* small round control: pause / play */
-.hd-ctl { height: 36px; padding: 0 14px; border-radius: 18px; border: 1.5px solid var(--line); background: var(--surface);
-  color: var(--ink); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
-.hd-ctl:hover { border-color: var(--accent); }
-
 /* ---- 2. hero */
 .hd-hero { display: flex; gap: 30px; padding-top: 36px; min-height: 690px; }
 .hd-hero-text { width: 560px; flex: none; padding-top: 70px; }
@@ -49,7 +44,6 @@ html:has(.hd) { scroll-behavior: smooth; }
 .hd-hero-stage { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-end; padding-top: 4px; }
 .hd-fit { position: relative; width: 720px; max-width: 100%; }
 .hd-fit-in { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-.hd-stage-ctl { margin-top: 8px; }
 
 .hd-sheet, .hd-report { position: absolute; top: 30px; height: 482px; border: 1.5px solid var(--line); border-radius: 20px; background: var(--surface); }
 .hd-sheet { left: 0; width: 350px; overflow: hidden; }
@@ -95,7 +89,6 @@ html:has(.hd) { scroll-behavior: smooth; }
 .hd-st-b { font-size: 17px; line-height: 1.5; color: var(--muted); margin-top: 8px; flex: 1; }
 .hd-who { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; margin-top: 18px; padding: 6px 12px 6px 8px; border-radius: 16px; background: var(--bg); font-size: 14px; font-weight: 600; }
 .hd-arr { width: 26px; display: flex; align-items: center; justify-content: center; flex: none; }
-.hd-steps-ctl { display: flex; justify-content: flex-end; margin-top: 18px; }
 
 /* ---- 4. report tabs */
 .hd-tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 44px; }
@@ -153,7 +146,6 @@ html:has(.hd) { scroll-behavior: smooth; }
 .dg-mode button { height: 42px; padding: 0 18px; border: 0; font: inherit; font-size: 14.5px; font-weight: 600; cursor: pointer; background: transparent; color: var(--ink); }
 .dg-mode button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
 .dg-round { width: 42px; height: 42px; border-radius: 21px; border: 1.5px solid var(--line); background: var(--surface); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--ink); }
-.dg-play { height: 42px; padding: 0 20px; border-radius: 21px; border: 1.5px solid var(--accent); background: var(--accent); color: var(--on-accent); font: inherit; font-size: 14.5px; font-weight: 600; cursor: pointer; }
 .hd-map-fit { margin-top: 34px; }
 .dg-map { position: relative; width: 1312px; height: 920px; }
 .dg-zone { position: absolute; border: 1.5px dashed var(--line); border-radius: 22px; z-index: 0; }

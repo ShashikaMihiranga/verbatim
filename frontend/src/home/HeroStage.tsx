@@ -1,6 +1,6 @@
 import { createScope, createTimeline, animate, stagger, utils, type Timeline } from 'animejs'
-import { useEffect, useRef, useState } from 'react'
-import { Fit, PauseButton } from './homeFit'
+import { useEffect, useRef } from 'react'
+import { Fit } from './homeFit'
 import { screenScale, useReducedMotion } from './homeMotion'
 
 // Hero stage (hand-off section 2): two scenes take turns. Scene 1, a sheet becomes a report; scene 2,
@@ -36,7 +36,6 @@ export default function HeroStage() {
   const reduce = useReducedMotion()
   const root = useRef<HTMLDivElement | null>(null)
   const control = useRef<{ pause: () => void; play: () => void } | null>(null)
-  const [playing, setPlaying] = useState(true)
 
   useEffect(() => {
     const el = root.current
@@ -157,14 +156,12 @@ export default function HeroStage() {
     return () => { timers.forEach((t) => window.clearTimeout(t)); control.current = null; scope.revert() }
   }, [reduce])
 
-  const toggle = () => {
-    if (playing) control.current?.pause()
-    else control.current?.play()
-    setPlaying(!playing)
-  }
+  // No pause button (user's call, 2026-10-26): pointing at the stage or focusing into it pauses the scenes.
+  const hold = () => { if (!reduce) control.current?.pause() }
+  const resume = () => { if (!reduce) control.current?.play() }
 
   return (
-    <div className="hd-hero-stage">
+    <div className="hd-hero-stage" onMouseEnter={hold} onMouseLeave={resume} onFocus={hold} onBlur={resume}>
       <Fit w={720} h={560}>
         <div ref={root} role="img" aria-label="Animation: a sheet of written answers becomes a short report, then phrases from answers are highlighted and sorted into themes."
           style={{ position: 'relative', width: 720, height: 560 }}>
@@ -218,7 +215,6 @@ export default function HeroStage() {
           </div>
         </div>
       </Fit>
-      {!reduce && <div className="hd-stage-ctl"><PauseButton playing={playing} onToggle={toggle} label="the hero animation" /></div>}
     </div>
   )
 }

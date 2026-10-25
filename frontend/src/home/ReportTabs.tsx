@@ -1,7 +1,6 @@
 import { animate, stagger, svg, utils, type JSAnimation } from 'animejs'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { PauseButton } from './homeFit'
 import { BLOCK_TABS } from './homeBlocks'
 import { useReducedMotion } from './homeMotion'
 
@@ -30,7 +29,8 @@ function reveal(el: Element): JSAnimation[] {
 export default function ReportTabs() {
   const reduce = useReducedMotion()
   const [cur, setCur] = useState(0)
-  const [playing, setPlaying] = useState(true)
+  const [held, setHeld] = useState(false) // pointer or keyboard focus on the tabs: stop auto-advancing
+  const [taken, setTaken] = useState(false) // the reader moved with the keys: stop for good
   const [replay, setReplay] = useState(0)
   const chart = useRef<SVGSVGElement | null>(null)
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -41,24 +41,24 @@ export default function ReportTabs() {
     return () => anims.forEach((a) => a.revert())
   }, [cur, replay, reduce])
   useEffect(() => {
-    if (reduce || !playing) return
+    if (reduce || held || taken) return
     const t = window.setTimeout(() => setCur((c) => (c + 1) % BLOCK_TABS.length), ADVANCE_MS)
     return () => window.clearTimeout(t)
-  }, [cur, playing, reduce])
+  }, [cur, held, taken, reduce])
 
   const onKey = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
     const n = BLOCK_TABS.length
     const to = e.key === 'ArrowRight' ? (i + 1) % n : e.key === 'ArrowLeft' ? (i - 1 + n) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1
     if (to < 0) return
     e.preventDefault()
-    setPlaying(false) // the reader has taken over
+    setTaken(true) // the reader has taken over
     setCur(to)
     tabRefs.current[to]?.focus()
   }
 
   const tab = BLOCK_TABS[cur]
   return (
-    <div>
+    <div onMouseEnter={() => setHeld(true)} onMouseLeave={() => setHeld(false)} onFocus={() => setHeld(true)} onBlur={() => setHeld(false)}>
       <div className="hd-tabs-row">
         <div className="hd-tabs" role="tablist" aria-label="Report blocks">
           {BLOCK_TABS.map((t, i) => (
@@ -69,7 +69,6 @@ export default function ReportTabs() {
             </button>
           ))}
         </div>
-        {!reduce && <PauseButton playing={playing} onToggle={() => setPlaying(!playing)} label="the report tabs" />}
       </div>
       <div className="hd-panel" id="hd-tabpanel" role="tabpanel" aria-labelledby={`hd-tab-${cur}`}>
         <div className="hd-pane">

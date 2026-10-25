@@ -145,7 +145,6 @@ export default function HowItWorksMap() {
   const api = useRef<{ go: (i: number) => void; setPlaying: (p: boolean) => void } | null>(null)
   const [tech, setTech] = useState(false)
   const [cur, setCur] = useState(0)
-  const [playing, setPlaying] = useState(!reduce)
   const [started, setStarted] = useState(false)
 
   useEffect(() => {
@@ -163,7 +162,7 @@ export default function HowItWorksMap() {
       Object.keys(conns).forEach((k) => { if (conns[k].dataset.k === 'solid') drawables[k] = svg.createDrawable(conns[k]) })
       const pkLayer = $<SVGGElement>('.dg-packets'), amb = $<SVGGElement>('.dg-amb')
       const chips = Array.from(root.current?.querySelectorAll<HTMLElement>('.dg-chip-s') ?? [])
-      let i0 = 0, tl: Timeline | null = null, timer = 0, isPlaying = !reduce, ambientOn = false
+      let i0 = 0, tl: Timeline | null = null, timer = 0, isPlaying = !reduce, ambientOn = false, begun = false
 
       const ambient = () => {
         if (reduce || ambientOn) return
@@ -303,19 +302,19 @@ export default function HowItWorksMap() {
       api.current = {
         go,
         setPlaying: (p) => {
+          if (reduce || !begun || p === isPlaying) return
           isPlaying = p
           if (p) go(i0)
           else { window.clearTimeout(timer); chips.forEach((c) => utils.remove(c.querySelector('.dg-prog')!)) }
         },
       }
       // Starts only when the map scrolls into view (it loops forever), with a fallback for thumbnails.
-      stopView = onView(el, () => { setStarted(true); ambient(); go(0) }, 6000, 0.1)
+      stopView = onView(el, () => { begun = true; setStarted(true); ambient(); go(0) }, 6000, 0.1)
       return () => window.clearTimeout(timer)
     })
     return () => { stopView(); api.current = null; scope.revert() }
   }, [reduce])
 
-  const togglePlay = () => { api.current?.setPlaying(!playing); setPlaying(!playing) }
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
     if ((e.target as HTMLElement).closest('.dg-mode')) return
@@ -325,7 +324,9 @@ export default function HowItWorksMap() {
   const stage = MAP_STAGES[cur]
 
   return (
-    <div ref={root} onKeyDown={onKeyDown}>
+    // No pause button (user's call): pointing at the map or focusing into it holds it on the current step.
+    <div ref={root} onKeyDown={onKeyDown} onMouseEnter={() => api.current?.setPlaying(false)} onMouseLeave={() => api.current?.setPlaying(true)}
+      onFocus={() => api.current?.setPlaying(false)} onBlur={() => api.current?.setPlaying(true)}>
       <div className="hd-map-bar">
         <div className="dg-steps" role="group" aria-label="Steps">
           {MAP_STAGES.map((s, i) => (
@@ -343,7 +344,6 @@ export default function HowItWorksMap() {
           <button type="button" className="dg-round" aria-label="Previous step" onClick={() => api.current?.go(cur - 1)}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
           </button>
-          {!reduce && <button type="button" className="dg-play" onClick={togglePlay} aria-label={playing ? 'Pause the map' : 'Play the map'}>{playing ? 'Pause' : 'Play'}</button>}
           <button type="button" className="dg-round" aria-label="Next step" onClick={() => api.current?.go(cur + 1)}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
           </button>

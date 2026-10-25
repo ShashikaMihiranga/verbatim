@@ -21,15 +21,3 @@ export function Fit({ w, h, className, children }: { w: number; h: number; class
     </div>
   )
 }
-
-// The visible pause/play control every looping section has (WCAG 2.2.2).
-export function PauseButton({ playing, onToggle, label }: { playing: boolean; onToggle: () => void; label: string }) {
-  return (
-    <button type="button" className="hd-ctl" onClick={onToggle} aria-label={`${playing ? 'Pause' : 'Play'} ${label}`}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        {playing ? <path d="M7 5h3v14H7zM14 5h3v14h-3z" /> : <path d="M8 5l11 7-11 7z" />}
-      </svg>
-      {playing ? 'Pause' : 'Play'}
-    </button>
-  )
-}
