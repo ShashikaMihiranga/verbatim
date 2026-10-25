@@ -22,7 +22,7 @@ const api = await import('./api')
 const themesApi = await import('./themesApi')
 const reportApi = await import('./reportApi')
 const jobsApi = await import('./jobsApi')
-const { default: Themes, MergeThemesList } = await import('./Themes')
+const { default: Themes } = await import('./Themes')
 
 const theme = (id: number, label: string): ThemeCard => ({
   id, label, description: null, size: 10, size_pct: 1, sentiment: 0,
@@ -50,7 +50,7 @@ beforeEach(() => {
   root = createRoot(container)
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} unobserve() {} })
   vi.mocked(api.getProfile).mockResolvedValue(dataset)
-  vi.mocked(themesApi.getThemes).mockResolvedValue({ themes: THEMES } as Awaited<ReturnType<typeof themesApi.getThemes>>)
+  vi.mocked(themesApi.getThemes).mockResolvedValue({ themes: THEMES, role: 'owner' } as Awaited<ReturnType<typeof themesApi.getThemes>>)
   vi.mocked(themesApi.getThemesChart).mockResolvedValue({ chart_html: '<div>TREEMAP</div>', chart_width: 100, chart_height: 100 } as Awaited<ReturnType<typeof themesApi.getThemesChart>>)
   vi.mocked(jobsApi.getLatestJob).mockResolvedValue(null)
 })
@@ -76,7 +76,7 @@ describe('Themes page while the report loads (BUG-047)', () => {
     const text = container.textContent ?? ''
     expect(text).toContain('Loading the report...')
     expect(text).not.toContain('Build report')
-    expect(text).not.toContain('Merge themes')
+    expect(container.querySelector('[aria-label="Theme editor"]')).toBeNull()
     expect(text).not.toContain('Ready to find themes')
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
   })
@@ -87,39 +87,7 @@ describe('Themes page while the report loads (BUG-047)', () => {
     const text = container.textContent ?? ''
     expect(text).not.toContain('Loading the report...')
     expect(text).toContain('Build report')
-    expect(text).toContain('Merge themes')
-  })
-})
-
-describe('MergeThemesList', () => {
-  function setValue(input: HTMLInputElement, value: string) {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
-    setter.call(input, value)
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  }
-  const labels = () => Array.from(container.querySelectorAll('.th-merge-row')).map((r) => r.textContent)
-
-  it('filters by name (any case) and keeps ticked themes visible; merge still works', () => {
-    const onMerge = vi.fn()
-    act(() => {
-      root.render(<MergeThemesList themes={THEMES} selection={new Set([1, 2])} onSelectionChange={vi.fn()} onMerge={onMerge} />)
-    })
-    expect(labels()).toHaveLength(10)
-    const filter = container.querySelector('input[type="search"]') as HTMLInputElement
-    act(() => setValue(filter, 'OFF'))
-    expect(labels()).toEqual(['Cost', 'Charging', 'Office layout'])
-    act(() => setValue(filter, 'zzz'))
-    expect(labels()).toEqual(['Cost', 'Charging'])
-    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.startsWith('Merge'))!
-    expect(button.textContent).toBe('Merge 2 selected themes')
-    act(() => button.click())
-    expect(onMerge).toHaveBeenCalledTimes(1)
-  })
-
-  it('no filter box for a short list', () => {
-    act(() => {
-      root.render(<MergeThemesList themes={THEMES.slice(0, 3)} selection={new Set()} onSelectionChange={vi.fn()} onMerge={vi.fn()} />)
-    })
-    expect(container.querySelector('input[type="search"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Theme editor"]')).not.toBeNull()
+    expect(text).toContain('Nothing selected')
   })
 })

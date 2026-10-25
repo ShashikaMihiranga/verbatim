@@ -3318,3 +3318,27 @@ existing theme; the report shows the finished run's result only, with no button.
 - Pair plot dropped by the user. Survey waves (T2) need only an extra upload choice ("new wave of"), a
   per-sheet option for workbooks, and a wave picker in the report; not started.
 
+## 2026-10-25 (Theme editor, step 1: the list)
+
+- User asked for the theme editor from `design/handoffs/ThemeEditor_UIHandoff.md` and
+  `ThemeGrouping_UIHandoff.md`, as an update to the existing merge / split / rename controls. Defaults
+  taken without further input (user: "if this is the case, do you still need my input"): split follows
+  stored sub-themes when there are some (step 2), else the existing re-cluster job; merged tone is the
+  size-weighted average and sub-themes carry over; Other is never merged or split, enforced server-side;
+  colours stay by size rank (not stored); re-run with keep-edits, drag and drop, and the phone sheet are
+  out of scope. The user's extra Claude call ("suggest which themes group together") is the grouping
+  flow, step 4.
+- Step 1 (this commit): `ThemeEditor.tsx` / `ThemeRows.tsx` / `themeEditorModel.ts` / `theme-editor.css`
+  replace `MergeThemesList` and the per-theme Rename / Split buttons in Manage themes. Filter, chips (All,
+  Small under 3%, Edited), share bars, tone, three icon row actions with labels and titles naming the
+  theme, icon key, sticky selection bar (0 / 1 / 2+), merge, rename and split panels, a toast. Icons:
+  `lucide-react` 1.54.0 through `icons.ts` (the app had no icon set).
+- Backend: `GET /themes` returns the caller's `role`, and only owners and editors get edit controls (the
+  routes check it again). Merge now takes the members' size-weighted tone and sentiment (`_merged_tone`;
+  it used to re-score the text with the lexicon, mixing methods when the build used Jev) and keeps every
+  member's sub-themes (`_merged_sub_themes`; they used to be lost). Merge and split refuse "Other".
+- The hand-off's two columns (440 px panel) assume a 1440 px page; the report page is about 790 px, so the
+  layout follows the editor's own width (container query): one column below 1100 px, the panel above the
+  list and scrolled into view when it opens.
+- Next: previews (step 2), undo (step 3), Claude grouping (step 4), real client and caching (step 5).
+

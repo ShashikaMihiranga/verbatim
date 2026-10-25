@@ -40,6 +40,8 @@ export interface ThemesResponse {
   column: string
   total_answers: number
   themes: ThemeCard[]
+  // The caller's role on this dataset: the theme editor shows edit controls to owners and editors only.
+  role?: 'owner' | 'editor' | 'viewer' | null
 }
 
 // Wire shape shared with app.api_report's report blocks (see reportApi.ts's ReportBlock) - both are

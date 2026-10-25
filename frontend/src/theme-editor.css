@@ -1,0 +1,100 @@
+/* Theme editor (design/handoffs/ThemeEditor_UIHandoff.md). Tokens come from index.css, which matches the
+   hand-off exactly. No gradients or shadows; the toast and the ready selection bar are the dark elements. */
+/* Two columns need room (the hand-off is drawn 1440 wide); the report page is narrower, so the layout
+   follows the editor's own width, not the window's. */
+.te-wrap { container: te / inline-size; margin-top: 32px; }
+.te { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 56px; align-items: start; }
+.te-main { min-width: 0; }
+.te-side { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 16px; }
+.te button, .te input { font: inherit; }
+.te button:focus-visible, .te input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.te-num { font-variant-numeric: tabular-nums; }
+
+.te-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+.te-filter { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 12px; flex: 1 1 220px; max-width: 320px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); }
+.te-filter input { border: 0; outline: 0; background: transparent; color: var(--ink); width: 100%; font-size: 15px; }
+.te-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.te-chip { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 14px; font-weight: 500; cursor: pointer; }
+.te-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.te-count { margin-left: auto; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+
+.te-intro { margin: 20px 0 8px; color: var(--muted); font-size: 15px; }
+.te-key { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 20px; padding: 0; list-style: none; color: var(--muted); font-size: 14px; }
+.te-key li { display: inline-flex; align-items: center; gap: 6px; }
+
+.te-grid, .te-head { display: grid; grid-template-columns: 34px minmax(0, 1fr) 130px 70px 60px 142px; gap: 14px; align-items: center; }
+.te-head { padding: 0 0 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px; font-weight: 500; }
+.te-head span:nth-child(n + 4) { text-align: right; }
+.te-list { margin: 0; padding: 0; list-style: none; }
+.te-row { border-bottom: 1px solid var(--line); }
+.te-row .te-grid { min-height: 56px; padding: 6px 0; }
+.te-row.is-selected { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.te-cell { display: flex; }
+.te-check { width: 26px; height: 26px; border-radius: 7px; border: 1.5px solid var(--muted); background: var(--surface);
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--on-accent); cursor: pointer; }
+.te-check.is-on { background: var(--accent); border-color: var(--accent); }
+.te-check.is-locked { border-style: dashed; opacity: 0.6; cursor: not-allowed; }
+.te-row.is-other .te-actions { opacity: 0.6; }
+.te-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.te-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.te-label { font-weight: 500; overflow-wrap: anywhere; }
+.te-label.is-big { font-weight: 600; }
+.te-edited { flex: none; font-size: 12px; font-weight: 500; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 1px 8px; }
+.te-share { display: flex; align-items: center; gap: 8px; }
+.te-bar { flex: 1; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.te-bar > span { display: block; height: 100%; background: var(--accent); }
+.te-share .te-num { width: 44px; text-align: right; font-size: 14px; }
+.te-answers, .te-tone { text-align: right; font-size: 14px; }
+.te-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.te-icon { width: 36px; height: 36px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--ink);
+  display: inline-flex; align-items: center; justify-content: center; gap: 2px; padding: 0; cursor: pointer; }
+.te-icon:hover:not(:disabled) { border-color: var(--line); background: var(--surface); }
+.te-icon:disabled { cursor: not-allowed; opacity: 0.45; }
+.te-subs { width: 44px; font-size: 13px; }
+.te-subs.is-empty { color: var(--muted); }
+.te-subs svg { transition: transform 0.15s; }
+.te-subs svg.is-flipped { transform: rotate(180deg); }
+.te-subs-list { margin: 0 0 10px; padding: 0 0 0 48px; list-style: none; }
+.te-subs-list li { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; font-size: 14px; border-top: 1px dashed var(--line); }
+.te-subs-list .te-num { color: var(--muted); }
+.te-empty { color: var(--muted); padding: 20px 0; }
+.te-link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+.te-selbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-top: 16px; padding: 14px 18px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); }
+.te-selbar.is-ready { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.te-selbar-title { font-weight: 600; }
+.te-selbar-detail { font-size: 14px; color: var(--muted); }
+.te-selbar.is-ready .te-selbar-detail { color: var(--bg); }
+
+.te-btn { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-weight: 500; cursor: pointer; }
+.te-btn.is-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.te-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.te-selbar.is-ready .te-btn.is-primary { border-color: var(--bg); }
+
+.te-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px; margin: 0; }
+.te-panel-title { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 20px; font-weight: 600; }
+.te-note { margin: 0; color: var(--muted); font-size: 14px; }
+.te-field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; font-weight: 500; }
+.te-field input { height: 42px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font-size: 16px; }
+.te-figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 0; }
+.te-figures dt { font-size: 13px; color: var(--muted); }
+.te-figures dd { margin: 2px 0 0; font-size: 28px; font-weight: 300; font-variant-numeric: tabular-nums; }
+.te-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+.te-toast { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 12px; background: var(--ink); color: var(--bg); font-size: 15px; }
+.te-toast-btn { border: 1px solid var(--bg); background: transparent; color: var(--bg); border-radius: 8px; height: 34px; padding: 0 12px; cursor: pointer; }
+.te-error { margin: 0; color: var(--neg); }
+
+@media (prefers-reduced-motion: reduce) { .te-subs svg { transition: none; } }
+@container te (max-width: 1100px) {
+  .te { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .te-side { position: static; order: -1; scroll-margin-top: 16px; }
+}
+@container te (max-width: 640px) {
+  .te-grid, .te-head { grid-template-columns: 34px minmax(0, 1fr) 70px 108px; }
+  .te-share, .te-tone, .te-head span:nth-child(3), .te-head span:nth-child(5) { display: none; }
+  .te-count { margin-left: 0; }
+}

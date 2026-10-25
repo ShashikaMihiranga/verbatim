@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { getProfile } from './api'
 import type { ColumnProfile, DatasetView, Kind } from './api'
 import { buildThemes, getThemeAnswers, getThemes, getThemesChart, lookInsideOther, mergeThemes, renameTheme, splitTheme } from './themesApi'
-import type { ThemeAnswer, ThemeCard, ThemeChartResponse } from './themesApi'
+import type { ThemeAnswer, ThemeCard, ThemeChartResponse, ThemesResponse } from './themesApi'
 import { buildReport, exportReport, getReport } from './reportApi'
 import type { ExportFormat, ReportFilters, ReportOtherBreakdown, ReportResponse, ReportThemeSummary } from './reportApi'
 import { getLatestJob, pollJob } from './jobsApi'
@@ -15,6 +15,7 @@ import SharePanel from './SharePanel'
 import ReportView from './Report'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
+import ThemeEditor from './ThemeEditor'
 import './upload.css'
 import './themes.css'
 import './report.css'
@@ -179,56 +180,6 @@ export function AnswerList({ id, themeId, subIndex }: { id: number; themeId: num
   )
 }
 
-// Merge control (docs/TODO.md, fixed 2026-10-22): a compact checklist, shown only in Manage themes mode
-// (or before a report exists). With dozens of themes (121 on dataset 12, BUG-047) a filter box narrows the
-// list by name; themes already ticked stay visible so the selection never hides itself.
-const MERGE_FILTER_MIN = 9
-
-export function MergeThemesList({ themes, selection, onSelectionChange, onMerge }: {
-  themes: ThemeCard[]
-  selection: Set<number>
-  onSelectionChange: (next: Set<number>) => void
-  onMerge: () => void
-}) {
-  const [query, setQuery] = useState('')
-  const q = query.trim().toLowerCase()
-  const visible = q ? themes.filter((t) => selection.has(t.id) || t.label.toLowerCase().includes(q)) : themes
-  return (
-    <div className="th-merge-list">
-      <div className="th-subs-h">Merge themes</div>
-      {themes.length >= MERGE_FILTER_MIN && (
-        <input
-          type="search"
-          className="th-merge-filter"
-          placeholder="Filter themes by name"
-          aria-label="Filter themes by name"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      )}
-      {visible.map((t) => (
-        <label className="th-merge-row" key={t.id}>
-          <input
-            type="checkbox"
-            checked={selection.has(t.id)}
-            onChange={(e) => {
-              const next = new Set(selection)
-              if (e.target.checked) next.add(t.id)
-              else next.delete(t.id)
-              onSelectionChange(next)
-            }}
-          />
-          {t.label}
-        </label>
-      ))}
-      {visible.length === 0 && <p className="muted th-merge-none">No themes match.</p>}
-      <button type="button" className="btn quiet" disabled={selection.size < 2} onClick={onMerge}>
-        Merge {selection.size > 0 ? `${selection.size} selected` : 'selected'} themes
-      </button>
-    </div>
-  )
-}
-
 // The report's theme summary shapes, from the theme rows alone, so Inside Other works before any report.
 function summariseThemes(themes: ThemeCard[]): { all: ReportThemeSummary[]; breakdown: ReportOtherBreakdown | null } {
   const answered = themes.reduce((sum, t) => sum + t.size, 0)
@@ -267,8 +218,12 @@ export default function Themes() {
   const [themesChart, setThemesChart] = useState<ThemeChartResponse | null>(null)
   const [selectedThemeId, setSelectedThemeId] = useState<number | null>(null)
   // Theme editing (docs/TODO.md, fixed 2026-10-22): merge checkbox selection, Manage themes mode only.
-  const [mergeSelection, setMergeSelection] = useState<Set<number>>(new Set())
-  const [editError, setEditError] = useState('')
+  // The caller's role (GET /themes): the theme editor's controls are for owners and editors only.
+  const [themesRole, setThemesRole] = useState<ThemesResponse['role']>(null)
+  const applyThemes = (resp: ThemesResponse) => {
+    setThemes(resp.themes)
+    setThemesRole(resp.role ?? null)
+  }
   const [splitThemeJob, setSplitThemeJob] = useState<Job | null>(null)
 
   // Both builds now run as background jobs (see docs/DECISIONS.md): starting one only creates a `Job` row
@@ -308,7 +263,7 @@ export default function Themes() {
     if (!column) return
     try {
       const existing = await getThemes(id, column)
-      setThemes(existing.themes)
+      applyThemes(existing)
       setThemesJob(null)
       setReport(null) // a rebuilt set of themes needs its report rebuilt too - see build() below
     } catch (e) {
@@ -320,7 +275,7 @@ export default function Themes() {
   // `column` state is set, so a refresh captured there would see null and do nothing.
   async function reloadAfterThemeRebuild(col: string) {
     try {
-      setThemes((await getThemes(id, col)).themes)
+      applyThemes(await getThemes(id, col))
       setThemesJob(null)
       setReport(null) // the rebuild invalidated the old report on the server
       setReportLoading(true)
@@ -355,7 +310,7 @@ export default function Themes() {
   async function refreshAfterLookInsideOther(col: string | null = column) {
     if (!col) return
     try {
-      setThemes((await getThemes(id, col)).themes)
+      applyThemes(await getThemes(id, col))
     } catch (e) {
       setError((e as Error).message)
       return
@@ -454,7 +409,7 @@ export default function Themes() {
         try {
           const existing = await getThemes(id, col)
           if (existing.themes.length > 0) {
-            setThemes(existing.themes)
+            applyThemes(existing)
             hasThemes = true
           }
         } catch {
@@ -607,53 +562,38 @@ export default function Themes() {
   async function refreshThemesChartAndList() {
     if (!column) return
     const existing = await getThemes(id, column)
-    setThemes(existing.themes)
+    applyThemes(existing)
     setSelectedThemeId((prev) => (prev != null && existing.themes.some((t) => t.id === prev) ? prev : existing.themes[0]?.id ?? null))
     setThemesChart(await getThemesChart(id, column))
   }
 
-  async function handleRename(themeId: number, label: string, description: string | null) {
-    setEditError('')
-    try {
-      await renameTheme(id, themeId, label, description)
-      setReport(null)
-      await refreshThemesChartAndList()
-    } catch (e) {
-      setEditError((e as Error).message)
-    }
+  // Theme editor callbacks: they throw on failure, and ThemeEditor shows the message in its own panel.
+  async function handleRename(themeId: number, label: string) {
+    await renameTheme(id, themeId, label)
+    setReport(null)
+    await refreshThemesChartAndList()
   }
 
-  async function handleMergeSelected() {
-    if (mergeSelection.size < 2 || !column) return
-    setEditError('')
-    try {
-      await mergeThemes(id, column, Array.from(mergeSelection))
-      setMergeSelection(new Set())
-      setReport(null)
-      await refreshThemesChartAndList()
-    } catch (e) {
-      setEditError((e as Error).message)
-    }
+  async function handleMerge(themeIds: number[], label: string) {
+    if (!column) return
+    await mergeThemes(id, column, themeIds, label)
+    setReport(null)
+    await refreshThemesChartAndList()
   }
 
   async function startSplitTheme(themeId: number) {
-    setEditError('')
-    try {
-      const started = await splitTheme(id, themeId)
-      watch(
-        {
-          id: started.job_id, dataset_id: id, column: column as string, kind: 'split_theme',
-          status: 'running', step: 'Starting', error: null, result: null,
-        },
-        setSplitThemeJob,
-        () => {
-          setReport(null)
-          void refreshThemesChartAndList()
-        },
-      )
-    } catch (e) {
-      setEditError((e as Error).message)
-    }
+    const started = await splitTheme(id, themeId)
+    watch(
+      {
+        id: started.job_id, dataset_id: id, column: column as string, kind: 'split_theme',
+        status: 'running', step: 'Starting', error: null, result: null,
+      },
+      setSplitThemeJob,
+      () => {
+        setReport(null)
+        void refreshThemesChartAndList()
+      },
+    )
   }
 
   async function handleExport(format: ExportFormat) {
@@ -841,32 +781,13 @@ export default function Themes() {
               })()}
               {(() => {
                 const selected = themes.find((t) => t.id === selectedThemeId)
-                if (!selected) return null
-                const splitRunning = splitThemeJob !== null && splitThemeJob.status === 'running'
-                return (
-                  <>
-                    <ThemeDetail id={id} theme={selected} onRename={(label, desc) => void handleRename(selected.id, label, desc)} />
-                    <div style={{ marginTop: 10 }}>
-                      {splitRunning && splitThemeJob ? (
-                        <JobProgress job={splitThemeJob} />
-                      ) : (
-                        <button type="button" className="btn quiet" onClick={() => void startSplitTheme(selected.id)}>
-                          Split this theme
-                        </button>
-                      )}
-                    </div>
-                  </>
-                )
+                return selected ? <ThemeDetail id={id} theme={selected} /> : null
               })()}
-              {themes.length > 1 && (
-                <MergeThemesList
-                  themes={themes}
-                  selection={mergeSelection}
-                  onSelectionChange={setMergeSelection}
-                  onMerge={() => void handleMergeSelected()}
-                />
-              )}
-              {editError && <div className="err" role="alert">{editError}</div>}
+              <ThemeEditor
+                themes={themes} totalAnswers={themes.reduce((n, t) => n + t.size, 0)}
+                canEdit={themesRole === 'owner' || themesRole === 'editor'} splitJob={splitThemeJob}
+                onRename={handleRename} onMerge={handleMerge} onSplit={startSplitTheme}
+              />
             </>
           ) : (
             <p className="muted">Loading the themes chart...</p>

@@ -1214,6 +1214,37 @@ def rename_theme(
     return _theme_dict(theme, total)
 
 
+def _merged_tone(rows: list[Theme]) -> tuple[dict, float | None]:
+    """A merged theme's tone and sentiment: each member's stored values weighted by its size (theme
+    editor hand-off). Re-scoring the text would mix scoring methods when the build used Jev."""
+    total = sum(t.size for t in rows) or 1
+    tone = {k: round(sum((t.tone or {}).get(k, 0.0) * t.size for t in rows) / total, 1) for k in ("neg", "neu", "pos")}
+    scored = [t for t in rows if t.sentiment is not None]
+    weight = sum(t.size for t in scored)
+    sentiment = round(sum(t.sentiment * t.size for t in scored) / weight, 3) if weight else None
+    return tone, sentiment
+
+
+def _merged_sub_themes(rows: list[Theme]) -> list[dict]:
+    """Every member's sub-themes carry over (theme editor hand-off); two with the same name become one.
+    Largest first."""
+    by_label: dict[str, dict] = {}
+    for t in rows:
+        for s in t.sub_themes or []:
+            got = by_label.get(s["label"])
+            if got is None:
+                by_label[s["label"]] = dict(s)
+                continue
+            refs = sorted(set(got.get("answer_refs") or []) | set(s.get("answer_refs") or []))
+            size = got["size"] + s["size"]
+            got["sentiment"] = (None if got.get("sentiment") is None or s.get("sentiment") is None
+                                else round((got["sentiment"] * got["size"] + s["sentiment"] * s["size"]) / size, 3))
+            got["tone"] = {k: round(((got.get("tone") or {}).get(k, 0) * got["size"] + (s.get("tone") or {}).get(k, 0) * s["size"]) / size, 1)
+                           for k in ("neg", "neu", "pos")}
+            got["answer_refs"], got["size"] = refs, len(refs) if refs else size
+    return sorted(by_label.values(), key=lambda s: -s["size"])
+
+
 class MergeThemesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     column: str = Field(max_length=255)
@@ -1229,12 +1260,10 @@ def merge_themes(
     """Theme editing (docs/TODO.md, fixed 2026-10-22): unions `answer_refs` across the given `Theme`
     rows into the largest one (the same "largest wins" survivor convention
     `app/text_pipeline/merging.py::_merge_one_level` already uses for the pipeline's own automatic
-    same-label merging - not that function's own entry point, which operates on `Cluster`/`ThemeLabel`
-    objects that only exist transiently during a build, never on live ORM rows), recomputes `tone`/
-    `sentiment` from scratch via `score_text` over the real cleaned text (no network - the owner's own
-    text, same `_load_clean_df` access `_write_theme_rows` already uses, not masked: nothing here
-    crosses to an external model), and deletes the absorbed rows (cascading any `Finding.theme_id`
-    pointing at one to `NULL` - handled by `_invalidate_report_for_edit` below regardless)."""
+    same-label merging) and deletes the absorbed rows (cascading any `Finding.theme_id` pointing at one
+    to `NULL` - handled by `_invalidate_report_for_edit` below regardless). Theme editor (2026-10-25): tone
+    and sentiment are the members' size-weighted averages (`_merged_tone`), every member's sub-themes carry
+    over (`_merged_sub_themes`), and "Other" cannot be merged."""
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
     _refuse_while_report_builds(db, ds.id, body.column)
     rows = list(db.scalars(
@@ -1248,29 +1277,21 @@ def merge_themes(
         raise HTTPException(404, f"Theme id(s) not found: {missing}")
     if len(rows) < 2:
         raise HTTPException(422, "Merging needs at least 2 distinct themes.")
+    if any(t.label == "Other" for t in rows):
+        raise HTTPException(422, "Other holds answers that fit no theme, so it cannot be merged.")
 
-    clean_df, _plan = _load_clean_df(ds, db)
     survivor = max(rows, key=lambda t: t.size)
     label = (body.label or "").strip() or survivor.label
 
     refs = sorted({r for t in rows for r in (t.answer_refs or [])})
-    scores: dict[int, AnswerScore] = {}
-    for r in refs:
-        try:
-            text = clean_df.at[r, body.column]
-        except KeyError:
-            continue
-        if not isinstance(text, str) or not text:
-            continue
-        polarity, tone = score_text(text)
-        scores[r] = AnswerScore(row=r, text=text, polarity=polarity, tone=tone)
-    tone, sentiment = _aggregate_tone(refs, scores)
+    tone, sentiment = _merged_tone(rows)
 
     survivor.label = label
     survivor.answer_refs = refs
     survivor.size = len(refs)
     survivor.tone = tone
     survivor.sentiment = sentiment
+    survivor.sub_themes = _merged_sub_themes(rows)
     for t in rows:
         if t.id != survivor.id:
             db.delete(t)
@@ -1389,6 +1410,8 @@ def split_theme(
     if theme is None or theme.dataset_id != ds.id:
         raise HTTPException(404, "Theme not found.")
     _refuse_while_report_builds(db, ds.id, theme.column_name)
+    if theme.label == "Other":
+        raise HTTPException(422, "Other holds answers that fit no theme, so it cannot be split. Use Look inside Other.")
     column = theme.column_name
     if not column:
         raise HTTPException(409, "This theme has no column recorded; cannot split it.")
@@ -1465,6 +1488,9 @@ def list_themes(dataset_id: int, column: str, db: Session = Depends(get_db), use
     total = sum(t.size for t in rows)
     return {
         "dataset_id": ds.id, "column": column, "total_answers": total,
+        # The caller's role, so the theme editor shows edit controls to owners and editors only (the
+        # edit routes check it again).
+        "role": _dataset_role(db, user, ds),
         "themes": [_theme_dict(t, total) for t in rows],
     }
 

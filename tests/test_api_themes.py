@@ -1533,7 +1533,7 @@ def test_rename_theme_invalidates_the_existing_report(env):
 
 # ==================================================================== theme editing: merge
 
-def test_merge_themes_unions_refs_and_recomputes_tone(env):
+def test_merge_themes_unions_refs_into_the_largest(env):
     did = upload_csv(env, theme_df())
     clean_and_apply(env, did)
     a_id = seed_theme(
@@ -2057,3 +2057,44 @@ def test_every_job_kind_fits_the_kind_column():
         kinds |= set(re.findall(r'create_job\([^)]*?"([a-z_]+)"\)', path.read_text()))
     assert {"themes", "report", "look_inside_other", "split_theme"} <= kinds
     assert all(len(k) <= limit for k in kinds), {k: len(k) for k in kinds if len(k) > limit}
+
+
+
+def test_merge_themes_weights_tone_by_size_and_keeps_every_sub_theme(env):
+    """Theme editor: a merged theme's tone is its members' size-weighted average; sub-themes carry over."""
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    sub = lambda label, refs: {"label": label, "description": None, "size": len(refs), "sentiment": 0.0,
+                               "tone": {"neg": 50.0, "neu": 50.0, "pos": 0.0}, "answer_refs": refs}
+    a_id = seed_theme(env, did, label="A", description="x", size=6, sentiment=-0.6,
+                      tone={"neg": 60, "neu": 40, "pos": 0}, answer_refs=[0, 1, 2, 3, 4, 5],
+                      sub_themes=[sub("Price", [0, 1]), sub("Shared", [2])])
+    b_id = seed_theme(env, did, label="B", description="x", size=2, sentiment=0.2,
+                      tone={"neg": 0, "neu": 40, "pos": 60}, answer_refs=[6, 7],
+                      sub_themes=[sub("Shared", [6])])
+    body = env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a_id, b_id]}).json()
+    assert body["tone"] == {"neg": 45.0, "neu": 40.0, "pos": 15.0}  # (60*6 + 0*2) / 8, ...
+    assert body["sentiment"] == pytest.approx(-0.4)  # (-0.6*6 + 0.2*2) / 8
+    assert [(s["label"], s["size"]) for s in body["sub_themes"]] == [("Price", 2), ("Shared", 2)]
+
+
+def test_other_cannot_be_merged_or_split(env):
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    a_id = seed_theme(env, did, label="A", description="x", size=5, sentiment=0.0,
+                      tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0, 1, 2, 3, 4])
+    other_id = seed_theme(env, did, label="Other", description="x", size=3, sentiment=0.0,
+                          tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[5, 6, 7])
+    r = env.client.post(f"/api/datasets/{did}/themes/merge", json={"column": Q, "theme_ids": [a_id, other_id]})
+    assert r.status_code == 422 and "Other" in r.json()["detail"]
+    r = env.client.post(f"/api/datasets/{did}/themes/{other_id}/split")
+    assert r.status_code == 422 and "Other" in r.json()["detail"]
+
+
+def test_theme_list_says_the_callers_role(env):
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    seed_theme(env, did, label="A", description="x", size=1, sentiment=0.0,
+               tone={"neg": 0, "neu": 100, "pos": 0}, answer_refs=[0])
+    assert env.client.get(f"/api/datasets/{did}/themes", params={"column": Q}).json()["role"] == "owner"
