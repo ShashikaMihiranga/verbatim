@@ -37,6 +37,12 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-061 — "See answers" on a share link cannot load anything**
+  - Found: 2026-10-26, Claude, while cleaning up the public sample report.
+  - Cause: the report view always showed "See answers" on findings, but the answers route needs sign-in,
+    and share links deliberately expose no answers (app/api_sharing.py), so a visitor's click failed.
+  - Fix: sample-page commit, `ReportView publicView` (share link and /sample) hides it, and the analyst
+    explorations · Test: `report-public.test.tsx`.
 - [x] **BUG-060 — Screen readers read the home page headline twice**
   - Found: 2026-10-26, Claude, accessibility tree of the new home page on the production build.
   - Cause: anime.js `splitText` keeps an accessible copy of the sentence, but its word spans are announced

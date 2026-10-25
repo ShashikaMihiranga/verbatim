@@ -50,7 +50,7 @@ export default function SharedReport() {
   }
   return (
     <div className="page">
-      <ReportView report={report} datasetId={0} />
+      <ReportView report={report} datasetId={0} publicView />
     </div>
   )
 }

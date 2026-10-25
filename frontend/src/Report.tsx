@@ -62,11 +62,12 @@ function SupplementBlock({ block }: { block: ReportBlock }) {
 }
 
 function FindingBlock({
-  datasetId, block, selectedTheme,
+  datasetId, block, selectedTheme, publicView = false,
 }: {
   datasetId: number
   block: ReportBlock
   selectedTheme?: string | null
+  publicView?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const finding = block.finding
@@ -77,7 +78,7 @@ function FindingBlock({
         <h3 className="rp-sentence">{finding.sentence}</h3>
         <div className="rp-head-side">
           <Badge confidence={finding.confidence} />
-          {finding.theme_id != null && (
+          {finding.theme_id != null && !publicView && (
             <button type="button" className="th-see" onClick={() => setOpen(!open)}>
               {open ? 'Hide answers' : 'See answers'}
             </button>
@@ -98,6 +99,8 @@ export default function ReportView({
   onFiltersChange,
   lookInsideOtherJob,
   onQuestionKindChange,
+  publicView = false,
+  bare = false,
 }: {
   report: ReportResponse
   datasetId: number
@@ -117,6 +120,11 @@ export default function ReportView({
   lookInsideOtherJob?: Job | null
   // The question type was changed: the caller reloads the report, which comes back out of date.
   onQuestionKindChange?: () => void
+  // A page anyone can open (share link, sample report): no "See answers" (that needs sign-in) and no
+  // analyst explorations.
+  publicView?: boolean
+  // The page shows its own title and summary, and the column chips are left out (the sample report).
+  bare?: boolean
 }) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
@@ -148,8 +156,8 @@ export default function ReportView({
 
   return (
     <div className="rp">
-      <h1 className="rp-title">{report.question}</h1>
-      <div className="rp-summary">{report.summary}</div>
+      {!bare && <h1 className="rp-title">{report.question}</h1>}
+      {!bare && <div className="rp-summary">{report.summary}</div>}
 
       {context && (contextData
         ? <QuestionContext datasetId={datasetId} column={report.column} block={context} data={contextData}
@@ -157,14 +165,14 @@ export default function ReportView({
         : <SupplementBlock block={context} />)}
 
       <div className="rp-toolbar">
-        <div className="rp-chips" aria-label="Columns used">
+        {!bare && <div className="rp-chips" aria-label="Columns used">
           {report.columns_used.map((c) => (
             <span className="rp-chip" key={c.name}>
               {c.name}
               <span className="rp-chip-note">{c.role}</span>
             </span>
           ))}
-        </div>
+        </div>}
         {onFiltersChange && (
           <ReportFilters
             options={report.filter_options}
@@ -223,7 +231,7 @@ export default function ReportView({
         </Divider>
       )}
 
-      {sharedViews.length > 0 && <Divider id="report-explore">
+      {sharedViews.length > 0 && !publicView && <Divider id="report-explore">
         <details className="rp-exploration">
           <summary>Explore all themes</summary>
           {sharedViews.map((view, index) => <details className="rp-context-view" key={`${view.chart_id}-${index}`}>
@@ -238,7 +246,7 @@ export default function ReportView({
         ? <div id="report-findings">
           <h2 className="rp-section-title rp-findings-title">What stands out</h2>
           {findings.map((b) => (
-            <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} selectedTheme={selectedThemeName} />
+            <FindingBlock key={b.finding_id ?? b.chart_id} datasetId={datasetId} block={b} selectedTheme={selectedThemeName} publicView={publicView} />
           ))}
         </div>
         : report.also_checked_nothing_notable && (
@@ -247,7 +255,7 @@ export default function ReportView({
             </Divider>
           )}
 
-      {(report.explorations ?? []).map((exploration) => (
+      {!publicView && (report.explorations ?? []).map((exploration) => (
         <Divider key={exploration.chart_id ?? exploration.chart_title}>
           <details className="rp-exploration">
             <summary>Explore {exploration.chart_label ?? exploration.chart_title}</summary>

@@ -3507,3 +3507,13 @@ pointer is over it or keyboard focus is inside it, and arrow keys on the tabs st
 good. Reduced motion still shows finished states with nothing moving. Noted for the team: a visible
 control is the more robust way to meet 2.2.2 (hover does not exist on touch screens).
 
+### 2026-10-26 follow-up: a cleaner /sample page
+
+User's call: dataset 13's report (the 10k survey) stays the sample, with a cleaner page. /sample now uses
+the home page's frame: frosted top bar, a header ("Sample report", "What people said about their
+workplace.", one line on how it was made and that it is masked and read-only, the summary, Make one from
+your own sheet), the report in a white card, and the home page's closing call to action. `ReportView`
+gained `publicView` (no "See answers", no analyst explorations; share links use it too, BUG-061) and
+`bare` (the page shows its own title and summary; no column chips with raw column names). The snapshot was
+regenerated from dataset 13 and had not changed.
+

@@ -229,3 +229,20 @@ html:has(.hd) { scroll-behavior: smooth; }
   .hd-brand span { display: none; }
   .hd-outline { padding: 0 14px; }
 }
+
+/* ---- /sample: the sample report in the home page's frame */
+.sp-head { padding-top: 64px; max-width: 860px; }
+.sp-h1 { font-size: 56px; font-weight: 300; line-height: 1.06; margin: 14px 0 0; letter-spacing: -0.02em; text-wrap: balance; }
+.sp-summary { display: inline-block; margin: 18px 0 0; padding: 8px 14px; border-radius: 10px; background: var(--surface);
+  border: 1.5px solid var(--line); font-size: 15px; font-weight: 500; }
+.sp-report { margin-top: 56px; padding: 40px 48px 24px; background: var(--surface); border: 1.5px solid var(--line); border-radius: 28px; }
+.sp-report .rp > .rp-section:first-child { padding-top: 0; border-top: 0; }
+.sp-report .rp-outline a { color: var(--accent); font-weight: 500; }
+.sp-report .rp-outline a:hover { text-decoration: underline; }
+.sp-report .rp-toolbar:empty { display: none; }
+.sp-loading { color: var(--muted); }
+@media (max-width: 760px) {
+  .sp-head { padding-top: 36px; }
+  .sp-h1 { font-size: 36px; }
+  .sp-report { padding: 20px 16px; border-radius: 20px; margin-top: 32px; }
+}
