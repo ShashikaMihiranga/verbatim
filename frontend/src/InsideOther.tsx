@@ -204,15 +204,18 @@ function PointMapChart({ map }: { map: PointMap }) {
 }
 
 // Fetched once the run is done: the map needs the themes as this run left them.
-function AnswerMap({ job, realThemes }: { job: Job; realThemes: string[] }) {
-  const [raw, setRaw] = useState<AnswerMapResponse | null>(null)
+// `data`: positions already in hand (the public sample report), so nothing is fetched.
+function AnswerMap({ job, realThemes, data = null }: { job: Job; realThemes: string[]; data?: AnswerMapResponse | null }) {
+  const [fetched, setFetched] = useState<AnswerMapResponse | null>(null)
+  const raw = data ?? fetched
   useEffect(() => {
+    if (data) return
     let live = true
     getAnswerMap(job.dataset_id, job.column)
-      .then((r) => { if (live) setRaw(r) })
+      .then((r) => { if (live) setFetched(r) })
       .catch(() => { /* the map is optional; the rest of the panel stands on its own */ })
     return () => { live = false }
-  }, [job.id, job.dataset_id, job.column])
+  }, [job.id, job.dataset_id, job.column, data])
   const map = useMemo(() => answerMapModel(raw, isResult(job.result) ? job.result : null, realThemes),
     [raw, job.result, realThemes])
   if (raw?.layout === 'pca') {
@@ -306,7 +309,7 @@ function Results({ m, mapSlot }: { m: InsideOtherModel; mapSlot?: ReactNode }) {
 }
 
 export default function InsideOther({
-  job, onStart, allThemes = [], breakdown = null, context = 'themes', note = null,
+  job, onStart, allThemes = [], breakdown = null, context = 'themes', note = null, answerMap = null,
 }: {
   job: Job | null
   // The themes screen runs Look inside; the report only shows an earlier run's result (no button).
@@ -315,6 +318,7 @@ export default function InsideOther({
   breakdown?: ReportOtherBreakdown | null
   context?: 'themes' | 'report'
   note?: string | null // e.g. why the automatic run after a theme build did not start
+  answerMap?: AnswerMapResponse | null // the answer map's data, when the page already has it
 }) {
   const m = useMemo(() => insideOtherModel(job, allThemes, breakdown, context), [job, allThemes, breakdown, context])
   const reducedMotion = useMemo(() => prefersReducedMotion(), [])
@@ -351,7 +355,7 @@ export default function InsideOther({
       {canShowAll && showAll && <AllThemes themes={allThemes} />}
       {m.phase !== 'idle' && <Steps m={m} />}
       {m.phase === 'done' && m.banner && (
-        <Results m={m} mapSlot={job && <AnswerMap job={job} realThemes={realThemes} />} />
+        <Results m={m} mapSlot={job && <AnswerMap job={job} realThemes={realThemes} data={answerMap} />} />
       )}
     </section>
   )

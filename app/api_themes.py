@@ -1921,8 +1921,14 @@ def answer_map(dataset_id: int, column: str, db: Session = Depends(get_db), user
     "points": [[x, y, group]]}`; x/y in 0..1; empty `points` when the themes were built before positions
     were stored. "pca": built before 2026-10-25, when every theme overlapped; the page asks for a rebuild."""
     ds = _own_dataset(db, user, dataset_id)
-    rows = _stored_themes(db, ds.id, column)
-    col_row = db.scalar(select(Column).where(Column.dataset_id == ds.id, Column.name == column))
+    return answer_map_data(db, ds.id, column)
+
+
+def answer_map_data(db: Session, dataset_id: int, column: str) -> dict:
+    """The answer map's body (route above). Positions and theme names only, never answer text or row ids,
+    so tools/snapshot_sample_report.py can freeze it into the public sample report."""
+    rows = _stored_themes(db, dataset_id, column)
+    col_row = db.scalar(select(Column).where(Column.dataset_id == dataset_id, Column.name == column))
     positions = (col_row.answer_positions if col_row is not None else None) or {}
     theme_of: dict[int, int] = {}
     for gi, t in enumerate(rows):

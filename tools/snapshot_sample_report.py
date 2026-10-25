@@ -4,8 +4,9 @@
 
 Writes frontend/public/sample/report.json with exactly what a share link returns for that dataset's latest
 report (app.api_sharing.public_report -> app.api_report._render_report): chart fragments built from
-aggregates plus the quotes and phrases blocks, never the answer drill-down. The file is public, so only
-snapshot a dataset whose comments may be published (user's decision, 2026-10-26: the 10k workplace survey).
+aggregates plus the quotes and phrases blocks, never the answer drill-down. `sample_extras` adds the
+latest Look inside Other result and the answer map's dot positions (no answer text), for the Inside Other
+section. The file is public, so only snapshot a dataset whose comments may be published (user's decision, 2026-10-26: the 10k workplace survey).
 Refuses a stale report, and prints anything that looks like an email address or a link so it can be
 checked by hand before committing.
 """
@@ -28,7 +29,8 @@ def main(dataset_id: int) -> None:
 
     from app import db as _db
     from app.api_report import _render_report
-    from app.models import Dataset, Report
+    from app.api_themes import answer_map_data
+    from app.models import Dataset, Job, Report
 
     with _db.SessionLocal() as s:
         ds = s.get(Dataset, dataset_id)
@@ -37,7 +39,17 @@ def main(dataset_id: int) -> None:
         report = s.scalars(select(Report).where(Report.dataset_id == dataset_id).order_by(Report.id.desc())).first()
         if report is None or not isinstance(report.content, dict):
             sys.exit(f"Dataset {dataset_id} has no report.")
-        out = _render_report(s, ds, report.content["column"], report)
+        column = report.content["column"]
+        out = _render_report(s, ds, column, report)
+        # The report page's "Inside Other" section and its answer map, which the app fetches with sign-in:
+        # the latest finished Look inside Other result (counts, labels, tones) and the dot positions.
+        look = s.scalars(select(Job).where(Job.dataset_id == dataset_id, Job.column_name == column,
+                                           Job.kind == "look_inside_other", Job.status == "done")
+                         .order_by(Job.id.desc())).first()
+        out["sample_extras"] = {
+            "look_inside_other": look.result if look is not None else None,
+            "answer_map": answer_map_data(s, dataset_id, column),
+        }
     if out.get("stale"):
         sys.exit("That report is out of date. Rebuild it first.")
     out["dataset_id"] = 0  # the sample is not a real dataset of the viewer's

@@ -3525,3 +3525,14 @@ menu now reads Home, Uploads, Projects, Reports, Jobs (Uploads moved before Proj
 heading matches it: "Uploads" (was "New project"), "Reports" (was "Report"), "Jobs" (now a real h1).
 Sign-in still lands on the page the visitor came from, or Uploads.
 
+### 2026-10-26 follow-up: the sample shows Inside Other, the answer map and "Explore all themes"
+
+User's call: the sample report also shows "How all answers group" (the answer map), "Group size and theme
+mix" and the group-to-theme-to-tone flow. The last two are the "Explore all themes" views, so
+`publicView` no longer hides them (it still hides "See answers" and the number-pair explorations), and on
+the sample (`bare`) they open expanded. The answer map and the rest of Inside Other need data the report
+page fetches with sign-in, so the snapshot now freezes it too (`sample_extras`: the latest finished Look
+inside Other result, which is counts, labels and tones, and the answer map's dot positions, which are x/y
+and a theme index with no answer text or row ids). `api_themes.answer_map_data` is shared by the route and
+the snapshot tool. `InsideOther` and `ReportView` take that map data as a prop instead of fetching.
+

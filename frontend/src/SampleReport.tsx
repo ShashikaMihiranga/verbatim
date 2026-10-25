@@ -1,16 +1,24 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import ReportView from './Report'
-import type { ReportResponse } from './reportApi'
+import type { Job } from './jobsApi'
 import { Arrow, Logo } from './home/homeArt'
-import { loadSampleReport } from './home/sampleReport'
+import { loadSampleReport, type SampleReport as Sample } from './home/sampleReport'
 import './home/home-d.css'
 
 // "See a sample report" (home page): the frozen 10k workplace-survey report (dataset 13, user's choice),
 // shown read-only like a share link, inside the home page's frame: no sign-in, no filters, no answer
-// drill-down, no analyst explorations.
+// drill-down. Inside Other and its answer map, and "Explore all themes" (opened), are shown.
+
+// The frozen Look inside Other result, as the finished job the report's Inside Other section reads.
+function lookJob(r: Sample): Job | null {
+  const result = r.sample_extras?.look_inside_other
+  if (!result) return null
+  return { id: 0, dataset_id: 0, column: r.column, kind: 'look_inside_other', status: 'done', step: 'Done', error: null, result } as Job
+}
+
 export default function SampleReport() {
-  const [report, setReport] = useState<ReportResponse | null>(null)
+  const [report, setReport] = useState<Sample | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -51,7 +59,10 @@ export default function SampleReport() {
         <div className="sp-report">
           {error && <p className="err" role="alert">{error}</p>}
           {!error && !report && <p className="sp-loading">Loading the sample report...</p>}
-          {report && <ReportView report={report} datasetId={0} publicView bare />}
+          {report && (
+            <ReportView report={report} datasetId={0} publicView bare lookInsideOtherJob={lookJob(report)}
+              answerMap={report.sample_extras?.answer_map ?? null} />
+          )}
         </div>
 
         <section style={{ marginTop: 80, marginBottom: 80 }} aria-labelledby="sp-cta-h">

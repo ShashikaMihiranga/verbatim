@@ -2,6 +2,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import ReportView from './Report'
 import type { ReportResponse } from './reportApi'
+import type { Job } from './jobsApi'
+import type { SampleReport } from './home/sampleReport'
+import sampleJson from '../public/sample/report.json?raw'
 
 // A page anyone can open (share link, sample report) cannot show answers (that needs sign-in) or the
 // analyst explorations; the sample page also shows its own title and leaves out the column chips.
@@ -36,5 +39,19 @@ describe('report view on public pages', () => {
     expect(html).not.toContain('rp-title')
     expect(html).not.toContain('3 themes found.')
     expect(html).not.toContain('Real_Property_Use')
+  })
+
+  it('the sample draws Inside Other and its answer map from the frozen data, without fetching', () => {
+    const sample = JSON.parse(sampleJson) as SampleReport
+    const job = { id: 0, dataset_id: 0, column: sample.column, kind: 'look_inside_other', status: 'done', step: 'Done', error: null,
+      result: sample.sample_extras!.look_inside_other } as Job
+    const html = renderToStaticMarkup(
+      <ReportView report={sample} datasetId={0} publicView bare lookInsideOtherJob={job} answerMap={sample.sample_extras!.answer_map} />,
+    )
+    expect(html).toContain('Inside Other')
+    expect(html).toContain('How all answers group')
+    expect(html).toContain('Secondhand smoke near entrances')
+    expect(html).toContain('Explore all themes')
+    expect((html.match(/<circle/g) ?? []).length).toBeGreaterThan(1000)
   })
 })

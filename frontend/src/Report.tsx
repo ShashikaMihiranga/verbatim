@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { AnswerList } from './Themes'
 import type { Job } from './jobsApi'
 import type { ReportBlock, ReportFilters as ReportFiltersValue, ReportResponse, ReportThemeChartVariant } from './reportApi'
-import type { ThemeCard } from './themesApi'
+import type { AnswerMapResponse, ThemeCard } from './themesApi'
 import InsideOther from './InsideOther'
 import QuestionContext from './QuestionContext'
 import { parseContextData } from './questionContextData'
@@ -101,6 +101,7 @@ export default function ReportView({
   onQuestionKindChange,
   publicView = false,
   bare = false,
+  answerMap = null,
 }: {
   report: ReportResponse
   datasetId: number
@@ -121,10 +122,12 @@ export default function ReportView({
   // The question type was changed: the caller reloads the report, which comes back out of date.
   onQuestionKindChange?: () => void
   // A page anyone can open (share link, sample report): no "See answers" (that needs sign-in) and no
-  // analyst explorations.
+  // number-pair explorations; "Explore all themes" stays (the sample opens it).
   publicView?: boolean
   // The page shows its own title and summary, and the column chips are left out (the sample report).
   bare?: boolean
+  // The Inside Other answer map's data, for a page that cannot fetch it (the sample report).
+  answerMap?: AnswerMapResponse | null
 }) {
   const overview = report.blocks.find((b) => b.kind === 'overview')
   const quality = report.blocks.find((b) => b.kind === 'quality')
@@ -209,7 +212,7 @@ export default function ReportView({
       {lookInsideOtherJob?.status === 'done' && (
         <InsideOther
           job={lookInsideOtherJob} context="report"
-          allThemes={report.all_themes} breakdown={report.other_breakdown}
+          allThemes={report.all_themes} breakdown={report.other_breakdown} answerMap={answerMap}
         />
       )}
 
@@ -231,10 +234,10 @@ export default function ReportView({
         </Divider>
       )}
 
-      {sharedViews.length > 0 && !publicView && <Divider id="report-explore">
-        <details className="rp-exploration">
+      {sharedViews.length > 0 && <Divider id="report-explore">
+        <details className="rp-exploration" open={bare || undefined}>
           <summary>Explore all themes</summary>
-          {sharedViews.map((view, index) => <details className="rp-context-view" key={`${view.chart_id}-${index}`}>
+          {sharedViews.map((view, index) => <details className="rp-context-view" key={`${view.chart_id}-${index}`} open={bare || undefined}>
             <summary>{view.chart_label?.replace(/^All themes:\s*/, '') || view.chart_title}</summary>
             {view.chart_note && <p className="rp-method-note">{view.chart_note}</p>}
             <ThemeChart fragment={view} title={view.chart_title} selectedTheme={selectedThemeName} />
