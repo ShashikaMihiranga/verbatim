@@ -41,7 +41,8 @@ html:has(.hd) { scroll-behavior: smooth; }
 .hd-h1 { font-size: 72px; font-weight: 300; line-height: 1.04; margin: 18px 0 0; letter-spacing: -0.02em; }
 .hd-lead { font-size: 21px; line-height: 1.55; color: var(--muted); margin-top: 24px; max-width: 520px; }
 .hd-note { font-size: 15px; color: var(--muted); margin-top: 20px; }
-.hd-hero-stage { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-end; padding-top: 4px; }
+/* both scenes start 30px into the stage; this puts that line level with the headline (user's call) */
+.hd-hero-stage { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-end; padding-top: 92px; }
 .hd-fit { position: relative; width: 720px; max-width: 100%; }
 .hd-fit-in { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 
@@ -68,7 +69,7 @@ html:has(.hd) { scroll-behavior: smooth; }
   border-radius: 22px; padding: 28px 32px; font-size: 23px; line-height: 1.6; font-weight: 300; }
 .hd-hl { position: relative; isolation: isolate; font-weight: 600; white-space: nowrap; }
 .hd-hl-bg { position: absolute; inset: -3px -5px; opacity: .22; border-radius: 7px; z-index: -1; transform-origin: left; }
-.hd-cols { position: absolute; left: 0; right: 0; top: 272px; display: flex; gap: 16px; }
+.hd-cols { position: absolute; left: 0; right: 0; top: 232px; display: flex; gap: 16px; }
 .hd-col { flex: 1; background: var(--surface); border: 1.5px solid var(--line); border-radius: 20px; padding: 18px 16px; height: 176px; position: relative; }
 .hd-col-head { display: flex; justify-content: space-between; align-items: center; font-size: 19px; font-weight: 600; }
 .hd-cnt { min-width: 30px; height: 28px; padding: 0 10px; border-radius: 14px; font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
@@ -191,7 +192,7 @@ html:has(.hd) { scroll-behavior: smooth; }
 @media (max-width: 1240px) {
   .hd-hero { flex-direction: column; min-height: 0; }
   .hd-hero-text { width: auto; max-width: 640px; padding-top: 40px; }
-  .hd-hero-stage { align-items: center; padding-bottom: 20px; }
+  .hd-hero-stage { align-items: center; padding-top: 0; padding-bottom: 20px; }
   .hd-steps { flex-wrap: wrap; gap: 16px; }
   .hd-steps .hd-arr { display: none; }
   .hd-st { flex: 1 1 calc(33% - 16px); }

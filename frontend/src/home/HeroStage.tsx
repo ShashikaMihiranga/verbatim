@@ -191,7 +191,7 @@ export default function HeroStage() {
           </div>
           <div className="hd-s2" style={{ position: 'absolute', inset: 0, opacity: 0 }} aria-hidden="true">
             <div className="hd-f" style={{ position: 'relative', width: 720, height: 560 }}>
-              <div style={{ position: 'absolute', left: 0, top: 70, right: 0, height: 170 }}>
+              <div style={{ position: 'absolute', left: 0, top: 30, right: 0, height: 170 }}>
                 {CARDS.map((parts, i) => (
                   <div key={i} className="hd-card">
                     {parts.map(([txt, th], j) => th ? (
