@@ -37,6 +37,18 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-060 — Screen readers read the home page headline twice**
+  - Found: 2026-10-26, Claude, accessibility tree of the new home page on the production build.
+  - Cause: anime.js `splitText` keeps an accessible copy of the sentence, but its word spans are announced
+    too, so the heading's name became the sentence twice.
+  - Fix: home page commit, `aria-label` with the sentence on the h1 · Test: live check only (the unit
+    tests mock anime.js).
+- [x] **BUG-059 — On a share link the question-type menu can be opened and fails to save**
+  - Found: 2026-10-26, Claude, while reusing the share-link view for the public sample report.
+  - Cause: `QuestionContext` always showed the menu and asked the signed-in-only question-kind API, even
+    on pages that cannot save (share link, sample report); a pick ended in "Could not save the change."
+  - Fix: home page commit, the type shows as plain text when the page passes no save handler · Test:
+    `question-context.test.tsx` "is plain text where the page cannot save".
 - [x] **BUG-058 — Undoing a theme edit could not bring the report back, and on Railway left findings unlinked**
   - Found: 2026-10-25, Claude, review of the theme editor before handing it over.
   - Cause: every edit deleted the column's report, so after an undo only a paid Rebuild report brought

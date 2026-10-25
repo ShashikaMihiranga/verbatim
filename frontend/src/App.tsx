@@ -9,7 +9,8 @@ import Projects from './Projects'
 import SharedReport from './SharedReport'
 import Themes from './Themes'
 import Upload from './Upload'
-import Landing from './home/Landing'
+import Landing from './home/HomePage'
+import SampleReport from './SampleReport'
 import './auth/auth.css'
 import { clerkConfigured, devUserAllowed } from './authConfig'
 import ForgotPasswordPage from './auth/ForgotPasswordPage'
@@ -106,6 +107,10 @@ export default function App() {
             a share link means "no sign-in required", so this page carries none of Shell's signed-in-nav
             assumptions. */}
         <Route path="/shared" element={<SharedReport />} />
+        {/* The home page's "See a sample report": public, read-only, from a frozen file (no database). */}
+        <Route path="/sample" element={<SampleReport />} />
+        {/* The home page for anyone, signed in or not ("/" sends signed-in visitors to Upload). */}
+        <Route path="/home" element={<Landing />} />
         <Route element={<Shell />}>
           <Route path="/projects" element={guard(<Projects />)} />
           <Route path="/upload" element={guard(<Upload />)} />

@@ -32,7 +32,7 @@ describe('question context', () => {
   it('renders a real dropdown, never a permanently open menu', () => {
     const data = parseContextData(SERVER_FRAGMENT)!
     const html = renderToStaticMarkup(
-      <QuestionContext datasetId={1} column="Why" block={block(SERVER_FRAGMENT)} data={data} />,
+      <QuestionContext datasetId={1} column="Why" block={block(SERVER_FRAGMENT)} data={data} onKindChange={() => {}} />,
     )
     // A styled menu button, not a native <select> (that opens at 36px in the system font).
     expect(html).not.toContain('<select')
@@ -42,13 +42,21 @@ describe('question context', () => {
     expect(html).toContain('negatively')
   })
 
+  it('is plain text where the page cannot save, such as a share link or the sample report', () => {
+    const data = parseContextData(SERVER_FRAGMENT)!
+    const html = renderToStaticMarkup(<QuestionContext datasetId={0} column="Why" block={block(SERVER_FRAGMENT)} data={data} />)
+    expect(html).not.toContain('aria-haspopup="listbox"')
+    expect(html).not.toContain('Use Verbatim')
+    expect(html).toContain('opinions')
+  })
+
   it('the report uses the control when the payload exists, and the plain fragment otherwise', () => {
     const base = {
       dataset_id: 1, column: 'Why', question: 'Q', summary: '', also_checked_nothing_notable: false,
       columns_used: [], filter_options: { segment: null, score_band: null, date_range: null },
       filters_applied: {}, other_breakdown: null, all_themes: [], theme_chart_variants: {},
     } as unknown as ReportResponse
-    const withPayload = renderToStaticMarkup(<ReportView datasetId={1} report={{ ...base, blocks: [block(SERVER_FRAGMENT)] }} />)
+    const withPayload = renderToStaticMarkup(<ReportView datasetId={1} report={{ ...base, blocks: [block(SERVER_FRAGMENT)] }} onQuestionKindChange={() => {}} />)
     expect(withPayload).toContain('aria-haspopup="listbox"')
     const legacy = renderToStaticMarkup(<ReportView datasetId={1} report={{ ...base, blocks: [block('<div>LEGACY-CONTEXT</div>')] }} />)
     expect(legacy).toContain('LEGACY-CONTEXT')

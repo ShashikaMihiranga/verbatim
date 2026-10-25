@@ -121,13 +121,17 @@ export default function QuestionContext({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Without onKindChange the page cannot save (a share link, the sample report): show the type as text.
+  const readOnly = !onKindChange
+
   useEffect(() => {
+    if (readOnly) return
     let live = true
     getQuestionKind(datasetId, column)
       .then((s) => { if (live) setThemesKind(s.themes_kind ?? null) })
       .catch(() => { /* the note is optional; the sentence still works */ })
     return () => { live = false }
-  }, [datasetId, column])
+  }, [datasetId, column, readOnly])
 
   async function save(kind: string | null) {
     setSaving(true)
@@ -148,11 +152,13 @@ export default function QuestionContext({
     <div className="rp-section qc" aria-label={block.chart_title}>
       <p className="qc-sentence">
         This question asks for{' '}
-        <KindMenu value={ctx.kind} options={ctx.options} disabled={saving} onPick={(k) => void save(k)} />
+        {readOnly
+          ? <span className="qc-fact">{ctx.kind}</span>
+          : <KindMenu value={ctx.kind} options={ctx.options} disabled={saving} onPick={(k) => void save(k)} />}
         , framed <span className="qc-fact">{ctx.framing}</span>, and answers run{' '}
         <span className="qc-fact">{ctx.length}</span>.
       </p>
-      {ctx.corrected && (
+      {ctx.corrected && !readOnly && (
         <p className="qc-note">
           You changed this from Verbatim's guess, <strong>{ctx.guessed_kind}</strong>.{' '}
           <button type="button" className="qc-reset" disabled={saving} onClick={() => save(null)}>

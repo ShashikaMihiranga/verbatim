@@ -3451,3 +3451,42 @@ setting. The unused `sentiment.spot_check` still reads `VERBATIM_CLAUDE_MODEL`; 
 it. Not yet compared on a real dataset: if Haiku headlines read worse, set `VERBATIM_CLAUDE_LIGHT_MODEL`
 back to `claude-sonnet-5`.
 
+## 2026-10-26: Home page D (React + anime.js), sample report from the 10k survey
+
+Built from `design/handoffs/HomePageD_UIHandoff.md` and `design/screens/Home-D.dc.html` (generators in
+`verbatim-visual-system/generator/`: `gen_homed_map.py`, `home_modern.py`, `home_common.py`,
+`gen_howitworks.py`). Replaces the old landing page in `frontend/src/home/` (removed).
+
+- **Structure.** `HomePage.tsx` (top bar, hero text, privacy, call to action, footer, the map's list
+  form), `HeroStage.tsx` (two scenes taking turns, rebuilt each cycle), `HomeSteps.tsx` (five cards,
+  active-card zoom and glow, five icon loops), `ReportTabs.tsx` + `sampleReport.ts`, `HowItWorksMap.tsx` +
+  `howItWorksData.ts` (typed nodes, wires, steps), `homeArt.tsx`, `homeMotion.ts`, `homeFit.tsx`,
+  `home-d.css`. anime.js 4.3.6 pinned (the design's version), one `createScope({ root })` per animated
+  component, reverted on unmount. Reduced motion: finished states, no loops, no pause buttons; every loop
+  otherwise has a visible pause control. Fixed-size designs (hero stage 720x560, map 1312x920) scale down
+  evenly with `<Fit>`; measured positions are divided by the scale.
+- **Sample data (user's decision).** The public sample is the 10k workplace survey
+  (`tss_fy19_comments_10k.csv`; dataset 13 locally, the user's dataset 14 elsewhere). The user agreed its
+  masked answers may be public. It is a frozen file, `frontend/public/sample/report.json`, made by
+  `tools/snapshot_sample_report.py` from exactly what a share link returns (`_render_report`), so the
+  public pages never read the database and work the same on every environment. `/sample` shows it
+  read-only with the share-link view; `/home` shows the home page to signed-in visitors too.
+- **Report tabs.** Real charts from that report, not the design's drawings (hand-off: "reuse the real
+  chart components"). Six tabs, each sentence checked against its chart, no figures: Theme map, Tone by
+  theme, Themes by group, Scores by theme, In their own words, Key phrases. The design's "Over time" tab
+  is dropped (the survey has no date column) and "Rank, tinted by tone" became "Tone by theme" (the report
+  has no rank chart since BUG-038). Two first drafts were wrong and were rewritten from the charts: the
+  tone chart only lists the 8 largest themes, and outpatient sites slightly out-raise hospitals on patient
+  privacy, so that sentence compares hospitals with comments overall, as the finding does.
+- **Privacy copy.** The map's "what leaves your data" text is the hand-off's exact table (tested), the
+  privacy section adds the embeddings-service line, and step 6 says an edit marks the report out of date.
+- **Grouping in production.** The user chose to switch theme grouping on in production with this release,
+  so the map's step 6 and Claude's "suggests which themes to merge" stay as designed.
+- **Not designed, built from the hand-off's suggestions.** Below 1240px the hero stacks and the steps wrap;
+  below 1100px the map becomes a list of the six steps with the same text; on phones a tab chart keeps at
+  least half size and scrolls sideways inside its box. Terms, Contact and Made for teams have no pages
+  yet and show as plain text; Upload a sheet and Check the columns go to sign-up.
+- **Open, for the team.** The report charts on the home page print percentages from the sample (the
+  product rule bans counts on marketing screens; these are a sample's chart labels, kept because the
+  hand-off asks for real charts). The main bundle is about 580 KB; the home page could be split out later.
+
