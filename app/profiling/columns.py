@@ -14,6 +14,8 @@ from typing import Any
 
 import pandas as pd
 
+from ..periods import parse_period, period_kind
+
 def _segment_max_distinct(n: int) -> int:
     """Segment's distinct-value ceiling scales with row count instead of staying fixed at 12 - a column
     with 15-20 distinct, heavily-repeated values in a 1,000+-row dataset is exactly as categorical as one
@@ -221,6 +223,16 @@ def profile_column(name: str, values: list[Any], position: int = 0, total_rows: 
         kind, conf, is_question = "id_or_junk", 0.9, True
         reason = "The same question is repeated on every row, so we use it as the question text and ignore the column."
         return out()
+
+    # ---- years, fiscal years, quarters, months ("FY19", 2019 in a "Year" column, "Q3 2022")
+    # Before numbers: a Year column of 2017..2020 is when, not how much. Never a birth year or an age.
+    period = None if (sens and "birth" in sens) or re.search(r"birth|(^|[^a-z])age([^a-z]|$)", lname) else period_kind(name, list(cnt))
+    if period is not None:
+        starts = sorted({p[0] for p in map(parse_period, cnt) if p is not None})
+        if len(starts) >= 2:
+            kind, conf = "date", 0.9
+            reason = f"Values read as {period}s, {starts[0].year} to {starts[-1].year}, so we can show change over time."
+            return out()
 
     # ---- native or text dates
     parsed = _parse_dates(list(cnt))

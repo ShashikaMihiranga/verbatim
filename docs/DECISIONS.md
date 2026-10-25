@@ -3267,3 +3267,19 @@ existing theme; the report shows the finished run's result only, with no button.
   `placeLabels` keeps names inside the plot and moves or drops one that would cover a bigger cloud's name.
 - Not done: the report's own `answer_map` block still draws whatever positions are stored, PCA included.
 
+## 2026-10-25 (T3: years, fiscal years and quarters count as time)
+
+- User asked for patterns across time; most charts are snapshots. Plan agreed: P1 (scores by theme), T1
+  (always-on themes over time), T3 (this). Pair plot dropped by the user; survey waves (T2) later.
+- `app/periods.py`: `parse_period` reads "FY19", "FY 2021", 2019, "Q3 2022", "2022-Q4", "Mar 2021",
+  "2021-03" and real dates, each as the first day of its period plus its width. `period_kind` calls a
+  column a period column when 85% of its distinct values are; plain numbers count as years only when the
+  column's name says so (year, FY, wave, period, quarter...), since 2019 is as often a count.
+- Profiling checks this before numbers, never for a birth year or an age column. The trend builder reads
+  values through it (`_read_periods`) and bands at the coarsest width any value has, so a year column is
+  per year, not twelve months with one filled.
+- `band_dates` also coarsens long spans: over 36 months by quarter, over 24 quarters by year (dataset 1's
+  2014-2018 reviews were 58 monthly points).
+- Existing datasets keep their stored column kinds until re-uploaded; none of the current ones has a year
+  column (the TSS files are one FY19 snapshot).
+

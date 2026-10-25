@@ -44,6 +44,7 @@ from .chart_data import (
     GroupTrendSeries, ScoreBand, ScoreData, SegmentData, SegmentGroup, SegmentRow, TrendData, TrendSeries,
 )
 from .models import Column, Theme
+from .periods import parse_period
 
 __all__ = [
     "Band", "band_score", "band_age", "band_quartiles", "band_dates", "apply_bands",
@@ -283,7 +284,42 @@ def _day_month(d: date) -> str:
     return f"{d.day} {d.strftime('%b')}"
 
 
-def band_dates(values: Sequence[date]) -> tuple[list[Band], str]:
+# Longest run of periods one chart shows before the next coarser period reads better: past 36 months,
+# quarters; past 24 quarters, years.
+MAX_MONTHS = 36
+MAX_QUARTERS = 24
+
+
+def _quarter_band(y: int, q: int) -> Band:
+    start = date(y, 3 * (q - 1) + 1, 1)
+    end_month = 3 * q
+    end = date(y, end_month, calendar.monthrange(y, end_month)[1])
+    return Band(f"Q{q} {y}", float(start.toordinal()), float(end.toordinal()))
+
+
+def _year_band(y: int) -> Band:
+    return Band(str(y), float(date(y, 1, 1).toordinal()), float(date(y, 12, 31).toordinal()))
+
+
+def _coarse_bands(lo_d: date, hi_d: date, granularity: str) -> tuple[list[Band], str] | None:
+    """Quarter or year bands from `lo_d` to `hi_d`; a quarter run longer than `MAX_QUARTERS` becomes
+    years. None when fewer than 3 periods result."""
+    if granularity == "quarter":
+        quarters = [(y, q) for y in range(lo_d.year, hi_d.year + 1) for q in range(1, 5)
+                    if (y, q) >= (lo_d.year, (lo_d.month - 1) // 3 + 1) and (y, q) <= (hi_d.year, (hi_d.month - 1) // 3 + 1)]
+        if len(quarters) > MAX_QUARTERS:
+            granularity = "year"
+        elif len(quarters) >= 3:
+            return ([_quarter_band(y, q) for y, q in quarters],
+                    f"Quarterly, Q{quarters[0][1]} {quarters[0][0]} to Q{quarters[-1][1]} {quarters[-1][0]}.")
+    if granularity == "year":
+        years = list(range(lo_d.year, hi_d.year + 1))
+        if len(years) >= 3:
+            return [_year_band(y) for y in years], f"Yearly, {years[0]} to {years[-1]}."
+    return None
+
+
+def band_dates(values: Sequence[date], granularity: str = "day") -> tuple[list[Band], str]:
     """Bands real `date` objects (parsing is the caller's job - this function never sees strings) into
     time periods for a trend chart, picking the coarsest granularity that still yields at least 3 periods
     across the observed min-to-max span, tried in this order: month, then week, then day. A short survey
@@ -306,14 +342,28 @@ def band_dates(values: Sequence[date]) -> tuple[list[Band], str]:
 
     Raises `ValueError` if fewer than 3 periods can be formed even at daily granularity - the data does
     not have enough date spread to band into a trend at all (e.g. all dates identical, or only 1-2 distinct
-    dates)."""
+    dates).
+
+    `granularity` is how wide each value's own period is (`app.periods.parse_period`): a column of years
+    or quarters is banded per year or quarter, never finer, since nothing in it says which month. A long
+    span is banded more coarsely too: over `MAX_MONTHS` months by quarter, over `MAX_QUARTERS` by year."""
     clean = sorted(v for v in values if v is not None)
     distinct = sorted(set(clean))
     if len(distinct) < 2:
         raise ValueError("band_dates needs at least 2 distinct dates to band.")
     lo_d, hi_d = distinct[0], distinct[-1]
 
+    if granularity in ("year", "quarter"):
+        coarse = _coarse_bands(lo_d, hi_d, granularity)
+        if coarse is None:
+            raise ValueError(f"Fewer than 3 {granularity}s to band.")
+        return coarse
+
     months = _month_periods(lo_d, hi_d)
+    if len(months) > MAX_MONTHS:
+        coarse = _coarse_bands(lo_d, hi_d, "quarter")
+        if coarse is not None:
+            return coarse
     if len(months) >= 3:
         include_year = _spans_multiple_years([y for y, _ in months])
         bands = [_month_band(y, m, include_year) for y, m in months]
@@ -1009,6 +1059,23 @@ def build_binned_grid_data(
 
 # -------------------------------------------------------------------- pick_structured_columns
 
+def _read_periods(clean_df: pd.DataFrame, rows, date_col: str) -> tuple[dict[int, date], str]:
+    """Each row's date in `date_col` (real dates, and years / fiscal years / quarters written as text,
+    `app.periods.parse_period`) and the width to band them at: the coarsest any value has, since a
+    "2019" says nothing about the month."""
+    parsed_by_row: dict[int, date] = {}
+    widths: set[str] = set()
+    for r in rows:
+        try:
+            got = parse_period(clean_df.at[r, date_col])
+        except KeyError:
+            continue
+        if got is not None:
+            parsed_by_row[r], width = got
+            widths.add(width)
+    return parsed_by_row, next((g for g in ("year", "quarter", "month") if g in widths), "day")
+
+
 def pick_structured_columns(dataset_id: int, db: Session) -> dict[str, list[str]]:
     """Every confirmed, not-switched-off `Column` name of each kind ("score", "segment", "date", "numeric",
     "yes_no", "short_text"), in
@@ -1198,24 +1265,9 @@ def build_structured_context(
                 break
 
     for date_col in columns.get("date", []):
-        parsed_by_row: dict[int, date] = {}
-        for r in rows:
-            try:
-                v = clean_df.at[r, date_col]
-            except KeyError:
-                continue
-            if isinstance(v, str):
-                ts = pd.to_datetime(v, errors="coerce")
-            elif isinstance(v, date):
-                ts = pd.Timestamp(v)
-            else:
-                ts = pd.to_datetime(v, errors="coerce")
-            if ts is None or pd.isna(ts):
-                continue
-            parsed_by_row[r] = ts.date()
-
+        parsed_by_row, granularity = _read_periods(clean_df, rows, date_col)
         try:
-            date_bands, date_note = band_dates(list(parsed_by_row.values()))
+            date_bands, date_note = band_dates(list(parsed_by_row.values()), granularity)
         except ValueError:
             continue  # this candidate's dates don't band usefully - try the next one
 
@@ -1297,18 +1349,9 @@ def build_structured_context(
             continue  # BUG-051, as above
         found = False
         for date_col in columns.get("date", []):
-            parsed_by_row: dict[int, date] = {}
-            for r in rows:
-                try:
-                    v = clean_df.at[r, date_col]
-                except KeyError:
-                    continue
-                ts = pd.Timestamp(v) if isinstance(v, date) else pd.to_datetime(v, errors="coerce")
-                if ts is None or pd.isna(ts):
-                    continue
-                parsed_by_row[r] = ts.date()
+            parsed_by_row, granularity = _read_periods(clean_df, rows, date_col)
             try:
-                date_bands, date_note = band_dates(list(parsed_by_row.values()))
+                date_bands, date_note = band_dates(list(parsed_by_row.values()), granularity)
             except ValueError:
                 continue
             period_by_row = apply_bands({r: float(d.toordinal()) for r, d in parsed_by_row.items()}, date_bands)
