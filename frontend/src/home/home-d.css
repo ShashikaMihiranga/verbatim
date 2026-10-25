@@ -28,7 +28,8 @@ html:has(.hd) { scroll-behavior: smooth; }
   border-radius: 12px; font-weight: 600; }
 
 /* buttons */
-.hd-btns { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.hd-btns { display: flex; gap: 16px; align-items: center; flex-wrap: nowrap; } /* side by side; stacks only on narrow phones */
+.hd-btn { white-space: nowrap; }
 .hd-btn { height: 56px; padding: 0 30px; display: inline-flex; align-items: center; gap: 10px; border-radius: 14px;
   font-size: 17px; font-weight: 600; border: 1.5px solid transparent; }
 .hd-btn.main { background: var(--accent); color: var(--on-accent); }
@@ -224,6 +225,12 @@ html:has(.hd) { scroll-behavior: smooth; }
   .hd-foot-top { flex-direction: column; gap: 32px; }
   .hd-pane-name { font-size: 30px; }
   .hd-pane-sent { font-size: 17px; }
+}
+@media (max-width: 480px) {
+  /* phones: smaller buttons so the pair still fits side by side; stacks only if it truly cannot */
+  .hd-btns { gap: 10px; flex-wrap: wrap; }
+  .hd-btn, .hd-btn.ghost { height: 48px; padding: 0 15px; font-size: 15px; gap: 6px; border-radius: 12px; }
+  .hd-btn svg { width: 16px; height: 16px; }
 }
 @media (max-width: 420px) {
   .hd-brand span { display: none; }

@@ -51,7 +51,7 @@ export default function SampleReport() {
           </p>
           {report && <p className="sp-summary">{report.summary}</p>}
           <div className="hd-btns" style={{ marginTop: 28 }}>
-            <Link className="hd-btn main" to="/sign-up">Make one from your own sheet<Arrow /></Link>
+            <Link className="hd-btn main" to="/sign-up">Make your own report<Arrow /></Link>
             <Link className="hd-btn ghost" to="/home">How it works</Link>
           </div>
         </section>
