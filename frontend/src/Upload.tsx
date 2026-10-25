@@ -62,7 +62,7 @@ export default function Upload() {
   return (
     <>
       <div className="head">
-        <h1>New project</h1>
+        <h1>Uploads</h1>
         <Steps step={1} />
       </div>
       <div

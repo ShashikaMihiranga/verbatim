@@ -1,6 +1,6 @@
 import { useAuth, useUser } from '@clerk/clerk-react'
 import type { ReactNode } from 'react'
-import { Link, Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import { Link, Outlet, Route, Routes } from 'react-router-dom'
 import AcceptInvite from './AcceptInvite'
 import CheckColumns from './CheckColumns'
 import Cleaning from './Cleaning'
@@ -19,13 +19,6 @@ import SignUpPage from './auth/SignUpPage'
 import VerifyPage from './auth/VerifyPage'
 import { ClerkBridge, NotConfigured, RequireAuth, SsoCallback } from './auth/guards'
 import { useSignOut } from './auth/useSignOut'
-
-// Signed-in visitors skip the landing page and go straight to Upload.
-function ClerkHome() {
-  const { isLoaded, isSignedIn } = useAuth()
-  if (isLoaded && isSignedIn) return <Navigate to="/upload" replace />
-  return <Landing />
-}
 
 const Placeholder = ({ title }: { title: string }) => (
   <>
@@ -60,9 +53,9 @@ function Shell() {
     <div className="page">
       <nav className="top" aria-label="Main">
         <Link to="/">Home</Link>
+        <Link to="/upload">Uploads</Link>
         <Link to="/projects">Projects</Link>
-        <Link to="/upload">Upload</Link>
-        <Link to="/report">Report</Link>
+        <Link to="/report">Reports</Link>
         <Link to="/jobs">Jobs</Link>
         <span className="spacer" />
         {devUserAllowed ? (
@@ -101,7 +94,7 @@ export default function App() {
         {authRoutes}
         <Route
           path="/"
-          element={clerkConfigured ? <ClerkHome /> : devUserAllowed ? <Navigate to="/upload" replace /> : <Landing />}
+          element={<Landing />}
         />
         {/* Sharing/roles (docs/TODO.md, fixed 2026-10-22): deliberately OUTSIDE the <Shell/> group below -
             a share link means "no sign-in required", so this page carries none of Shell's signed-in-nav

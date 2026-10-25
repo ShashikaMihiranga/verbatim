@@ -57,7 +57,7 @@ export function JobsView({
 }) {
   return (
     <div className="jb">
-      <div className="jb-title">Jobs</div>
+      <h1 className="jb-title">Jobs</h1>
       <div className="jb-summary">Every background build across your datasets, updated every few seconds.</div>
 
       <div className="rp-tabs" role="tablist">

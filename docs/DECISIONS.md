@@ -3517,3 +3517,11 @@ gained `publicView` (no "See answers", no analyst explorations; share links use 
 `bare` (the page shows its own title and summary; no column chips with raw column names). The snapshot was
 regenerated from dataset 13 and had not changed.
 
+### 2026-10-26 follow-up: "/" is the home page for everyone; menu renamed
+
+User's call: Home always opens the home page, signed in or not, so "/" no longer sends signed-in visitors
+(or the local dev user) to Upload; "/home" stays as the same page for links already shared. The signed-in
+menu now reads Home, Uploads, Projects, Reports, Jobs (Uploads moved before Projects), and each page's
+heading matches it: "Uploads" (was "New project"), "Reports" (was "Report"), "Jobs" (now a real h1).
+Sign-in still lands on the page the visitor came from, or Uploads.
+

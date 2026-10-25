@@ -498,7 +498,7 @@ export default function Themes() {
   if (!id) {
     return (
       <>
-        <h1>Report</h1>
+        <h1>Reports</h1>
         <p className="muted">
           Nothing to report yet. <Link to="/upload">Upload a spreadsheet</Link> first.
         </p>
@@ -508,7 +508,7 @@ export default function Themes() {
   if (!ds) {
     return error ? (
       <>
-        <h1>Report</h1>
+        <h1>Reports</h1>
         <p className="err" role="alert">{error}</p>
       </>
     ) : (
@@ -519,7 +519,7 @@ export default function Themes() {
     return (
       <>
         <div className="head">
-          <h1>Report</h1>
+          <h1>Reports</h1>
           <Progress />
         </div>
         <p className="muted">
@@ -663,7 +663,7 @@ export default function Themes() {
   return (
     <>
       <div className="head">
-        <h1>Report</h1>
+        <h1>Reports</h1>
         <Progress />
       </div>
       {/* Introduces the theme cards; the report has its own title and summary. */}
