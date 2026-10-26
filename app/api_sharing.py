@@ -219,4 +219,4 @@ def public_report(token: str, db: Session = Depends(get_db)):
     report = _latest_report_for_column(db, ds.id, link.column_name)
     if report is None:
         raise HTTPException(404, "No report has been built yet for this column.")
-    return _render_report(db, ds, link.column_name, report)
+    return _render_report(db, ds, link.column_name, report, public=True)

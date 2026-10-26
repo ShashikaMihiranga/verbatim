@@ -183,7 +183,7 @@ class AnthropicClaudeClient:
             raise ClaudeNotConfigured(
                 "The 'anthropic' package is not installed. Add it to the environment before labelling."
             ) from e
-        self._client = anthropic.Anthropic()
+        self._client = anthropic.Anthropic(timeout=300.0, max_retries=2)  # big label replies take minutes
         self.model = model or os.environ.get("VERBATIM_CLAUDE_MODEL", DEFAULT_MODEL)
 
     def complete(self, system: str, prompt: str, *, max_tokens: int = MAX_TOKENS) -> str:
@@ -324,7 +324,7 @@ def _parse_response(
 
         cluster_id = item.get("cluster_id")
         if not isinstance(cluster_id, int) or isinstance(cluster_id, bool):
-            raise LabelingError(f"Claude's reply had a theme with a missing/invalid cluster_id: {item!r}", text)
+            raise LabelingError(f"Claude's reply had a theme with a missing/invalid cluster_id.", text)
         if cluster_id not in expected_ids:
             # Ignore themes for ids we never sent (e.g. a hallucinated id, or "Other") rather than
             # failing the whole batch over one bad entry - we still require every real id below.

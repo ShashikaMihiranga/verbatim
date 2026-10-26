@@ -14,6 +14,7 @@ import re
 from typing import Any
 
 from ..claude_models import light_model
+from ..cleaning.redact import bare_digits_for_kind, redact_text
 from .columns import KINDS
 
 MAX_SAMPLES = 30
@@ -33,14 +34,15 @@ SYSTEM = (
 
 
 def collect_samples(df, profile: dict[str, Any], n: int = MAX_SAMPLES) -> dict[str, list[str]]:
-    """Up to n distinct sample values per column. Sensitive columns get none."""
+    """Up to n distinct sample values per column, masked like app/cleaning/payload.py. Sensitive columns get none."""
     out: dict[str, list[str]] = {}
     for c in profile["columns"]:
         if c.get("sensitive"):
             out[c["name"]] = []
             continue
         vals = df[c["name"]].dropna().astype(str).drop_duplicates().head(n)
-        out[c["name"]] = [v[:200] for v in vals]
+        bare = bare_digits_for_kind(c.get("kind", ""))
+        out[c["name"]] = [redact_text(v[:200], bare_digits=bare)[0] for v in vals]
     return out
 
 
@@ -75,7 +77,7 @@ def refine_profile(profile: dict[str, Any], samples: dict[str, list[str]], clien
             import anthropic  # lazy: not a hard requirement
         except ImportError:
             return profile
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=20.0, max_retries=1)  # runs inside the upload request
     try:
         msg = client.messages.create(
             model=model or light_model(),  # column hints are a small task: app/claude_models.py

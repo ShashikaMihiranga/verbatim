@@ -283,7 +283,7 @@ def _stale_reason(ds: Dataset, column: str, content: dict, themes: list[Theme], 
 def _render_report(
     db: Session, ds: Dataset, column: str, report: Report, *,
     segment: str | None = None, score_band: str | None = None,
-    date_from: date | None = None, date_to: date | None = None,
+    date_from: date | None = None, date_to: date | None = None, public: bool = False,
 ) -> dict[str, Any]:
     """Builds the JSON body for both routes below: one `build_report_data` call, reused for every block's
     `render_parts()` (per app/findings.py's own instruction - never rebuilt per block).
@@ -310,7 +310,8 @@ def _render_report(
                        'segment_skew': structured.segment_column_name, 'trend_shift': structured.trend_column_name}
     answer_lengths = _answer_lengths_for(clean_df, column, themes)
     answer_texts = _answer_texts_for(clean_df, column, themes, filter_rows)
-    quote_theme_texts = _quote_theme_texts_for(clean_df, column, themes, filter_rows)
+    # public (share link, no sign-in): no verbatim answers, so no quotes block and no map tooltip text.
+    quote_theme_texts = None if public else _quote_theme_texts_for(clean_df, column, themes, filter_rows)
     answer_positions = _answer_positions_for(db, ds.id, column)
     question = content.get("question") or column
     report_data = build_report_data(
@@ -658,6 +659,11 @@ _EXPORT_CONTENT_TYPES = {
 }
 
 
+# Each export starts a headless Chromium (hundreds of MB): one at a time, or a few parallel requests
+# run the single container out of memory.
+_EXPORT_SLOT = threading.BoundedSemaphore(1)
+
+
 @router.get("/datasets/{dataset_id}/report/export")
 def export_report(
     dataset_id: int, column: str, format: str,
@@ -683,12 +689,17 @@ def export_report(
         for b in body["blocks"]
     ]
 
-    if format == "png":
-        data = render_report_png(blocks)
-    elif format == "pptx":
-        data = build_report_pptx(blocks)
-    else:
-        data = build_report_pdf(blocks)
+    if not _EXPORT_SLOT.acquire(blocking=False):
+        raise HTTPException(429, "Another export is running. Try again in a few seconds.")
+    try:
+        if format == "png":
+            data = render_report_png(blocks)
+        elif format == "pptx":
+            data = build_report_pptx(blocks)
+        else:
+            data = build_report_pdf(blocks)
+    finally:
+        _EXPORT_SLOT.release()
 
     filename = f"report-{dataset_id}-{column}.{format}".replace(" ", "_")
     return Response(

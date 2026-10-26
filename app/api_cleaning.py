@@ -154,9 +154,9 @@ def _clean_params(key: str, params: dict[str, Any]) -> dict[str, Any]:
 def build_plan(dataset_id: int, body: PlanRequest | None = None, db: Session = Depends(get_db),
                user: User = Depends(current_user)):
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
-    df = _load_df(db, ds)
     settings = {"min_group_size": body.min_group_size} if body and body.min_group_size else None
     with _Slot():
+        df = _load_df(db, ds)
         plan, preview = _run(lambda: plan_with_preview(df, ds.profile, None, settings))
     _save(db, ds, {"plan": plan.to_dict(), "created_at": datetime.now(timezone.utc).isoformat()})
     return _plan_response(plan, preview)
@@ -195,8 +195,8 @@ def edit_plan(dataset_id: int, body: PlanPatch, db: Session = Depends(get_db), u
                 if m.enabled is not None:
                     one["enabled"] = m.enabled
                 table[m.from_] = {**table.get(m.from_, {}), **one}
-    df = _load_df(db, ds)
     with _Slot():
+        df = _load_df(db, ds)
         new_plan, preview = _run(lambda: plan_with_preview(df, ds.profile, overrides, plan.settings))
     _save(db, ds, {"plan": new_plan.to_dict(), "created_at": stored.get("created_at")})  # edits invalidate an old apply
     return _plan_response(new_plan, preview)
@@ -206,8 +206,8 @@ def edit_plan(dataset_id: int, body: PlanPatch, db: Session = Depends(get_db), u
 def apply_cleaning(dataset_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
     stored = _stored(ds)
-    df = _load_df(db, ds)
     with _Slot():
+        df = _load_df(db, ds)
         if "plan" in stored:
             plan = CleaningPlan.from_dict(stored["plan"])
         else:

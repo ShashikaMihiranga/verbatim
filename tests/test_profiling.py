@@ -283,6 +283,13 @@ def test_refine_is_noop_without_key(monkeypatch):
     assert refine_profile(profile, {}) is profile
 
 
+def test_collect_samples_masks_personal_details():
+    df = pd.DataFrame({"Comment": ["mail me at jo@example.com", "call +44 7700 900123 please"]})
+    profile = {"columns": [{"name": "Comment", "kind": "open_text"}]}
+    sent = " ".join(collect_samples(df, profile)["Comment"])
+    assert "jo@example.com" not in sent and "7700 900123" not in sent
+
+
 def test_refine_with_fake_client_sends_only_samples():
     profile, loaded = profile_file(FIX / "messy_survey.csv")
     samples = collect_samples(loaded.df, profile)

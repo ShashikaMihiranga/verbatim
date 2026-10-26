@@ -132,9 +132,9 @@ def test_wrong_and_missing_azp(env):
     _assert_generic_401(env.get("/api/me", make_token(azp=None)))
 
 
-def test_azp_not_checked_when_allow_list_unset(env, monkeypatch):
+def test_unset_allow_list_fails_closed(env, monkeypatch):
     monkeypatch.delenv("CLERK_AUTHORIZED_PARTIES")
-    assert env.get("/api/me", make_token(azp="https://anything.test")).status_code == 200
+    _assert_generic_401(env.get("/api/me", make_token(azp="https://anything.test")))
 
 
 def test_missing_exp_or_sub(env):

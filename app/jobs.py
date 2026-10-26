@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import db as _db
-from .models import Job
+from .models import Dataset, Job, Project
 
 log = logging.getLogger("verbatim.jobs")
 
@@ -86,6 +86,18 @@ def blocking_job(db: Session, dataset_id: int, column: str, kinds: tuple[str, ..
         if now - started <= max_age:
             return job
     return None
+
+
+def owner_has_running_theme_job(db: Session, owner_id: int) -> bool:
+    """True while any dataset this user owns has a theme-kind job running, so one account cannot hold
+    every theme slot (and the Claude/Voyage bill) by starting builds on many columns or datasets."""
+    cutoff = datetime.now(timezone.utc) - THEME_JOB_MAX_AGE
+    rows = db.scalars(
+        select(Job).join(Dataset, Job.dataset_id == Dataset.id).join(Project, Dataset.project_id == Project.id)
+        .where(Project.user_id == owner_id, Job.kind.in_(THEME_JOB_KINDS), Job.status == "running")
+    ).all()
+    return any((j.created_at if j.created_at.tzinfo else j.created_at.replace(tzinfo=timezone.utc)) >= cutoff
+               for j in rows)
 
 
 def create_job(db: Session, dataset_id: int, column: str, kind: str) -> Job:

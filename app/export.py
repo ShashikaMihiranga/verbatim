@@ -27,6 +27,7 @@ report page exactly.
 """
 from __future__ import annotations
 
+import html
 import io
 from dataclasses import dataclass
 
@@ -58,8 +59,19 @@ def _block_html(block: ExportBlock) -> str:
     return (
         f'<div class="xp-block" style="width:{block.width + 56}px">'
         f'<div class="v" style="width:{block.width}px;min-height:{block.height}px;position:relative">'
-        f'<div class="xp-title">{block.title}</div>{block.html}</div></div>'
+        f'<div class="xp-title">{html.escape(block.title)}</div>{block.html}</div></div>'
     )
+
+
+_FONT_HOSTS = ("https://fonts.googleapis.com/", "https://fonts.gstatic.com/")
+
+
+def _locked_page(browser, viewport: dict):
+    """A page with no JavaScript and no network except the font CSS/files: the charts are plain HTML/SVG,
+    so a value that ever slips past esc() cannot run code or reach the server's private network."""
+    page = browser.new_page(viewport=viewport, java_script_enabled=False)
+    page.route("**/*", lambda route: route.continue_() if route.request.url.startswith(_FONT_HOSTS) else route.abort())
+    return page
 
 
 def _full_page_html(blocks: list[ExportBlock]) -> str:
@@ -78,7 +90,7 @@ def render_report_png(blocks: list[ExportBlock]) -> bytes:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            page = browser.new_page(viewport={"width": width, "height": 800})
+            page = _locked_page(browser, {"width": width, "height": 800})
             page.set_content(_full_page_html(blocks), wait_until="networkidle")
             return page.screenshot(full_page=True)
         finally:
@@ -95,7 +107,7 @@ def _render_block_pngs(blocks: list[ExportBlock]) -> list[bytes]:
         browser = p.chromium.launch()
         try:
             for b in blocks:
-                page = browser.new_page(viewport={"width": b.width + 56, "height": b.height + 100})
+                page = _locked_page(browser, {"width": b.width + 56, "height": b.height + 100})
                 page.set_content(_full_page_html([b]), wait_until="networkidle")
                 pngs.append(page.screenshot(full_page=True))
                 page.close()

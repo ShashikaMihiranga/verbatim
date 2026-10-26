@@ -1066,3 +1066,61 @@ def test_findings_about_deleted_themes_are_marked_not_drawn_with_another_themes_
         if b["finding_id"] in orphaned:
             assert "no longer exists" in b["chart_html"]
             assert not b.get("chart_variants")
+
+
+# ---------------------------------------------------------------- answer text on shared reports, export guards
+
+def test_quotes_and_map_tooltip_are_masked():
+    from app.findings import _build_answer_map
+    from app.text_pipeline.quotes import build_quote_data
+    texts = [("Support", ["email me at jo@example.com about it"])]
+    assert "jo@example.com" not in build_quote_data(texts).quotes[0].text
+    assert "jo@example.com" not in _build_answer_map([], None, 0, texts).tip_text
+
+
+def test_share_link_report_has_no_answer_text(env):
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    build_report_job(env, did)
+    owner = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
+    assert any(b["kind"] == "quotes" for b in owner["blocks"])  # the owner still sees quotes
+
+    token = env.client.post(f"/api/datasets/{did}/share-links", json={"column": Q}).json()["token"]
+    shared = env.client.get(f"/api/share/{token}/report")
+    assert shared.status_code == 200, shared.text
+    assert not any(b["kind"] == "quotes" for b in shared.json()["blocks"])
+    assert _reliability_phrase(0) not in shared.text and _support_phrase(0) not in shared.text
+
+
+def test_export_is_one_at_a_time(env):
+    from app.api_report import _EXPORT_SLOT
+    install_fake_claude()
+    did = upload_csv(env, survey_df())
+    clean_and_apply(env, did)
+    seed_themes(env, did, notable_theme_specs())
+    build_report_job(env, did)
+    assert _EXPORT_SLOT.acquire(blocking=False)  # another export is running
+    try:
+        r = env.client.get(f"/api/datasets/{did}/report/export", params={"column": Q, "format": "png"})
+        assert r.status_code == 429
+    finally:
+        _EXPORT_SLOT.release()
+
+
+def test_export_page_runs_no_script_and_makes_no_outside_request():
+    from playwright.sync_api import sync_playwright
+    from app.export import _locked_page
+    finished: list[str] = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = _locked_page(browser, {"width": 400, "height": 200})
+            page.on("requestfinished", lambda req: finished.append(req.url))  # a blocked request never finishes
+            page.set_content('<p id="x">safe</p><script>document.getElementById("x").textContent="ran"</script>'
+                             '<img src="http://169.254.169.254/latest/meta-data/">')
+            assert page.text_content("#x") == "safe"
+        finally:
+            browser.close()
+    assert finished == []
