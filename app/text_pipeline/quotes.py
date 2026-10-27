@@ -11,6 +11,7 @@ from __future__ import annotations
 import statistics
 
 from ..chart_data import Quote, QuoteData
+from ..cleaning.redact import redact_text
 from .sentiment import score_text
 
 MAX_THEMES = 4
@@ -42,7 +43,7 @@ def build_quote_data(theme_texts: list[tuple[str, list[str]]]) -> QuoteData | No
         ranked = sorted(real, key=lambda t: abs(len(t.split()) - median_len))
         for text in ranked[:MAX_PER_THEME]:
             _, tone = score_text(text)
-            quotes.append(Quote(text=text, theme=name, tone=_TONE_WORD[tone]))
+            quotes.append(Quote(text=redact_text(text)[0], theme=name, tone=_TONE_WORD[tone]))
     if not quotes:
         return None
     return QuoteData(quotes=quotes, highlight_index=0)

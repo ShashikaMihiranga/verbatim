@@ -481,7 +481,7 @@ def spot_check(scores: list[AnswerScore], client: ClaudeClient = None, sample_si
             raise ClaudeNotConfigured(
                 "The 'anthropic' package is not installed. Add it to the environment before spot-checking."
             ) from e
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=120.0, max_retries=2)
 
     sample = _representative_sample(scores, sample_size)
     if not sample:

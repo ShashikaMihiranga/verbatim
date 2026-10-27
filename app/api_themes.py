@@ -57,7 +57,8 @@ from .charts import TITLES, render_parts
 from .cleaning import CleaningError, CleaningPlan, model_safe_column
 from .db import get_db
 from .findings import question_for, question_kind_for, theme_nodes
-from .jobs import REPORT_JOB_MAX_AGE, _mark_failed, blocking_job, create_job, set_progress, start_job
+from .jobs import (REPORT_JOB_MAX_AGE, _mark_failed, blocking_job, create_job,
+                   owner_has_running_theme_job, set_progress, start_job)
 from . import theme_edits, theme_grouping
 from .claude_models import light_model
 from .models import CleanedFile, Column, Dataset, Job, Report, Theme, User
@@ -841,6 +842,8 @@ def build_themes(
     # The only check left that can still fail synchronously: a full slot is knowable instantly, with no
     # thread started, so it stays an immediate 429 exactly like before - see app/jobs.py:start_job's
     # docstring for why the slot is acquired here but released inside the thread once real work finishes.
+    if owner_has_running_theme_job(db, ds.project.user_id):
+        raise HTTPException(429, "A theme build is already running for this account. Try again when it finishes.")
     if not _SLOTS.acquire(blocking=False):
         raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
 
@@ -1183,6 +1186,8 @@ def look_inside_other(
     except _LookInsideRefused as e:
         raise HTTPException(e.status, e.message) from e
 
+    if owner_has_running_theme_job(db, ds.project.user_id):
+        raise HTTPException(429, "A theme build is already running for this account. Try again when it finishes.")
     if not _SLOTS.acquire(blocking=False):
         raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
     job = create_job(db, ds.id, column, "look_inside_other")
@@ -1978,6 +1983,8 @@ def split_theme(
     if not question:
         question = ((ds.profile or {}).get("question") or {}).get("text") or column
 
+    if owner_has_running_theme_job(db, ds.project.user_id):
+        raise HTTPException(429, "A theme build is already running for this account. Try again when it finishes.")
     if not _SLOTS.acquire(blocking=False):
         raise HTTPException(429, "Theme building is busy with other jobs. Try again in a few seconds.")
 

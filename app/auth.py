@@ -144,6 +144,8 @@ def verify_token(token: str) -> dict:
     if not isinstance(sub, str) or not sub or len(sub) > 255:
         raise ValueError("bad sub")
     parties = authorized_parties()
+    if not parties and app_env() != "dev":  # fail closed: otherwise any app on the same Clerk instance gets in
+        raise ValueError("CLERK_AUTHORIZED_PARTIES is not set")
     if parties and claims.get("azp") not in parties:
         raise ValueError("azp not allowed")
     if claims.get("sts") not in (None, "active"):  # Clerk 'pending' sessions are not signed in yet

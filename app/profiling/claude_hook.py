@@ -35,7 +35,8 @@ SYSTEM = (
 
 
 def collect_samples(df, profile: dict[str, Any], n: int = MAX_SAMPLES) -> dict[str, list[str]]:
-    """Up to n distinct sample values per column, masked. Sensitive columns get none."""
+    """Up to n distinct sample values per column, masked like app/cleaning/payload.py and then cut to 200
+    characters (masking first, so a cut-off email or phone number is still caught). Sensitive columns get none."""
     out: dict[str, list[str]] = {}
     for c in profile["columns"]:
         if c.get("sensitive"):
@@ -78,7 +79,7 @@ def refine_profile(profile: dict[str, Any], samples: dict[str, list[str]], clien
             import anthropic  # lazy: not a hard requirement
         except ImportError:
             return profile
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=20.0, max_retries=1)  # runs inside the upload request
     try:
         msg = client.messages.create(
             model=model or light_model(),  # column hints are a small task: app/claude_models.py

@@ -3629,3 +3629,20 @@ upgrade of the existing page. User's call: follow the new visual, no new flow. W
 - **Your uploads:** the latest six from `/api/projects`, with a status chip and action; new status
   "finding themes" while a theme build runs and no report exists yet (opens the waiting card).
 - Not done: multiple files at once, a sample file, the 1040px content width (the app's pages are 960px).
+
+## 2026-10-28: merging the staging2 security fixes into staging
+
+Codex's commit `e423bc6` on staging2 (masking, share-link answers hidden, file deletion with the project,
+chart label escaping, locked export browser, sign-in allow-list required, start-up guards, one theme build
+per account, one export at a time, client timeouts) is merged into staging as is, except one line:
+
+- **Column samples are masked, then cut to 200 characters** (staging's BUG-063 order), not cut then masked:
+  a cut can split an email so the masker misses it (BUG-066). staging2's 20 s timeout on that call is kept.
+- **The start-up guard needs a Railway change first.** All three environments had `ENV=dev`, which the new
+  guard refuses (BUG-065). `ENV=production` must be set on devapp, devapp2 and production before this
+  reaches them; it also hides `/docs` and requires an https Clerk key URL (all three already use https).
+- One theme build per account works with staging's restart sweep (`fail_orphaned_jobs`): without it, a build
+  cut off by a deploy would block that account for up to an hour.
+- Left for later: the share-link phrases block still comes from unmasked answers (short phrases, but a
+  name can appear); worst-case theme-naming wait is about 15 minutes (300 s x 3 tries).
+

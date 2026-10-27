@@ -163,6 +163,9 @@ def _store_uploaded_bytes(db: Session, digest: str, data: bytes) -> None:
 
 
 def _discard_uploaded_bytes(db: Session, digest: str) -> None:
+    """Drop the raw bytes unless any dataset (any user's) still points at them: the row is shared by hash."""
+    if db.scalar(select(Dataset.id).where(Dataset.file_hash == digest).limit(1)) is not None:
+        return
     row = db.get(UploadedFile, digest)
     if row is not None:
         db.delete(row)

@@ -611,7 +611,7 @@ def f_byscore(data: ReportData):
         note = (f'<div style="font-size:13px;color:var(--muted);margin-top:6px">Under 5%: {", ".join(small)}</div>'
                 if small else "")
         rows_html += (f'<div style="display:flex;align-items:center;padding:20px 0;border-top:1px solid var(--line)">'
-                 f'<div style="width:200px;flex:none"><div style="font-size:18px;font-weight:600">{lab}</div><div style="font-size:14px;color:var(--muted)">{fmt(n)} answers</div></div>'
+                 f'<div style="width:200px;flex:none"><div style="font-size:18px;font-weight:600">{esc(lab)}</div><div style="font-size:14px;color:var(--muted)">{fmt(n)} answers</div></div>'
                  f'<div style="flex:1;min-width:0"><div style="height:66px;display:flex;border-radius:6px;overflow:hidden">{segs}</div>{note}</div>'
                  f'<div style="margin-left:32px;display:inline-flex;align-items:baseline;gap:8px;padding:6px 16px;border:1px solid var(--line);border-radius:999px;background:color-mix(in srgb,var({tone}) {pp:.0f}%,var(--surface))">'
                  f'<span style="font-size:13px;color:var(--ink)">avg sentiment</span><span style="font-size:17px;font-weight:600">{sent:+.2f}</span></div></div>')
@@ -645,7 +645,7 @@ def f_heatmap(data: ReportData):
     g = f'<div style="display:grid;grid-template-columns:minmax(160px,220px) repeat({len(AGES)},minmax(0,1fr));gap:4px">'
     g += '<div></div>'
     for a, n in AGES:
-        g += f'<div style="padding:0 0 8px;text-align:center"><div style="font-size:16px;font-weight:500">{a}</div><div style="font-size:13px;color:var(--muted)">n={fmt(n)}</div></div>'
+        g += f'<div style="padding:0 0 8px;text-align:center"><div style="font-size:16px;font-weight:500">{esc(a)}</div><div style="font-size:13px;color:var(--muted)">n={fmt(n)}</div></div>'
     for ri, (name, ov, vals) in enumerate(HM):
         g += f'<div style="display:flex;flex-direction:column;justify-content:center;padding-right:12px"><div style="font-size:16px;font-weight:500;line-height:1.25">{esc(name)}</div><div style="font-size:13px;color:var(--muted)">overall {ov}%</div></div>'
         for j, v in enumerate(vals):

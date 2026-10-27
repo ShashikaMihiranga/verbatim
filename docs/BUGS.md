@@ -19,6 +19,15 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Open
 
+- [ ] **BUG-065 — Every Railway environment ran with ENV=dev: public API docs, and staging2 would not start**
+  - Found: 2026-10-28, Claude, checking devapp2. Production served `/docs` and `/openapi.json` to anyone
+    (the API map only; every route still needs sign-in, and the no-login dev user was off). The staging2
+    security commit `e423bc6` refuses to start with ENV=dev on Railway, so devapp2's deploy crashed and
+    devapp and production would crash the same way once it is merged.
+  - Cause: `ENV=dev` set on devapp2, devapp and production.
+  - Fix: **needs the user**: set `ENV=production` on all three in Railway (Claude's change was blocked by
+    the permission check). Must happen before the merge reaches devapp or production.
+
 - [ ] **BUG-052 — A region finding can be about "Other", the catch-all**
   - Found: 2026-10-25, Claude, local check of the BUG-050 tests on dataset 11: "Other" is 41.7% in
     Initmates vs 15.7% overall, a real (q < 0.001) but unhelpful finding - it says Initmates answers are
@@ -36,6 +45,14 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
   - 2026-10-25: investigated. The pill is a count-weighted average of each theme's stored sentiment; per-answer sentiment is not stored (DECISIONS 2026-09-25). Exact values need Jev calls or a stored per-answer column. **User decision**; behaviour unchanged.
 
 ## Fixed
+
+- [x] **BUG-066 — Merging staging2 would have cut column samples before masking them**
+  - Found: 2026-10-28, Claude, merging staging2 into staging. staging2 cut each sample to 200 characters and
+    then masked it, so an email split at the edge (`jane.doe@exa`) was no longer recognised and went to
+    Claude in part.
+  - Cause: the same fix (BUG-063) written twice, in a different order.
+  - Fix: merge keeps mask-then-cut, plus staging2's 20 s timeout · Test:
+    `test_samples_are_masked_before_they_are_cut_to_200_characters`.
 
 - [x] **BUG-064 — The themes chart opened with every theme but the first faded to grey**
   - Found: 2026-10-28, the user.

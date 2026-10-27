@@ -65,6 +65,7 @@ from .text_pipeline import AnthropicClaudeClient, ClaudeClient
 from .text_pipeline import LabelingClaudeNotConfigured as FindingsClaudeNotConfigured
 from .text_pipeline.labeling import OTHER_LABEL, kind_payload
 from .text_pipeline.phrases import build_phrase_data
+from .cleaning.redact import redact_text
 from .text_pipeline.quotes import build_quote_data
 
 __all__ = [
@@ -760,7 +761,7 @@ def _build_answer_map(
     if quote_theme_texts:
         name, texts = quote_theme_texts[0]
         if texts:
-            tip_text, tip_note = texts[0], name
+            tip_text, tip_note = redact_text(texts[0])[0], name
     return MapData(seed=seed, tip_text=tip_text, tip_note=tip_note, points_by_theme=points_by_theme)
 
 

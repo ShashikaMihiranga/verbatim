@@ -221,6 +221,31 @@ def test_delete_removes_the_dataset_and_its_dependent_rows(env):
     assert env.client.get(f"/api/datasets/{did}/profile").status_code == 404
 
 
+def test_delete_drops_stored_files_unless_another_dataset_shares_them(env):
+    from app.models import CleanedFile, Dataset, UploadedFile
+    install_fakes()
+    uid1, uid2 = make_users(env, "clerk-a", "clerk-b")
+    as_user(uid1)
+    d1 = upload_csv(env, survey_df())
+    confirm_columns(env, d1)
+    clean_hash = clean_and_apply(env, d1)["clean_hash"]
+    as_user(uid2)
+    d2 = upload_csv(env, survey_df())  # same bytes: shares d1's UploadedFile row
+    with env.Session() as s:
+        file_hash = s.get(Dataset, d1).file_hash
+
+    as_user(uid1)
+    assert env.client.delete(f"/api/datasets/{d1}").status_code == 200
+    with env.Session() as s:
+        assert s.get(UploadedFile, file_hash) is not None  # user 2 still needs it
+        assert s.get(CleanedFile, clean_hash) is None
+
+    as_user(uid2)
+    assert env.client.delete(f"/api/datasets/{d2}").status_code == 200
+    with env.Session() as s:
+        assert s.get(UploadedFile, file_hash) is None
+
+
 def test_delete_is_owner_only(env):
     install_fakes()
     uid1, uid2 = make_users(env, "clerk-a", "clerk-b")

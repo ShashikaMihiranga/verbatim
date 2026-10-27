@@ -86,6 +86,15 @@ def small_report() -> ReportData:
     )
 
 
+def test_group_labels_from_the_file_are_escaped():
+    from app.charts import f_byscore, f_heatmap
+    data = small_report()
+    data.segment.groups[0].label = '<img src=x onerror="alert(1)">'
+    data.score.bands[0].label = "<b>Low</b>"
+    assert "<img" not in f_heatmap(data)[0] and "&lt;img" in f_heatmap(data)[0]
+    assert "<b>Low</b>" not in f_byscore(data)[0]
+
+
 def test_custom_data_renders_its_own_names():
     data = small_report()
     for frame_id, needles in {

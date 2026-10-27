@@ -81,7 +81,7 @@ class VoyageEmbeddingClient:
             raise EmbeddingNotConfigured(
                 "The 'voyageai' package is not installed. Add it to the environment before embedding."
             ) from e
-        self._client = voyageai.Client(api_key=api_key)
+        self._client = voyageai.Client(api_key=api_key, timeout=60, max_retries=2)
         self.batch_size = max(1, batch_size)
         self.concurrency = max(1, concurrency)
         self.model = model or os.environ.get("VOYAGE_MODEL", DEFAULT_MODEL)

@@ -283,6 +283,13 @@ def test_refine_is_noop_without_key(monkeypatch):
     assert refine_profile(profile, {}) is profile
 
 
+def test_collect_samples_masks_personal_details():
+    df = pd.DataFrame({"Comment": ["mail me at jo@example.com", "call +44 7700 900123 please"]})
+    profile = {"columns": [{"name": "Comment", "kind": "open_text"}]}
+    sent = " ".join(collect_samples(df, profile)["Comment"])
+    assert "jo@example.com" not in sent and "7700 900123" not in sent
+
+
 def test_refine_with_fake_client_sends_only_samples():
     profile, loaded = profile_file(FIX / "messy_survey.csv")
     samples = collect_samples(loaded.df, profile)
@@ -349,3 +356,14 @@ def test_column_samples_are_masked_before_claude_sees_them():
     sent = " ".join(collect_samples(df, profile)["Comment"])
     assert "jane.doe@example.com" not in sent and "0412 345 678" not in sent
     assert "[email]" in sent and "[phone]" in sent
+
+
+def test_samples_are_masked_before_they_are_cut_to_200_characters():
+    """Merging staging2: cutting first would leave half an email at the 200-character edge that the
+    masker no longer recognises, so masking runs on the whole value and the cut comes after."""
+    import pandas as pd
+    long = "x" * 190 + " jane.doe@example.com"
+    df = pd.DataFrame({"Comment": [long]})
+    profile = {"columns": [{"name": "Comment", "kind": "open_text"}]}
+    sent = collect_samples(df, profile)["Comment"][0]
+    assert "jane.d" not in sent and len(sent) <= 200

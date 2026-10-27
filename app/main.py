@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -39,6 +40,7 @@ from .api_report import router as report_router  # noqa: E402
 from .api_sharing import router as sharing_router  # noqa: E402
 from .api_themes import router as themes_router  # noqa: E402
 from .api_upload import router as upload_router  # noqa: E402
+from .auth import dev_user_allowed  # noqa: E402
 from .charts import FRAMES, render  # noqa: E402
 from .config import get_settings  # noqa: E402
 from .jobs import fail_orphaned_jobs  # noqa: E402
@@ -57,6 +59,11 @@ from .security import SecurityHeadersMiddleware  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 _dev = get_settings().env == "dev"
+# ENV=dev allows the no-sign-in dev user, skips the JWKS https check and turns on /docs: never on a real deploy.
+if _dev and os.environ.get("RAILWAY_ENVIRONMENT"):
+    raise RuntimeError("ENV=dev is not allowed on Railway.")
+if dev_user_allowed() and get_settings().database_url.startswith("postgres"):
+    raise RuntimeError("ALLOW_DEV_USER is not allowed with a Postgres database.")
 app = FastAPI(
     title="Verbatim",
     docs_url="/docs" if _dev else None,

@@ -29,9 +29,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .api_cleaning import _stored as _cleaning_stored
-from .api_upload import _own_dataset, current_user
+from .api_upload import _discard_uploaded_bytes, _own_dataset, current_user
 from .db import get_db
-from .models import Column, Dataset, Finding, Job, Project, Report, Theme, User
+from .models import (CleanedFile, Column, Dataset, DatasetCollaborator, DatasetInviteLink, DatasetShareLink,
+                     Finding, Job, Project, Report, Theme, ThemeEdit, User)
 
 router = APIRouter(prefix="/api")
 
@@ -85,10 +86,21 @@ def delete_dataset(dataset_id: int, db: Session = Depends(get_db), user: User = 
     # Explicit, ordered deletes - matching this codebase's existing convention (see api_upload.confirm_columns
     # and api_themes.build_themes, both of which delete old rows in a loop rather than relying on the
     # database to cascade) so this behaves the same on sqlite (tests) and Postgres (production) alike.
-    for model in (Job, Finding, Report, Theme, Column):
+    for model in (Job, Finding, Report, Theme, ThemeEdit, Column,
+                  DatasetCollaborator, DatasetInviteLink, DatasetShareLink):
         for row in db.scalars(select(model).where(model.dataset_id == ds.id)).all():
             db.delete(row)
+    clean_hash = _cleaning_stored(ds).get("clean_hash")
     db.delete(ds)
+    db.flush()
+    # The raw and cleaned bytes are shared by hash between datasets, so only drop them once nothing uses them.
+    _discard_uploaded_bytes(db, ds.file_hash)
+    # shortcut: clean_hash lives in profile JSON, so this scans every dataset; add a column if datasets reach many thousands.
+    if clean_hash and not any(_cleaning_stored(d).get("clean_hash") == clean_hash
+                              for d in db.scalars(select(Dataset)).all()):
+        row = db.get(CleanedFile, clean_hash)
+        if row is not None:
+            db.delete(row)
     db.commit()
     return {"ok": True}
 
