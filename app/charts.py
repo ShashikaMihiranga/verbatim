@@ -653,11 +653,14 @@ def f_heatmap(data: ReportData):
             tc = "var(--on-ramp)" if m >= 55 else "var(--ink)"
             hov = (seg_.highlight == (ri, j))
             ring = "outline:2px solid var(--ink);outline-offset:2px;" if hov else ""
+            # What the report page shows when a viewer picks this cell (ThemeChart.tsx); exports ignore it.
+            cell_note = (seg_.highlight_text if hov and seg_.highlight_text
+                         else f"{name}: {v:g}% in {AGES[j][0]}; {ov:g}% overall.")
             tip = ""
             if hov:
                 tip = ('<div style="position:absolute;left:50%;bottom:calc(100% + 12px);transform:translateX(-72%);width:250px;padding:10px 14px;border-radius:8px;background:var(--ink);color:var(--bg);font-size:14px;line-height:1.35;z-index:3">'
                        + esc(seg_.highlight_text) + '</div>')
-            g += (f'<div style="position:relative;height:66px;border-radius:4px;background:color-mix(in srgb,var(--ramp) {m:.0f}%,var(--surface));color:{tc};display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:{600 if m >= 55 else 500};{ring}">{v}%{tip}</div>')
+            g += (f'<div data-cell-note="{esc(cell_note)}" style="position:relative;height:66px;border-radius:4px;background:color-mix(in srgb,var(--ramp) {m:.0f}%,var(--surface));color:{tc};display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:{600 if m >= 55 else 500};{ring}">{v}%{tip}</div>')
     g += "</div>"
     steps = "".join(f'<span style="width:34px;height:14px;background:color-mix(in srgb,var(--ramp) {m}%,var(--surface));display:inline-block"></span>' for m in (10, 30, 50, 70, 90))
     legend = (f'<div style="margin-top:28px;display:flex;align-items:center;gap:12px;font-size:14px;color:var(--muted)">'

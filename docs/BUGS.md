@@ -46,6 +46,15 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-068 — Heatmap cells could not be picked: only the server's one outlined cell had a note**
+  - Found: 2026-10-28, user (screenshot), "Who raises what?" heatmap in a finding.
+  - Cause: `f_heatmap` drew one fixed highlighted cell with its note; the other cells had no note and the
+    report page attached no click handling.
+  - Fix: every cell carries `data-cell-note` ("Theme: 31.7% in Group; 9.5% overall."; the server's pick
+    keeps its own sentence). `ThemeChart.tsx` makes each cell a button (click, Enter or Space) that moves
+    the outline and rewrites the note under the grid. Exports ignore the attribute · Test:
+    `report-ui.test.tsx` "any heatmap cell can be picked", golden `heatmap.html`; live check on dataset 13.
+
 - [x] **BUG-067 — The report's "What does it sound like?" tabs and theme chips did nothing**
   - Found: 2026-10-28, user (screenshot), report page after a build.
   - Cause: `app/charts.py` `f_quotes` drew the gallery mockup: the tabs and chips were plain spans, and the

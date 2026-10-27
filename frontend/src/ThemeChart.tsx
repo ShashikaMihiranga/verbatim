@@ -104,6 +104,49 @@ export default function ThemeChart({ fragment, title, onThemeSelect, selectedThe
       explanation.setAttribute('role', 'note')
       grid.parentElement?.appendChild(explanation)
     }
+    // Every cell the server gave a note (data-cell-note) can be picked: the outline moves to it and the
+    // note below the grid says what it shows. The server's own pick stays selected until then.
+    const cells = Array.from(grid.querySelectorAll<HTMLElement>(':scope > [data-cell-note]'))
+    if (!cells.length) return
+    let note = grid.parentElement?.querySelector<HTMLElement>(':scope > .rp-selected-explanation') ?? null
+    const select = (picked: HTMLElement) => {
+      if (!note) {
+        note = document.createElement('div')
+        note.className = 'rp-selected-explanation'
+        note.setAttribute('role', 'note')
+        grid.parentElement?.appendChild(note)
+      }
+      for (const cell of cells) cell.setAttribute('aria-pressed', String(cell === picked))
+      note.textContent = picked.dataset.cellNote ?? ''
+    }
+    for (const cell of cells) {
+      // The effect can run twice on the same DOM (React dev re-run): the first pass already moved the outline.
+      const selected = !!cell.style.outline || cell.getAttribute('aria-pressed') === 'true'
+      cell.style.outline = ''
+      cell.style.outlineOffset = ''
+      cell.classList.add('rp-heatmap-cell')
+      cell.tabIndex = 0
+      cell.setAttribute('role', 'button')
+      cell.setAttribute('aria-pressed', String(selected))
+      cell.setAttribute('aria-label', cell.dataset.cellNote ?? '')
+    }
+    const onClick = (e: Event) => {
+      const cell = (e.target as Element).closest<HTMLElement>('[data-cell-note]')
+      if (cell && cells.includes(cell)) select(cell)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      const cell = (e.target as Element).closest<HTMLElement>('[data-cell-note]')
+      if (!cell || !cells.includes(cell)) return
+      e.preventDefault()
+      select(cell)
+    }
+    grid.addEventListener('click', onClick)
+    grid.addEventListener('keydown', onKey)
+    return () => {
+      grid.removeEventListener('click', onClick)
+      grid.removeEventListener('keydown', onKey)
+    }
   }, [fragment.chart_html, fragment.chart_id])
 
   // A chart always opens at its start (BUG-049: dataset 12's first heatmap was found scrolled to its end,

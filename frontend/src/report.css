@@ -87,6 +87,9 @@
 .rp-chart-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .rp-heatmap-grid { min-width: var(--rp-grid-min, 460px); grid-template-columns: minmax(140px,180px) repeat(var(--rp-group-count, 3), minmax(96px,1fr)) !important; }
 .rp-heatmap-grid > div { overflow-wrap: anywhere; }
+.rp-heatmap-cell { cursor: pointer; }
+.rp-heatmap-cell:hover { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ink) 35%, transparent); }
+.rp-heatmap-cell[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 2px; }
 @container (max-width: 700px) {
   .rp-score-row { flex-wrap: wrap; gap: 12px; }
   .rp-score-label { width: 100% !important; }

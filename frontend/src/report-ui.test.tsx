@@ -111,3 +111,21 @@ it('shows identical broad context once, retains distinct contexts and all findin
   expect(host.textContent).toContain('A different source context')
   expect(JSON.stringify(report)).toBe(before)
 })
+
+it('any heatmap cell can be picked: the outline and the note move to it', () => {
+  const cell = (note: string, value: string, picked = false) =>
+    `<div data-cell-note="${note}" style="position:relative${picked ? ';outline:2px solid black' : ''}">${value}${picked ? `<div style="position:absolute">${note}</div>` : ''}</div>`
+  const fragment = { ...heatmap(''), chart_html: '<div style="padding:56px 48px"><div style="display:grid;grid-template-columns:160px repeat(2,1fr)"><div></div><div>North</div><div>South</div><div>Parking</div>'
+    + cell('Parking: 31.7% in North; 9.5% overall.', '31.7%', true) + cell('Parking: 8.8% in South; 9.5% overall.', '8.8%') + '</div></div>' }
+  act(() => root.render(<ThemeChart fragment={fragment} />))
+  const [north, south] = Array.from(host.querySelectorAll<HTMLElement>('[data-cell-note]'))
+  expect(north.getAttribute('aria-pressed')).toBe('true')
+  expect(host.querySelector('[role="note"]')?.textContent).toBe('Parking: 31.7% in North; 9.5% overall.')
+  act(() => south.click())
+  expect(south.getAttribute('aria-pressed')).toBe('true')
+  expect(north.getAttribute('aria-pressed')).toBe('false')
+  expect(host.querySelectorAll('[role="note"]')).toHaveLength(1)
+  expect(host.querySelector('[role="note"]')?.textContent).toBe('Parking: 8.8% in South; 9.5% overall.')
+  act(() => north.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  expect(north.getAttribute('aria-pressed')).toBe('true')
+})
