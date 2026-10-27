@@ -214,6 +214,9 @@ export default function Themes() {
   const [error, setError] = useState('')
   const [themesChart, setThemesChart] = useState<ThemeChartResponse | null>(null)
   const [selectedThemeId, setSelectedThemeId] = useState<number | null>(null)
+  // Only a theme the person clicked fades the others in the chart (BUG-064): the detail panel still opens
+  // on the largest theme by default, but the chart shows every theme in full colour until a click.
+  const [highlightThemeId, setHighlightThemeId] = useState<number | null>(null)
   // Theme editing (docs/TODO.md, fixed 2026-10-22): merge checkbox selection, Manage themes mode only.
   // The caller's role (GET /themes): the theme editor's controls are for owners and editors only.
   const [themesRole, setThemesRole] = useState<ThemesResponse['role']>(null)
@@ -761,9 +764,11 @@ export default function Themes() {
                     title={beforeChart ? 'Updated themes' : 'Themes'}
                     onThemeSelect={(name) => {
                       const t = themes.find((x) => x.label === name)
-                      if (t) setSelectedThemeId(t.id)
+                      if (!t) return
+                      setSelectedThemeId(t.id)
+                      setHighlightThemeId((prev) => (prev === t.id ? null : t.id)) // a second click shows all again
                     }}
-                    selectedTheme={themes.find((t) => t.id === selectedThemeId)?.label ?? null}
+                    selectedTheme={themes.find((t) => t.id === highlightThemeId)?.label ?? null}
                     highlightOtherRunning={lookRunning}
                   />
                 )

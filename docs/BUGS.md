@@ -37,6 +37,13 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-064 — The themes chart opened with every theme but the first faded to grey**
+  - Found: 2026-10-28, the user.
+  - Cause: the page picks the largest theme for the detail panel on load, and the same value drove the
+    chart's "selected" highlight, so all other themes were dimmed to 28% before anyone clicked anything.
+  - Fix: the highlight is its own state, set only by a click on the chart (a second click clears it); the
+    detail panel still opens on the largest theme (`frontend/src/Themes.tsx`). Checked live: 0 of 30 blocks
+    dimmed on load, 27 after a click, 0 after a second click.
 - [x] **BUG-063 — Column hints at upload sent Claude unmasked sample values**
   - Found: 2026-10-28, Claude, checking the Uploads hand-off's privacy sentences against the code.
   - Cause: `app/profiling/claude_hook.collect_samples` sent up to 30 raw values per non-sensitive column, so
