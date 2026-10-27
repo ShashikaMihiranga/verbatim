@@ -81,8 +81,8 @@ export interface GroupSuggestion {
   id: string
   name: string
   member_ids: number[]
-  confidence: number // 0-100, as Claude gave it
-  band: 'High' | 'Medium' | 'Low' // High drops to Medium when the themes' answers are not close in meaning
+  confidence: number // 0-100: graph mode, the lowest similarity in the group as a percentage; claude mode, as Claude gave it
+  band: 'High' | 'Medium' | 'Low' // graph mode: Low means Claude could not check it
   similarity: number | null // lowest centroid similarity in the group; null when not stored
   reason: string
   share: number
@@ -94,14 +94,17 @@ export interface GroupingResult {
   kept_apart: Array<{ names: string[]; reason: string }>
   dropped: number // proposals that failed validation
   cached: boolean // same themes as last time: no new Claude call
+  checked?: boolean // graph mode: false when Claude could not be reached and the groups are unchecked
   themes: number
   words: number
 }
 
 export interface GroupingPayload {
-  payload: { themes: Array<{ id: number; name: string; answers: number; share: number; samples: string[] }> }
+  // graph mode: null until every theme can be compared, or when nothing is close enough to check
+  payload: { themes: Array<{ id: number; name: string; answers: number; share: number; samples: string[] }> } | null
   themes: number
   words: number
+  mode?: 'graph' | 'claude'
 }
 
 export async function getGroupPayload(id: number, column: string): Promise<GroupingPayload> {

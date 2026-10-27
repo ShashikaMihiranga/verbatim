@@ -7,9 +7,10 @@ import type { Job } from './jobsApi'
 import type { GroupingPayload, GroupingResult, GroupSuggestion } from './themeEditorApi'
 import { fmt } from './themeEditorModel'
 
-// "Group matching themes" (design/handoffs/ThemeGrouping_UIHandoff.md): Claude proposes groups of themes
-// that mean the same thing, the user accepts or skips each, and Apply merges the accepted ones together,
-// with one Undo. Four states: idle, running, review, applied. Nothing merges until Apply.
+// "Group matching themes" (design/handoffs/ThemeGrouping_UIHandoff.md): themes are compared by meaning,
+// Claude checks and names the close ones (DECISIONS 2026-10-28), the user accepts or skips each, and Apply
+// merges the accepted ones together, with one Undo. Four states: idle, running, review, applied. Nothing
+// merges until Apply.
 type Decision = 'accept' | 'skip'
 type Phase = 'idle' | 'running' | 'review' | 'applied' | 'failed'
 
@@ -117,7 +118,7 @@ export default function ThemeGrouping({ themeIds, totalThemes, loadPayload, star
       <div className="tg-head">
         <div>
           <h3 id="tg-title" className="tg-title"><Layers size={20} {...ICON} />Group matching themes</h3>
-          <p className="te-note">Claude spots themes that mean the same. You check.</p>
+          <p className="te-note">Themes close in meaning are found and checked by Claude. You decide.</p>
         </div>
         {(phase === 'review' || phase === 'failed') && (
           <button type="button" className="te-btn" onClick={() => { setPhase('idle'); setGroups([]); setDecisions({}); setError(null) }}>
@@ -130,9 +131,9 @@ export default function ThemeGrouping({ themeIds, totalThemes, loadPayload, star
         {phase === 'idle' && (
           <div className="tg-idle">
             <ol className="tg-steps">
-              <li title="Claude reads each theme's name, size and three masked sample answers."><Sparkles size={16} {...ICON} />Claude reads the topics</li>
+              <li title="Each theme's answers are compared by meaning. Nothing is sent for this."><Layers size={16} {...ICON} />Themes are compared</li>
               <ChevronDown size={14} {...ICON} className="tg-step-sep" />
-              <li title="It proposes groups of themes that mean the same, with a reason and a confidence."><Layers size={16} {...ICON} />It proposes groups</li>
+              <li title="Claude reads two masked sample answers of each close theme, keeps or rejects each group, and names it."><Sparkles size={16} {...ICON} />Claude checks the close ones</li>
               <ChevronDown size={14} {...ICON} className="tg-step-sep" />
               <li title="Nothing merges until you accept groups and apply them."><Check size={16} {...ICON} />You double-check</li>
             </ol>
@@ -150,7 +151,7 @@ export default function ThemeGrouping({ themeIds, totalThemes, loadPayload, star
           <div className="tg-running" role="status">
             <Loader size={18} {...ICON} className="tg-spin" />
             <div>
-              <div className="tg-strong">Claude is reading the topics</div>
+              <div className="tg-strong">Finding matching themes</div>
               <div className="te-note">{totalThemes} themes, a few seconds.</div>
             </div>
             <span className="tg-bar" aria-hidden="true"><span /></span>
@@ -175,6 +176,7 @@ export default function ThemeGrouping({ themeIds, totalThemes, loadPayload, star
             <span>
               {live.length === 0 ? 'No matching themes found.' : `${live.length} group${live.length === 1 ? '' : 's'} found. ${toCheck.length} still to check.`}
               {result?.cached && <span className="te-note"> From the last run: the themes have not changed.</span>}
+              {result?.checked === false && <span className="te-note"> Claude could not be reached, so these groups were not checked.</span>}
             </span>
             {live.some((g) => g.band === 'High') && (
               <button type="button" className="te-btn" disabled={highOpen.length === 0}
@@ -283,11 +285,22 @@ function GroupRow({ group, decision, open, onDecide, onRename, onToggleAnswers, 
 
 function PayloadPanel({ payload }: { payload: GroupingPayload | null }) {
   if (!payload) return <p className="te-note" role="status">Loading what would be sent…</p>
+  const graph = payload.mode === 'graph'
+  if (!payload.payload) {
+    return (
+      <p className="te-note">
+        Nothing is sent yet. Themes are compared by meaning first; only the close ones go to Claude, each with its name,
+        answer count, share and 2 masked sample answers.
+      </p>
+    )
+  }
   const example = payload.payload.themes[0]
   return (
     <div className="tg-payload">
       <p className="te-note">
-        Sent for each of the {payload.themes} themes: its name, answer count, share and 3 sample answers, with names,
+        {graph
+          ? `Sent for each of the ${payload.themes} themes found close to another: its name, answer count, share and 2 sample answers,`
+          : `Sent for each of the ${payload.themes} themes: its name, answer count, share and 3 sample answers,`} with names,
         emails, phone numbers and other numbers masked. Not sent: the rest of the file, row ids or any other column.
         About {fmt(payload.words)} words in all. One theme, exactly as sent:
       </p>

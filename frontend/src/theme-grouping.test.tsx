@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Job } from './jobsApi'
 import ThemeGrouping from './ThemeGrouping'
-import type { GroupingResult } from './themeEditorApi'
+import type { GroupingPayload, GroupingResult } from './themeEditorApi'
 
 const member = (id: number, label: string, share: number) => ({ id, label, size: share * 10, share, samples: [`${label} answer one`, `${label} answer two`] })
 const RESULT: GroupingResult = {
@@ -17,7 +17,7 @@ const RESULT: GroupingResult = {
   ],
   kept_apart: [{ names: ['Noise', 'Privacy'], reason: 'Different fixes.' }], dropped: 0, cached: false, themes: 20, words: 900,
 }
-const PAYLOAD = { payload: { themes: [{ id: 1, name: 'Cleaning', answers: 61, share: 6.1, samples: ['a', 'b', 'c'] }] }, themes: 20, words: 900 }
+const PAYLOAD: GroupingPayload = { payload: { themes: [{ id: 1, name: 'Cleaning', answers: 61, share: 6.1, samples: ['a', 'b', 'c'] }] }, themes: 20, words: 900 }
 
 let container: HTMLDivElement
 let root: Root
@@ -59,13 +59,23 @@ async function toReview(p = props()) {
 describe('ThemeGrouping', () => {
   it('idle: shows the steps and, on request, the real payload with its word count', async () => {
     const p = await render()
-    expect(container.textContent).toContain('Claude reads the topics')
+    expect(container.textContent).toContain('Claude checks the close ones')
     expect(btn('What Claude sees').getAttribute('aria-expanded')).toBe('false')
     await act(async () => btn('What Claude sees').click())
     expect(p.loadPayload).toHaveBeenCalled()
     expect(container.textContent).toContain('About 900 words in all')
     expect(container.querySelector('.tg-pre')?.textContent).toContain('"name": "Cleaning"')
     expect(btn('Hide what Claude sees')).toBeTruthy()
+  })
+
+  it('graph mode: says nothing is sent until themes are compared, and flags unchecked groups', async () => {
+    const p = props({ status: 'done', result: { ...RESULT, checked: false } as unknown as Job['result'] })
+    p.loadPayload = vi.fn(() => Promise.resolve({ payload: null, themes: 0, words: 0, mode: 'graph' as const }))
+    await render(p)
+    await act(async () => btn('What Claude sees').click())
+    expect(container.textContent).toContain('Nothing is sent yet.')
+    await act(async () => btn('Find matches').click())
+    expect(container.textContent).toContain('Claude could not be reached, so these groups were not checked.')
   })
 
   it('review: badges keep word and number, strongest first, with the near-misses', async () => {

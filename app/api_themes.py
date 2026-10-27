@@ -1585,15 +1585,37 @@ GROUP_MAX_TOKENS = 4000
 GROUP_SAMPLES_SHOWN = 2  # sample answers per member theme in the review screen ("See answers")
 
 
+def grouping_mode() -> str:
+    """`VERBATIM_THEME_GROUPING`: "graph" (stored centroids find candidates, Claude checks and names them,
+    DECISIONS 2026-10-28), "claude" (Claude reads every theme and proposes the groups), else off."""
+    mode = os.environ.get(GROUPING_SETTING, "").strip().lower()
+    return mode if mode in ("graph", "claude") else ""
+
+
 def get_grouping_client() -> ClaudeClient:
     """The Claude client for theme grouping, only when the server turns it on (`VERBATIM_THEME_GROUPING=
-    claude`); otherwise the button says why instead of spending anything."""
-    if os.environ.get(GROUPING_SETTING, "").strip().lower() != "claude":
-        raise HTTPException(503, f"Grouping themes with Claude is switched off on this server ({GROUPING_SETTING}=claude turns it on).")
+    graph` or `claude`); otherwise the button says why instead of spending anything."""
+    if not grouping_mode():
+        raise HTTPException(503, f"Grouping themes is switched off on this server ({GROUPING_SETTING}=graph turns it on).")
     try:
         return AnthropicClaudeClient(model=light_model())  # a small JSON task: app/claude_models.py
     except LabelingClaudeNotConfigured as e:
         raise HTTPException(503, "Grouping themes needs a Claude key (ANTHROPIC_API_KEY) that is not configured yet.") from e
+
+
+def get_grouping_embedder() -> EmbeddingClient | None:
+    """Graph grouping only: the embedding client that fills in centroids for themes built before they were
+    stored. None when not in graph mode or no key; the job then says so only if a centroid is missing."""
+    if grouping_mode() != "graph":
+        return None
+    try:
+        return get_embedding_client()
+    except HTTPException:
+        return None
+
+
+class GroupingNeedsEmbeddings(RuntimeError):
+    """Some themes have no stored centroid and there is no embedding key to fill them in."""
 
 
 def _grouping_inputs(db: Session, ds: Dataset, column: str) -> tuple[list[Theme], dict, dict[int, int]]:
@@ -1608,10 +1630,43 @@ def _grouping_inputs(db: Session, ds: Dataset, column: str) -> tuple[list[Theme]
     return themes, payload, id_of
 
 
+def _graph_themes(db: Session, ds: Dataset, column: str) -> list[Theme]:
+    themes = _stored_themes(db, ds.id, column)
+    if sum(1 for t in themes if t.label != "Other") < 2:
+        raise HTTPException(422, "There are fewer than two themes to group.")
+    return themes
+
+
+def _graph_check(db: Session, ds: Dataset, column: str, themes: list[Theme]):
+    """The graph's result, its candidates and what Claude would be sent to check them (None: nothing to
+    check). Reads stored centroids only; never embeds or calls Claude."""
+    graph = theme_grouping.graph_suggestions(themes)
+    cands = theme_grouping.candidates(graph)
+    if not cands:
+        return graph, cands, None, {}
+    clean_df, plan = _load_clean_df(ds, db)
+    payload, id_of = theme_grouping.build_check_payload(cands, themes, clean_df, plan, column)
+    return graph, cands, payload, id_of
+
+
 @router.get("/datasets/{dataset_id}/themes/group-payload")
 def group_payload(dataset_id: int, column: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    """Exactly what a grouping run sends Claude for this column, for the "What Claude sees" panel."""
+    """Exactly what a grouping run sends Claude for this column, for the "What Claude sees" panel. In
+    graph mode that depends on the comparison, so it is null until every theme has a centroid (the run
+    fills them in) or when nothing is close enough to check."""
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
+    if grouping_mode() == "graph":
+        themes = _graph_themes(db, ds, column)
+        if any(t.label != "Other" and not t.centroid for t in themes):
+            return {"payload": None, "themes": 0, "words": 0, "mode": "graph"}
+        try:
+            _graph, _cands, payload, _id_of = _graph_check(db, ds, column, themes)
+        except CleaningError as e:
+            raise HTTPException(422, str(e)) from e
+        if payload is None:
+            return {"payload": None, "themes": 0, "words": 0, "mode": "graph"}
+        return {"payload": payload, "themes": len(payload["themes"]), "words": theme_grouping.payload_words(payload),
+                "mode": "graph"}
     _themes, payload, _id_of = _grouping_inputs(db, ds, column)
     return {"payload": payload, "themes": len(payload["themes"]), "words": theme_grouping.payload_words(payload)}
 
@@ -1623,7 +1678,20 @@ class GroupSuggestionsRequest(BaseModel):
 
 def _group_error(e: BaseException) -> str | None:
     log.warning("theme grouping failed: %s", e)
+    if isinstance(e, GroupingNeedsEmbeddings):
+        return "Some themes were built before grouping could compare them, and there is no embedding key (VOYAGE_API_KEY) to fill them in."
     return "Could not reach Claude. Try again."
+
+
+def _shown_groups(groups: list[dict], by_id: dict[int, Theme], total: int, samples: dict[int, list[str]]) -> list[dict]:
+    """The review screen's shape: ids g1.., share of answered, and each member with its masked samples."""
+    for i, g in enumerate(groups):
+        g["id"] = f"g{i + 1}"
+        g["share"] = round(g.pop("share_answers") / total * 100, 1)
+        g["members"] = [{"id": m, "label": by_id[m].label, "size": by_id[m].size,
+                         "share": round(by_id[m].size / total * 100, 1), "samples": samples.get(m, [])}
+                        for m in g["member_ids"]]
+    return groups
 
 
 @router.post("/datasets/{dataset_id}/themes/group-suggestions", status_code=202)
@@ -1631,15 +1699,68 @@ def group_suggestions(
     dataset_id: int, body: GroupSuggestionsRequest,
     db: Session = Depends(get_db), user: User = Depends(current_user),
     claude_client: ClaudeClient = Depends(get_grouping_client),
+    embedder: EmbeddingClient | None = Depends(get_grouping_embedder),
 ):
-    """Starts a grouping run (one Claude call; the same payload again is served from the cache and costs
-    nothing). The job's result holds the validated groups, the near-misses and the payload's size."""
+    """Starts a grouping run (at most one Claude call; the same payload again is served from the cache and
+    costs nothing). The job's result holds the validated groups, the near-misses and the payload's size."""
     ds = _own_dataset(db, user, dataset_id, min_role="editor")
-    _grouping_inputs(db, ds, body.column)  # refuse now, not inside the job, when there is nothing to group
+    graph_mode = grouping_mode() == "graph"
+    if graph_mode:  # refuse now, not inside the job, when there is nothing to group
+        _graph_themes(db, ds, body.column)
+    else:
+        _grouping_inputs(db, ds, body.column)
     if not _GROUP_SLOTS.acquire(blocking=False):
         raise HTTPException(429, "Grouping is busy. Try again in a moment.")
     job = create_job(db, ds.id, body.column, "theme_groups")
     dataset_id_, column = ds.id, body.column
+
+    def _graph_work(step: Callable[[str], None]) -> None:
+        step("Comparing themes")
+        with _db.SessionLocal() as job_db:
+            job_ds = job_db.get(Dataset, dataset_id_)
+            themes = _graph_themes(job_db, job_ds, column)
+            filled = 0
+            if any(t.label != "Other" and not t.centroid for t in themes):
+                if embedder is None:
+                    raise GroupingNeedsEmbeddings()
+                clean_df, plan = _load_clean_df(job_ds, job_db)
+                filled = theme_grouping.ensure_centroids(themes, clean_df, plan, column, embedder)
+                job_db.commit()  # once per theme: later runs compare for free
+            graph, cands, payload, id_of = _graph_check(job_db, job_ds, column, themes)
+            by_id = {t.id: t for t in themes}
+            reply, cached = None, False
+            if payload is not None:
+                key = f"graph:{getattr(claude_client, 'model', '')}:{theme_grouping.payload_hash(payload)}"
+                cache = ((job_ds.profile or {}).get("theme_grouping_cache") or {}).get(column) or {}
+                cached = cache.get("hash") == key and isinstance(cache.get("reply"), str)
+                if cached:
+                    reply = cache["reply"]
+                else:
+                    step("Claude is checking the groups")
+                    try:
+                        reply = claude_client.complete(theme_grouping.CHECK_SYSTEM, json.dumps(payload, ensure_ascii=False),
+                                                       max_tokens=GROUP_MAX_TOKENS)
+                    except Exception as e:  # the graph's strongest groups are still worth showing, marked unchecked
+                        log.warning("theme grouping check failed: %s", e)
+                    if reply is not None:
+                        profile = dict(job_ds.profile or {})
+                        profile["theme_grouping_cache"] = {**(profile.get("theme_grouping_cache") or {}),
+                                                           column: {"hash": key, "reply": reply}}
+                        job_ds.profile = profile  # reassign: the JSON column only notices a new object
+            if reply is None:
+                groups = theme_grouping.unchecked_groups(graph, by_id)
+                _none, kept, rejected = theme_grouping.apply_check("{}", [], {}, by_id, graph)
+            else:
+                groups, kept, rejected = theme_grouping.apply_check(reply, cands, id_of, by_id, graph)
+            samples = {id_of[p["id"]]: p["samples"][:GROUP_SAMPLES_SHOWN] for p in (payload or {}).get("themes", [])}
+            total = sum(t.size for t in themes) or 1
+            job_row = job_db.get(Job, job.id)
+            job_row.result = {"groups": _shown_groups(groups, by_id, total, samples), "kept_apart": kept,
+                              "dropped": rejected, "cached": cached, "checked": payload is None or reply is not None,
+                              "mode": "graph", "filled_answers": filled,
+                              "themes": len(theme_grouping.graph_nodes(themes)),
+                              "words": theme_grouping.payload_words(payload) if payload else 0}
+            job_db.commit()
 
     def _work(step: Callable[[str], None]) -> None:
         step("Claude is reading the topics")
@@ -1661,18 +1782,12 @@ def group_suggestions(
             groups, kept, dropped = theme_grouping.validate(reply, id_of, by_id)
             total = sum(t.size for t in themes) or 1
             samples = {id_of[p["id"]]: p["samples"][:GROUP_SAMPLES_SHOWN] for p in payload["themes"]}
-            for i, g in enumerate(groups):
-                g["id"] = f"g{i + 1}"
-                g["share"] = round(g.pop("share_answers") / total * 100, 1)
-                g["members"] = [{"id": m, "label": by_id[m].label, "size": by_id[m].size,
-                                 "share": round(by_id[m].size / total * 100, 1), "samples": samples.get(m, [])}
-                                for m in g["member_ids"]]
             job_row = job_db.get(Job, job.id)
-            job_row.result = {"groups": groups, "kept_apart": kept, "dropped": dropped, "cached": cached,
+            job_row.result = {"groups": _shown_groups(groups, by_id, total, samples), "kept_apart": kept, "dropped": dropped, "cached": cached,
                               "themes": len(payload["themes"]), "words": theme_grouping.payload_words(payload)}
             job_db.commit()
 
-    start_job(job, _GROUP_SLOTS, _work, _group_error, deadline_seconds=120,
+    start_job(job, _GROUP_SLOTS, _graph_work if graph_mode else _work, _group_error, deadline_seconds=120,
               deadline_message="Could not reach Claude. Try again.")
     return {"job_id": job.id, "status": "running"}
 

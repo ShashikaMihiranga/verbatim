@@ -2440,3 +2440,115 @@ def test_a_theme_build_stores_each_real_themes_centroid(env):
     real = [t for t in rows if t.label != "Other"]
     assert real and all(t.centroid and all(isinstance(v, float) for v in t.centroid) for t in real)
     assert all(t.centroid is None for t in rows if t.label == "Other")
+
+
+# ---------------------------------------------------------------- graph grouping (DECISIONS 2026-10-28)
+def _graph_env(env, monkeypatch, reply, centroids=True, embedder="fake"):
+    """Seven themes: "Cleaning" and "Janitors" nearly the same in meaning, the rest unrelated."""
+    from app.api_themes import get_grouping_client, get_grouping_embedder
+    monkeypatch.setenv("VERBATIM_THEME_GROUPING", "graph")
+    fake = _GroupingClaude(reply)
+    app.dependency_overrides[get_grouping_client] = lambda: fake
+    spy = None
+    if embedder == "fake":
+        class Spy(FakeEmbeddingClient):
+            calls = 0
+
+            def embed(self, texts):
+                Spy.calls += 1
+                return super().embed(texts)
+        spy = Spy()
+    app.dependency_overrides[get_grouping_embedder] = lambda: spy
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+
+    def unit(k, extra=None):
+        v = [0.0] * 8
+        v[k] = 1.0
+        if extra is not None:
+            v[extra] = 0.05
+        return v
+    rows = [("Cleaning", unit(0)), ("Janitors", unit(0, 1)), ("Parking", unit(2)), ("Noise", unit(3)),
+            ("Lighting", unit(4)), ("Heating", unit(5)), ("Desks", unit(6))]
+    ids = [seed_theme(env, did, label=l, size=3, answer_refs=[3 * k, 3 * k + 1, 3 * k + 2],
+                      centroid=c if centroids else None, **_neutral()) for k, (l, c) in enumerate(rows)]
+    ids.append(seed_theme(env, did, label="Other", size=3, answer_refs=[21, 22, 23], **_neutral()))
+    return did, ids, fake, spy
+
+
+def _run_grouping(env, did):
+    r = env.client.post(f"/api/datasets/{did}/themes/group-suggestions", json={"column": Q})
+    assert r.status_code == 202, r.text
+    return wait_for_job(env.client, did, r.json()["job_id"], timeout=10)
+
+
+def _keep_all(payload):
+    return json.dumps({"candidates": [{"id": c["id"], "merge": True, "name": "Cleanliness", "reason": "Same topic."}
+                                      for c in payload["candidates"]]})
+
+
+def test_graph_grouping_checks_the_candidates_in_one_call_and_caches(env, monkeypatch):
+    did, ids, fake, _spy = _graph_env(env, monkeypatch, _keep_all)
+    preview = env.client.get(f"/api/datasets/{did}/themes/group-payload", params={"column": Q}).json()
+    assert [t["name"] for t in preview["payload"]["themes"]] == ["Cleaning", "Janitors"]  # only the candidates
+    job = _run_grouping(env, did)
+    assert job["status"] == "done", job
+    res = job["result"]
+    assert fake.calls == [preview["payload"]]  # one call, exactly what the panel shows
+    assert [(g["name"], g["member_ids"], g["band"]) for g in res["groups"]] == [("Cleanliness", ids[:2], "High")]
+    assert res["checked"] is True and res["mode"] == "graph" and res["themes"] == 7
+    assert all(len(m["samples"]) <= 2 for m in res["groups"][0]["members"])
+    assert _run_grouping(env, did)["result"]["cached"] is True and len(fake.calls) == 1
+
+
+def test_graph_grouping_shows_what_claude_rejects_as_kept_apart(env, monkeypatch):
+    def no(payload):
+        return json.dumps({"candidates": [{"id": "c1", "merge": False, "reason": "Different jobs."}]})
+    did, _ids, _fake, _spy = _graph_env(env, monkeypatch, no)
+    res = _run_grouping(env, did)["result"]
+    assert res["groups"] == [] and res["dropped"] == 1
+    assert res["kept_apart"] == [{"names": ["Cleaning", "Janitors"], "reason": "Different jobs."}]
+
+
+def test_graph_grouping_without_claude_shows_strong_groups_unchecked(env, monkeypatch):
+    def boom(payload):
+        raise TimeoutError("timed out")
+    did, ids, _fake, _spy = _graph_env(env, monkeypatch, boom)
+    job = _run_grouping(env, did)
+    assert job["status"] == "done", job
+    res = job["result"]
+    assert [(g["member_ids"], g["band"]) for g in res["groups"]] == [(ids[:2], "Low")]
+    assert res["checked"] is False and "Not checked" in res["groups"][0]["reason"]
+    from app.models import Dataset
+    with env.Session() as s:
+        assert not (s.get(Dataset, did).profile or {}).get("theme_grouping_cache")  # a failure is not cached
+
+
+def test_graph_grouping_with_nothing_close_makes_no_call(env, monkeypatch):
+    did, ids, fake, _spy = _graph_env(env, monkeypatch, _keep_all)
+    from app.models import Theme
+    with env.Session() as s:  # move Janitors far from Cleaning
+        s.get(Theme, ids[1]).centroid = [0.0] * 7 + [1.0]
+        s.commit()
+    res = _run_grouping(env, did)["result"]
+    assert res["groups"] == [] and fake.calls == [] and res["words"] == 0
+
+
+def test_graph_grouping_fills_missing_centroids_once(env, monkeypatch):
+    did, _ids, fake, spy = _graph_env(env, monkeypatch, _keep_all, centroids=False)
+    preview = env.client.get(f"/api/datasets/{did}/themes/group-payload", params={"column": Q}).json()
+    assert preview["payload"] is None and type(spy).calls == 0  # the panel never embeds
+    first = _run_grouping(env, did)
+    assert first["status"] == "done", first
+    assert first["result"]["filled_answers"] == 21 and type(spy).calls == 1
+    from app.models import Theme
+    with env.Session() as s:
+        rows = s.query(Theme).filter_by(dataset_id=did).all()
+    assert all(t.centroid for t in rows if t.label != "Other") and all(t.centroid is None for t in rows if t.label == "Other")
+    assert _run_grouping(env, did)["result"]["filled_answers"] == 0 and type(spy).calls == 1
+
+
+def test_graph_grouping_without_an_embedding_key_says_why(env, monkeypatch):
+    did, _ids, _fake, _spy = _graph_env(env, monkeypatch, _keep_all, centroids=False, embedder=None)
+    job = _run_grouping(env, did)
+    assert job["status"] == "failed" and "VOYAGE_API_KEY" in job["error"]

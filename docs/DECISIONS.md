@@ -3543,3 +3543,36 @@ key)". Builds always score tone with the word list in code, which was already th
 unticked). The API's `use_jev_sentiment` field stays, defaulting to false, so nothing else changes; Look
 inside Other still uses Jev to sort Other's answers.
 
+
+## 2026-10-28: theme grouping, the graph finds candidates and Claude checks them
+
+User's call: grouping should be more accurate and faster, built on a graph of the themes. New mode
+`VERBATIM_THEME_GROUPING=graph` (`app/theme_grouping.py`, `group_suggestions` in `app/api_themes.py`);
+`claude` keeps the old way (Claude reads every theme and proposes the groups) as the fallback.
+
+- **Graph.** Each theme is a node; two themes are as close as the cosine of their stored centroids (the mean
+  Voyage embedding of their answers). Complete linkage (scipy) keeps a candidate group only when every pair
+  in it clears the cutoff, so chains never become one group. No network, about 25 ms for 120 themes.
+- **Centring (found in testing).** On one survey question every theme's raw centroid is about 0.9 similar to
+  every other (median 0.90 on dataset 13, 0.86 on dataset 12), so a fixed cutoff grouped almost everything.
+  The column's size-weighted mean centroid is subtracted first; centred similarity has median about 0 and
+  real duplicates stand out (e.g. "Cubicle noise from low partitions" and "Noise from coworkers", 0.87).
+  Fewer than 6 themes: no reliable mean to remove, so no groups, only raw close calls (0.9 and up).
+- **Cutoffs, from `tools/eval_grouping.py` on datasets 12 and 13:** candidate group 0.70, close call 0.60,
+  High band 0.80. Tone rule: a theme at +0.3 or more never links to one at -0.3 or less ("Similar topic,
+  opposite tone" under Left apart); ±0.2 blocked too many real matches with near-neutral tone.
+- **Claude checks every candidate (user's call, after the test).** The graph alone let through wrong merges
+  that score high, such as "Parking availability and cost" + "Parking lot safety" (0.86) and "Sufficient desk
+  space" + "Improvised workspace". So one Haiku call gets only the candidate themes (name, count, share, 2
+  masked samples via `model_safe_rows`) and the candidates; it keeps, rejects or shrinks each and names the
+  ones kept. It can never add a theme. Rejections show under "Left apart on purpose" with its reason.
+  Confidence shown is the group's weakest-pair similarity as a percentage, a measured number.
+- **Nothing close: no call.** Same candidates and samples: served from the cache. Claude unreachable: the
+  graph's groups at 0.80 and up are shown as Low, "Not checked", and not cached.
+- **Missing centroids (user's call: fill automatically).** Themes built before 2026-10-25 have none. The
+  first run embeds up to 200 masked answers per such theme with Voyage, averages and saves them; later runs
+  compare for free. No key: the job says so. The "What Claude sees" panel never embeds.
+- **Live, dataset 13 (10k survey):** 3 seconds end to end, one call of about 400 words. Kept: cleanliness +
+  janitorial; disrepair + maintenance. Rejected: desk ergonomic design + standing desk availability (layout
+  vs availability), cleanliness + security/disrepair.
+- **To switch on:** devapp and production still say `claude`; changing them to `graph` is the user's call.
