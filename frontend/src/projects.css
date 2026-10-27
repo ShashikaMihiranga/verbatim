@@ -56,3 +56,5 @@
   .pr-row { flex-wrap: wrap; }
   .pr-status { order: -1; }
 }
+
+.pr-subhead { font-size: 18px; font-weight: 500; margin: 40px 0 8px; }

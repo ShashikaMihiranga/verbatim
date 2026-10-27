@@ -37,6 +37,13 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-062 — The menu's "Reports" page said "Nothing to report yet" even with finished reports**
+  - Found: 2026-10-28, the user.
+  - Cause: "Reports" links to `/report` with no project picked, and that page only showed the empty
+    message; a report could only be opened from Projects.
+  - Fix: `/report` with no project now lists every project with a report, then the cleaned ones with no
+    report yet, each opening its report (`frontend/src/ReportsIndex.tsx`) · Test:
+    `frontend/src/reports-index.test.tsx`.
 - [x] **BUG-061 — "See answers" on a share link cannot load anything**
   - Found: 2026-10-26, Claude, while cleaning up the public sample report.
   - Cause: the report view always showed "See answers" on findings, but the answers route needs sign-in,

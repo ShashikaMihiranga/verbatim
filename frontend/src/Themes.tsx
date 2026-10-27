@@ -13,6 +13,7 @@ import { isResult } from './insideOtherModel'
 import JobProgress from './JobProgress'
 import SharePanel from './SharePanel'
 import ReportView from './Report'
+import ReportsIndex from './ReportsIndex'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
 import ThemeEditor from './ThemeEditor'
@@ -494,16 +495,7 @@ export default function Themes() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
-  if (!id) {
-    return (
-      <>
-        <h1>Reports</h1>
-        <p className="muted">
-          Nothing to report yet. <Link to="/upload">Upload a spreadsheet</Link> first.
-        </p>
-      </>
-    )
-  }
+  if (!id) return <ReportsIndex />
   if (!ds) {
     return error ? (
       <>
