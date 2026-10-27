@@ -960,7 +960,14 @@ def f_quotes(data: ReportData):
                  f'<div style="width:100px;flex:none;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)"><span style="width:11px;height:11px;border-radius:50%;background:{SC[sn]}"></span>{sn}</div>'
                  f'<div style="flex:1;font-size:19px;line-height:1.4">{esc(q)}</div>'
                  f'<div style="width:230px;flex:none;text-align:right;font-size:14px;font-weight:500;color:var(--muted)">{esc(th)}</div></div>')
-    body = (f'<div style="padding:56px 48px">{hdr("What does it sound like?", "Verbatim answers, with their theme and tone.")}'
+    # The report page reads data-quotes and draws working tabs and chips (frontend/src/QuotesBlock.tsx);
+    # exports keep this static "Most typical, All" picture.
+    # Only themes that have a chip: the rest are folded into the report's own "Other" and have no colour.
+    chip_themes = [{"name": t.name, "color": t.color} for t in data.themes if t.name != "Other"]
+    names = {t["name"] for t in chip_themes}
+    live = {"themes": chip_themes, "quotes": [q for q in data.quotes.pool or [] if q["theme"] in names]}
+    pool = f' data-quotes="{esc(json.dumps(live))}"' if data.quotes.pool else ""
+    body = (f'<div style="padding:56px 48px"{pool}>{hdr("What does it sound like?", "Verbatim answers, with their theme and tone.")}'
             f'<div style="margin-top:22px">{seg(["Most typical", "Random", "Most negative", "Most positive"], "Most typical", "Random")}</div>'
             f'{chips}<div style="height:24px"></div><div style="border-bottom:1px solid var(--line)">{rows}</div></div>')
     return body, 1180, 800

@@ -255,6 +255,9 @@ class Quote:
 class QuoteData:
     quotes: list[Quote]  # answers to list
     highlight_index: int  # row drawn as hovered
+    # Masked quotes for every theme, for the report page's live tabs and theme chips (QuotesBlock.tsx):
+    # {"text", "theme", "tone", "score", "ranks": {view: position}}. None in exports and the gallery.
+    pool: list[dict] | None = None
 
 
 @dataclass

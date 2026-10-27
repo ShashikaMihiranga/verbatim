@@ -6,6 +6,8 @@ import type { AnswerMapResponse, ThemeCard } from './themesApi'
 import InsideOther from './InsideOther'
 import QuestionContext from './QuestionContext'
 import { parseContextData } from './questionContextData'
+import QuotesBlock from './QuotesBlock'
+import { parseQuotesData } from './quotesData'
 import ReportFilters from './ReportFilters'
 import ThemeChart from './ThemeChart'
 import FindingChartTabs, { ResponsiveChart } from './FindingChartTabs'
@@ -148,6 +150,7 @@ export default function ReportView({
   const context = report.blocks.find((b) => b.kind === 'context')
   const contextData = context ? parseContextData(context.chart_html) : null
   const quotes = report.blocks.find((b) => b.kind === 'quotes')
+  const quotesData = quotes ? parseQuotesData(quotes.chart_html) : null
   const phrases = report.blocks.find((b) => b.kind === 'phrases')
   const toneSplit = report.theme_chart_variants?.diverge
   // Shown whenever the column has a date (T1): how each theme's share moves, not only when a finding fires.
@@ -268,7 +271,7 @@ export default function ReportView({
         </Divider>
       ))}
 
-      {quotes && <SupplementBlock block={quotes} />}
+      {quotes && (quotesData ? <QuotesBlock data={quotesData} /> : <SupplementBlock block={quotes} />)}
       {phrases && <SupplementBlock block={phrases} />}
 
       {quality && (

@@ -41,3 +41,28 @@ def test_blank_and_non_string_entries_are_skipped():
     data = build_quote_data([("Cost", ["Real answer here", "", "   ", None])])  # type: ignore[list-item]
     assert data is not None
     assert all(q.text == "Real answer here" for q in data.quotes)
+
+
+def test_pool_covers_every_theme_not_only_the_four_largest():
+    from app.text_pipeline.quotes import build_quote_pool
+    theme_texts = [(f"Theme{i}", [f"Answer {i} one", f"Answer {i} two"]) for i in range(7)]
+    assert {q["theme"] for q in build_quote_pool(theme_texts)} == {f"Theme{i}" for i in range(7)}
+
+
+def test_pool_ranks_each_tab():
+    from app.text_pipeline.quotes import build_quote_pool
+    texts = ["I love it, great and lovely", "It is fine", "I hate it, terrible and awful", "It is bad"]
+    pool = build_quote_pool([("Cost", texts)])
+    first = {view: next(q["text"] for q in pool if q["ranks"].get(view) == 0) for view in ("negative", "positive")}
+    assert first == {"negative": "I hate it, terrible and awful", "positive": "I love it, great and lovely"}
+    assert all(q["score"] < 0 for q in pool if "negative" in q["ranks"])
+    assert sum("random" in q["ranks"] for q in pool) == 4
+    assert len({q["text"] for q in pool}) == len(pool)  # one answer in several tabs is listed once
+
+
+def test_pool_is_masked_and_the_same_on_every_load():
+    from app.text_pipeline.quotes import build_quote_pool
+    texts = [f"answer {i} email me at jo@example.com" for i in range(30)]
+    pool = build_quote_pool([("Support", texts)])
+    assert not any("jo@example.com" in q["text"] for q in pool)
+    assert pool == build_quote_pool([("Support", texts)])

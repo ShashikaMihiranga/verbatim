@@ -46,6 +46,16 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-067 — The report's "What does it sound like?" tabs and theme chips did nothing**
+  - Found: 2026-10-28, user (screenshot), report page after a build.
+  - Cause: `app/charts.py` `f_quotes` drew the gallery mockup: the tabs and chips were plain spans, and the
+    block only held the two most typical answers from the four largest themes, so nothing else existed to show.
+  - Fix: the block now carries a masked quote pool for every theme that has a chip (most typical, random,
+    most negative, most positive; `build_quote_pool`), and the report page draws it with working buttons
+    (`frontend/src/QuotesBlock.tsx`). Exports keep the static picture. Share links still get no quotes ·
+    Test: `tests/test_text_pipeline_quotes.py` (pool tests), `test_share_link_report_has_no_answer_text`,
+    `frontend/src/quotes-block.test.tsx`; live check on dataset 13.
+
 - [x] **BUG-066 — Merging staging2 would have cut column samples before masking them**
   - Found: 2026-10-28, Claude, merging staging2 into staging. staging2 cut each sample to 200 characters and
     then masked it, so an email split at the edge (`jane.doe@exa`) was no longer recognised and went to

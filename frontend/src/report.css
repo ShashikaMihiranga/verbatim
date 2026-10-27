@@ -325,3 +325,37 @@
   text-decoration: underline; cursor: pointer;
 }
 @media (max-width: 600px) { .qc-sentence { font-size: 26px; } }
+
+/* "What does it sound like?" with working tabs and chips (QuotesBlock.tsx); values from app/charts.py f_quotes. */
+.qb-title { font-size: 22px; font-weight: 600; line-height: 1.3; margin: 0; }
+.qb-sub { font-size: 15px; color: var(--muted); margin: 2px 0 0; }
+.qb-tabs { display: inline-flex; flex-wrap: wrap; margin-top: 22px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.qb-tab { font: inherit; font-size: 15px; font-weight: 500; color: var(--muted); background: none; border: 0; padding: 8px 18px; cursor: pointer; }
+.qb-tab + .qb-tab { border-left: 1px solid var(--line); }
+.qb-tab:hover { background: var(--bg); color: var(--ink); }
+.qb-tab[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.qb-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.qb-chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+  font: inherit; font-size: 14px; font-weight: 500; color: var(--ink); background: none; border: 1px solid var(--line); cursor: pointer;
+}
+.qb-chip:hover { background: var(--surface); }
+.qb-chip[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.qb-tab:focus-visible, .qb-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.qb-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.qb-rows { margin-top: 24px; border-bottom: 1px solid var(--line); }
+.qb-row { display: flex; align-items: center; gap: 20px; min-height: 62px; padding: 10px 16px; border-top: 1px solid var(--line); }
+.qb-tone { width: 100px; flex: none; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.qb-tonedot { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+.qb-tonedot.negative { background: var(--neg); }
+.qb-tonedot.neutral { background: var(--neu); }
+.qb-tonedot.positive { background: var(--pos); }
+.qb-text { flex: 1; min-width: 0; font-size: 19px; line-height: 1.4; overflow-wrap: anywhere; }
+.qb-theme { width: 230px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; text-align: right; font-size: 14px; font-weight: 500; color: var(--muted); }
+.qb-empty { padding: 20px 16px; margin: 0; color: var(--muted); border-top: 1px solid var(--line); }
+@media (max-width: 640px) {
+  .qb-row { flex-wrap: wrap; gap: 6px 12px; padding: 12px 0; }
+  .qb-text { flex-basis: 100%; order: 2; font-size: 17px; }
+  .qb-theme { width: auto; margin-left: auto; }
+  .qb-tab { padding: 8px 12px; font-size: 14px; }
+}

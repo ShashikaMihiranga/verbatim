@@ -1086,6 +1086,8 @@ def test_share_link_report_has_no_answer_text(env):
     build_report_job(env, did)
     owner = env.client.get(f"/api/datasets/{did}/report", params={"column": Q}).json()
     assert any(b["kind"] == "quotes" for b in owner["blocks"])  # the owner still sees quotes
+    quotes = next(b for b in owner["blocks"] if b["kind"] == "quotes")
+    assert "data-quotes=" in quotes["chart_html"]  # the live tabs and theme chips have their pool
 
     token = env.client.post(f"/api/datasets/{did}/share-links", json={"column": Q}).json()["token"]
     shared = env.client.get(f"/api/share/{token}/report")
