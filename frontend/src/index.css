@@ -42,4 +42,11 @@ h2 { font-weight: 600; }
 a { color: var(--accent); }
 .page { max-width: 960px; margin: 0 auto; padding: 32px 16px; }
 .muted { color: var(--muted); }
-nav.top { display: flex; gap: 16px; flex-wrap: wrap; padding-bottom: 16px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+/* Top bar (Uploads_UIHandoff.md): logo, the five pages with the current one tinted, then the account. */
+nav.top { display: flex; gap: 8px 22px; flex-wrap: wrap; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 28px; }
+nav.top .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 600; color: var(--ink); text-decoration: none; }
+nav.top .links { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+nav.top .links a { padding: 8px 14px; border-radius: 12px; font-size: 16px; font-weight: 500; color: var(--ink); text-decoration: none; }
+nav.top .links a:hover { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+nav.top .links a.active { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); color: var(--accent); font-weight: 600; }
+nav.top a:focus-visible, nav.top button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

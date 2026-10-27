@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -140,6 +140,7 @@ def _view(ds: Dataset, reused: bool | None = None) -> dict:
         "id": ds.id,
         "filename": ds.filename,
         "row_count": ds.row_count,
+        "uploaded_at": ds.created_at.replace(tzinfo=ds.created_at.tzinfo or timezone.utc).isoformat() if ds.created_at else None,
         "confirmed": "confirmed" in profile,
         "profile": profile,
     }
@@ -169,8 +170,17 @@ def _discard_uploaded_bytes(db: Session, digest: str) -> None:
 
 
 # ---------------------------------------------------------------- routes
+@router.get("/upload/limits")
+def upload_limits(user: User = Depends(current_user)):
+    """What the Uploads page tells people before they pick a file: the real size limit and file types."""
+    return {"max_mb": round(max_upload_bytes() / (1024 * 1024), 1), "extensions": sorted(ALLOWED_EXT)}
+
+
 @router.post("/upload")
-def upload(file: UploadFile, request: Request, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def upload(file: UploadFile, request: Request, duplicate: bool = Form(False), db: Session = Depends(get_db),
+           user: User = Depends(current_user)):
+    """`duplicate`: the Uploads page's "Upload anyway". A file this user already uploaded normally reopens
+    that project (`reused`); with `duplicate` it becomes a second, separate project."""
     limit = max_upload_bytes()
     ext = Path((file.filename or "").replace("\\", "/")).suffix.lower()
     if ext not in ALLOWED_EXT:
@@ -202,7 +212,7 @@ def upload(file: UploadFile, request: Request, db: Session = Depends(get_db), us
         existing = db.scalar(
             select(Dataset).join(Project).where(Project.user_id == user.id, Dataset.file_hash == digest)
         )
-        if existing is not None:
+        if existing is not None and not duplicate:
             return _view(existing, reused=True)
 
         try:

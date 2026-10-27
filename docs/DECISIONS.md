@@ -3602,3 +3602,30 @@ Answers to the hand-off's open questions, checked in the code:
 Slow note at 2 minutes, "you do not have to wait" at 5 (both from the server start time). One fix to the
 design: at step 5 the tone chips sat on top of the sub-theme names, so they are drawn below them. The old
 "Please stay on this page" card (`JobProgress`) remains only for report, Look inside and split jobs.
+
+## 2026-10-28: the Uploads page redesign
+
+Built from `design/handoffs/Uploads_UIHandoff.md` (same file as `verbatim-visual-system/handoffs/`) as an
+upgrade of the existing page. User's call: follow the new visual, no new flow. What the code needed:
+
+- **Top bar (every signed-in page):** logo, Home / Uploads / Projects / Reports / Jobs with the current page
+  tinted (`NavLink`), a round initial, the email and Sign out. Focus rings kept.
+- **One four-step stepper everywhere** (`FlowSteps`: Upload, Check columns, Cleaning review, Report; earlier
+  steps ticked; "Step 2 of 4: ..." on a phone). Upload and Check columns showed three steps before.
+- **Drop card states from the real upload:** byte progress with Cancel (aborts the request, back to the
+  empty box), then "Reading the columns" until the server answers, then Ready (file name, columns, rows;
+  Check columns or Upload another, no automatic move on). The server reads and guesses the columns inside the
+  one upload request, so "File received" ticks at 100% of bytes and the other two finish together when it
+  answers; no fake timing. Wrong type and too large are caught before sending, using the server's real limit
+  (`GET /api/upload/limits`, `MAX_UPLOAD_MB`); other server errors show their own sentence with Try again.
+- **Already uploaded:** the server already reuses a file the same user uploaded before (by hash). The amber
+  note offers "Open it" (wherever that project is up to) and "Upload anyway", which sends `duplicate=true`
+  and makes a second, separate project; the bytes are still stored once. `_view` now returns `uploaded_at`.
+- **Trust cards, checked against the code.** The hand-off's lines overclaimed: names are only masked after
+  cues like "my name is", and the file is in Verbatim's database and can be shared with invited people. Shown
+  instead: "Masked first: Emails, phone numbers, links and ID numbers are masked before Voyage or Claude read
+  your answers." / "Private to you: Your file is stored once. Only you, and people you invite, can open it." /
+  "Claude sees samples only". Checking this found BUG-063 (unmasked upload-time samples), fixed.
+- **Your uploads:** the latest six from `/api/projects`, with a status chip and action; new status
+  "finding themes" while a theme build runs and no report exists yet (opens the waiting card).
+- Not done: multiple files at once, a sample file, the 1040px content width (the app's pages are 960px).

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { deleteProject, getProjects } from './projectsApi'
+import { deleteProject, getProjects, linkFor } from './projectsApi'
 import type { ProjectStatus, ProjectSummary } from './projectsApi'
 import './upload.css'
 import './projects.css'
@@ -12,14 +12,9 @@ const STATUS_LABEL: Record<ProjectStatus, string> = {
   uploaded: 'Uploaded',
   'columns confirmed': 'Columns confirmed',
   cleaned: 'Cleaned',
+  'finding themes': 'Finding themes',
   'themes built': 'Themes built',
   'report ready': 'Report ready',
-}
-
-function linkFor(p: ProjectSummary): string {
-  if (p.status === 'uploaded') return `/check-columns?dataset=${p.id}`
-  if (p.status === 'columns confirmed') return `/cleaning?dataset=${p.id}`
-  return `/report?dataset=${p.id}` // cleaned, themes built, or report ready: Themes.tsx owns the rest of the flow
 }
 
 // No exact record counts (CLAUDE.md's design rule): rounded to one or two significant figures, same spirit

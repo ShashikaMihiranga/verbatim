@@ -5,6 +5,12 @@
 .steps span.on { color: var(--ink); font-weight: 600; }
 .steps b { width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; border: 1px solid var(--line); font-weight: 500; }
 .steps .on b { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.steps .done b { background: color-mix(in srgb, #3f8a57 14%, var(--surface)); color: #3f8a57; border: 1.5px solid #3f8a57; }
+.steps .steps-compact { display: none; font-weight: 600; color: var(--ink); }
+@media (max-width: 640px) {
+  .steps span:not(.steps-compact) { display: none; }
+  .steps .steps-compact { display: inline; }
+}
 
 .head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 32px; }
 .head h1 { margin: 0; font-size: 44px; line-height: 1.15; }

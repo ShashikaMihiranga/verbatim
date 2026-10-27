@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { KIND_LABELS, confirmColumns, getProfile } from './api'
 import type { DatasetView, Kind } from './api'
-import { Steps } from './Upload'
+import FlowSteps from './FlowSteps'
 import './upload.css'
 
 const KINDS = Object.keys(KIND_LABELS) as Kind[]
@@ -109,7 +109,7 @@ export default function CheckColumns() {
     <>
       <div className="head">
         <h1>Check columns</h1>
-        <Steps step={2} />
+        <FlowSteps current={2} />
       </div>
       <div className="muted" style={{ marginTop: -20, marginBottom: 28 }}>
         <b style={{ color: 'var(--ink)', fontWeight: 600 }}>{ds.filename}</b>{' '}

@@ -37,6 +37,13 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-063 — Column hints at upload sent Claude unmasked sample values**
+  - Found: 2026-10-28, Claude, checking the Uploads hand-off's privacy sentences against the code.
+  - Cause: `app/profiling/claude_hook.collect_samples` sent up to 30 raw values per non-sensitive column, so
+    an email or phone number written in an answer reached Claude as typed, against the rule that text goes
+    to a model only after masking.
+  - Fix: each sample goes through `redact_text` with the column's digit rule, the same masking the cleaning
+    step uses · Test: `tests/test_profiling.py::test_column_samples_are_masked_before_claude_sees_them`.
 - [x] **BUG-062 — The menu's "Reports" page said "Nothing to report yet" even with finished reports**
   - Found: 2026-10-28, the user.
   - Cause: "Reports" links to `/report` with no project picked, and that page only showed the empty

@@ -21,6 +21,7 @@ import ThemeEditor from './ThemeEditor'
 import {
   getGroupPayload, listEdits, mergeBatch, mergePreview, promoteSubTheme, splitPreview, splitSubThemes, startGrouping, undoEdit,
 } from './themeEditorApi'
+import FlowSteps from './FlowSteps'
 import './upload.css'
 import './themes.css'
 import './report.css'
@@ -83,20 +84,6 @@ export function pickOpenTextColumn(profile: {
   const pool = qualifying.length > 0 ? qualifying : candidates
   const rank = qualifying.length > 0 ? (c: ColumnProfile) => c.median_words : (c: ColumnProfile) => uniqueness(c, profile.row_count)
   return pool.reduce((best, c) => (rank(c) > rank(best) ? c : best)).name
-}
-
-function Progress() {
-  const items = ['Upload', 'Check columns', 'Cleaning review', 'Report']
-  return (
-    <div className="steps">
-      {items.map((t, i) => (
-        <span key={t} className={i === 3 ? 'on' : ''}>
-          <b>{i + 1}</b>
-          {t}
-        </span>
-      ))}
-    </div>
-  )
 }
 
 export function toneLabel(t: 'neg' | 'neu' | 'pos'): string {
@@ -522,7 +509,7 @@ export default function Themes() {
       <>
         <div className="head">
           <h1>Reports</h1>
-          <Progress />
+          <FlowSteps current={4} />
         </div>
         <p className="muted">
           No open-ended text column was confirmed for this file, so there is nothing to build themes from.{' '}
@@ -669,7 +656,7 @@ export default function Themes() {
     <>
       <div className="head">
         <h1>Reports</h1>
-        <Progress />
+        <FlowSteps current={4} />
       </div>
       {/* Introduces the theme cards; the report has its own title and summary. */}
       {!report && !reportPending && (

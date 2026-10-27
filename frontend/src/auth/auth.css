@@ -2,8 +2,12 @@
 
 /* header account control */
 nav.top .spacer { flex: 1; }
-nav.top .account { display: inline-flex; gap: 12px; align-items: baseline; }
-nav.top .who { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+nav.top .account { display: inline-flex; gap: 14px; align-items: center; font-size: 15px; }
+nav.top .who { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+nav.top .who-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+nav.top .avatar { width: 32px; height: 32px; border-radius: 16px; flex: none; background: var(--accent); color: var(--on-accent, #fff); font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+nav.top .account .auth-link { font-weight: 600; text-decoration: none; }
+@media (max-width: 640px) { nav.top .who-name { display: none; } }
 
 /* page shells */
 .auth-split { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); background: var(--bg); }

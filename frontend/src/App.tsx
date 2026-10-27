@@ -1,6 +1,6 @@
 import { useAuth, useUser } from '@clerk/clerk-react'
 import type { ReactNode } from 'react'
-import { Link, Outlet, Route, Routes } from 'react-router-dom'
+import { Link, NavLink, Outlet, Route, Routes } from 'react-router-dom'
 import AcceptInvite from './AcceptInvite'
 import CheckColumns from './CheckColumns'
 import Cleaning from './Cleaning'
@@ -11,6 +11,7 @@ import Themes from './Themes'
 import Upload from './Upload'
 import Landing from './home/HomePage'
 import SampleReport from './SampleReport'
+import { Logo } from './home/homeArt'
 import './auth/auth.css'
 import { clerkConfigured, devUserAllowed } from './authConfig'
 import ForgotPasswordPage from './auth/ForgotPasswordPage'
@@ -27,13 +28,23 @@ const Placeholder = ({ title }: { title: string }) => (
   </>
 )
 
+// The signed-in person: a round initial, their email, Sign out (Uploads_UIHandoff.md top bar).
+function Who({ name }: { name: string }) {
+  return (
+    <span className="who">
+      <span className="avatar" aria-hidden="true">{(name.trim()[0] ?? '?').toUpperCase()}</span>
+      <span className="muted who-name">{name}</span>
+    </span>
+  )
+}
+
 function SignOutControl() {
   const signOut = useSignOut()
   const { user } = useUser()
   const who = user?.primaryEmailAddress?.emailAddress ?? user?.firstName ?? ''
   return (
     <span className="account">
-      {who && <span className="muted who">{who}</span>}
+      {who && <Who name={who} />}
       <button type="button" className="auth-link" onClick={() => void signOut()}>
         Sign out
       </button>
@@ -52,14 +63,17 @@ function Shell() {
   return (
     <div className="page">
       <nav className="top" aria-label="Main">
-        <Link to="/">Home</Link>
-        <Link to="/upload">Uploads</Link>
-        <Link to="/projects">Projects</Link>
-        <Link to="/report">Reports</Link>
-        <Link to="/jobs">Jobs</Link>
+        <Link to="/" className="brand" aria-label="Verbatim home"><Logo size={30} /><span>Verbatim</span></Link>
+        <span className="links">
+          <NavLink to="/" end>Home</NavLink>
+          <NavLink to="/upload">Uploads</NavLink>
+          <NavLink to="/projects">Projects</NavLink>
+          <NavLink to="/report">Reports</NavLink>
+          <NavLink to="/jobs">Jobs</NavLink>
+        </span>
         <span className="spacer" />
         {devUserAllowed ? (
-          <span className="muted who">Dev user (Clerk bypassed)</span>
+          <span className="account"><Who name="Dev user (Clerk bypassed)" /></span>
         ) : clerkConfigured ? (
           <ClerkAccount />
         ) : (

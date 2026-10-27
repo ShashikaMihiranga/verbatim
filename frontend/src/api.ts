@@ -62,9 +62,24 @@ export interface DatasetView {
   filename: string
   row_count: number
   confirmed: boolean
-  reused?: boolean
+  reused?: boolean // the same file was already uploaded: this is that earlier project
+  uploaded_at?: string | null
   profile: Profile
 }
+
+export interface UploadLimits {
+  max_mb: number
+  extensions: string[]
+}
+
+export async function getUploadLimits(): Promise<UploadLimits> {
+  const r = await authFetch('/api/upload/limits')
+  if (!r.ok) throw await asError(r)
+  return r.json()
+}
+
+// Thrown when the person cancels an upload, so the page can go back to the empty box without a message.
+export class UploadCancelled extends Error {}
 
 async function asError(r: Response): Promise<Error> {
   let msg = `Something went wrong (${r.status}).`
@@ -77,16 +92,23 @@ async function asError(r: Response): Promise<Error> {
   return new Error(msg)
 }
 
-export async function uploadFile(file: File, onProgress: (pct: number) => void): Promise<DatasetView> {
+// `duplicate`: the Uploads page's "Upload anyway" (a second project from a file uploaded before).
+// `signal`: aborting it cancels the upload (rejects with `UploadCancelled`).
+export async function uploadFile(
+  file: File,
+  onProgress: (pct: number, loaded: number, total: number) => void,
+  opts: { duplicate?: boolean; signal?: AbortSignal } = {},
+): Promise<DatasetView> {
   const headers = await authHeaders()
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/upload')
     headers.forEach((value, key) => xhr.setRequestHeader(key, value))
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100), e.loaded, e.total)
     }
     xhr.onerror = () => reject(new Error('Could not reach the server. Check your connection and try again.'))
+    xhr.onabort = () => reject(new UploadCancelled('Upload cancelled.'))
     xhr.onload = () => {
       handleUnauthorized(xhr.status)
       let body: any = null
@@ -98,8 +120,10 @@ export async function uploadFile(file: File, onProgress: (pct: number) => void):
       if (xhr.status >= 200 && xhr.status < 300 && body) resolve(body as DatasetView)
       else reject(new Error(typeof body?.detail === 'string' ? body.detail : `Upload failed (${xhr.status}).`))
     }
+    opts.signal?.addEventListener('abort', () => xhr.abort(), { once: true })
     const form = new FormData()
     form.append('file', file)
+    if (opts.duplicate) form.append('duplicate', 'true')
     xhr.send(form)
   })
 }

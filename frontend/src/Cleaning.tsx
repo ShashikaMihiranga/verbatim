@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { applyCleaning, buildPlan, editPlan } from './cleaningApi'
 import type { PlanResponse, PlanStep, StepEdit, StepReport } from './cleaningApi'
+import FlowSteps from './FlowSteps'
 import './upload.css'
 import './cleaning.css'
 
@@ -14,20 +15,6 @@ type Pending = {
 }
 const empty = (): Pending => ({ enabled: {}, merges: {}, params: {} })
 const MAX_ROWS_SHOWN = 100
-
-function Progress() {
-  const items = ['Upload', 'Check columns', 'Cleaning review', 'Report']
-  return (
-    <div className="steps">
-      {items.map((t, i) => (
-        <span key={t} className={i === 2 ? 'on' : ''}>
-          <b>{i + 1}</b>
-          {t}
-        </span>
-      ))}
-    </div>
-  )
-}
 
 function Blankable({ text, className }: { text: string; className: string }) {
   return text === '' ? <div className={`${className} blank`}>(blank)</div> : <div className={className}>{text}</div>
@@ -152,7 +139,7 @@ export default function Cleaning() {
     <>
       <div className="head">
         <h1>Cleaning review</h1>
-        <Progress />
+        <FlowSteps current={3} />
       </div>
       <div className="cl-summary">
         <b>{p.rows_in.toLocaleString()}</b> rows in, <b>{p.rows_out.toLocaleString()}</b> rows after cleaning

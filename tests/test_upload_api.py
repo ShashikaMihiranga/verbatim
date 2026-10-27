@@ -248,3 +248,18 @@ def test_patch_validation(env):
     bad[0]["kind"] = "banana"
     assert env.client.patch(url, json={"columns": bad}).status_code == 422
     assert env.client.patch("/api/datasets/999/columns", json={"columns": good}).status_code == 404
+
+
+def test_upload_anyway_makes_a_second_project_from_the_same_file(env):
+    a = env.post("one.csv").json()
+    b = env.client.post("/api/upload", files={"file": ("one.csv", FIX.read_bytes(), "text/csv")},
+                        data={"duplicate": "true"}).json()
+    assert b["id"] != a["id"] and b["reused"] is False
+    assert a["uploaded_at"] and a["uploaded_at"].endswith("+00:00")
+    with env.Session() as s:
+        assert len(s.scalars(select(Dataset)).all()) == 2
+        assert len(s.scalars(select(UploadedFile)).all()) == 1  # the bytes are still stored once
+
+
+def test_the_page_can_read_the_real_size_limit(env):
+    assert env.client.get("/api/upload/limits").json() == {"max_mb": 1.0, "extensions": [".csv", ".xls", ".xlsx"]}

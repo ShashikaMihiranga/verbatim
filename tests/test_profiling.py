@@ -338,3 +338,14 @@ def test_refine_survives_bad_reply_and_errors():
         messages = SimpleNamespace(create=lambda **kw: (_ for _ in ()).throw(RuntimeError("down")))
 
     assert refine_profile(profile, {}, client=Boom()) is profile
+
+
+def test_column_samples_are_masked_before_claude_sees_them():
+    """BUG-063: the upload-time column hints sent raw sample values; they go through the same masking as
+    every other model call now."""
+    import pandas as pd
+    df = pd.DataFrame({"Comment": ["Email me at jane.doe@example.com please", "Call 0412 345 678 any time"]})
+    profile = {"columns": [{"name": "Comment", "kind": "open_text"}]}
+    sent = " ".join(collect_samples(df, profile)["Comment"])
+    assert "jane.doe@example.com" not in sent and "0412 345 678" not in sent
+    assert "[email]" in sent and "[phone]" in sent

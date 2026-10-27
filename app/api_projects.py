@@ -5,7 +5,7 @@ GET    /api/projects            the signed-in user's own datasets, newest first:
                                  row_count, created_at, status}.
 DELETE /api/datasets/{id}       owner-only, deletes one dataset and its Column/Theme/Finding/Report rows.
 
-`status` is one of a small fixed set ("uploaded", "columns confirmed", "cleaned", "themes built",
+`status` is one of a small fixed set ("uploaded", "columns confirmed", "cleaned", "finding themes", "themes built",
 "report ready"), computed by checking what already exists for that dataset - never a second copy of
 `app.api_upload`'s/`app.api_cleaning`'s/`app.api_themes`'s/`app.api_report`'s own business logic:
   - "columns confirmed" reuses the exact same `"confirmed" in profile` check `app.api_upload._view` already
@@ -35,7 +35,7 @@ from .models import Column, Dataset, Finding, Job, Project, Report, Theme, User
 
 router = APIRouter(prefix="/api")
 
-Status = Literal["uploaded", "columns confirmed", "cleaned", "themes built", "report ready"]
+Status = Literal["uploaded", "columns confirmed", "cleaned", "finding themes", "themes built", "report ready"]
 
 
 def _status(db: Session, ds: Dataset) -> Status:
@@ -43,6 +43,11 @@ def _status(db: Session, ds: Dataset) -> Status:
     never reported as an earlier one."""
     if db.scalar(select(Report.id).where(Report.dataset_id == ds.id).limit(1)) is not None:
         return "report ready"
+    # A theme build in progress (the Uploads list links it to the waiting card). Only before any report:
+    # a rebuild of a column that already has a report keeps "report ready".
+    if db.scalar(select(Job.id).where(Job.dataset_id == ds.id, Job.kind == "themes", Job.status == "running")
+                 .limit(1)) is not None:
+        return "finding themes"
     if db.scalar(select(Theme.id).where(Theme.dataset_id == ds.id).limit(1)) is not None:
         return "themes built"
     if "report" in _cleaning_stored(ds):  # api_cleaning.py's own "cleaning has actually been applied" signal

@@ -267,3 +267,15 @@ def test_zero_network_is_ever_attempted(env):
         assert r.status_code == 200, r.text
         d = env.client.delete(f"/api/datasets/{did}")
         assert d.status_code == 200, d.text
+
+
+def test_a_running_theme_build_shows_as_finding_themes_until_a_report_exists(env):
+    from app.models import Job
+    install_fakes()
+    did = upload_csv(env, survey_df())
+    confirm_columns(env, did)
+    clean_and_apply(env, did)
+    with env.Session() as s:
+        s.add(Job(dataset_id=did, column_name=Q, kind="themes", status="running", step="Naming each group"))
+        s.commit()
+    assert by_id(env.client.get("/api/projects").json(), did)["status"] == "finding themes"

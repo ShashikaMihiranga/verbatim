@@ -35,7 +35,7 @@ export default function ReportsIndex() {
   }, [])
 
   const ready = (projects ?? []).filter((p) => p.status === 'report ready')
-  const waiting = (projects ?? []).filter((p) => p.status === 'cleaned' || p.status === 'themes built')
+  const waiting = (projects ?? []).filter((p) => p.status === 'cleaned' || p.status === 'finding themes' || p.status === 'themes built')
   return (
     <>
       <h1>Reports</h1>
@@ -55,7 +55,7 @@ export default function ReportsIndex() {
         <>
           <h2 className="pr-subhead">No report yet</h2>
           <div className="pr-list">
-            {waiting.map((p) => <Row key={p.id} project={p} label={p.status === 'themes built' ? 'Themes built' : 'Cleaned'} />)}
+            {waiting.map((p) => <Row key={p.id} project={p} label={p.status === 'themes built' ? 'Themes built' : p.status === 'finding themes' ? 'Finding themes' : 'Cleaned'} />)}
           </div>
         </>
       )}
