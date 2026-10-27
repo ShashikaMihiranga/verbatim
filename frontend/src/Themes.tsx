@@ -14,6 +14,7 @@ import JobProgress from './JobProgress'
 import SharePanel from './SharePanel'
 import ReportView from './Report'
 import ReportsIndex from './ReportsIndex'
+import ReportWaiting from './ReportWaiting'
 import ThemeChart from './ThemeChart'
 import ThemeDetail from './ThemeDetail'
 import ThemeEditor from './ThemeEditor'
@@ -206,6 +207,12 @@ export default function Themes() {
   const [column, setColumn] = useState<string | null>(null)
   const [themes, setThemes] = useState<ThemeCard[] | null>(null)
   const [themesJob, setThemesJob] = useState<Job | null>(null)
+  // The waiting card (ReportWaiting): the build was already running when the page opened ("Welcome
+  // back"), and a build that finished while the tab was in the background keeps the card with its
+  // "Your themes are ready" overlay until the person looks.
+  const [themesResumed, setThemesResumed] = useState(false)
+  const [themesDoneHeld, setThemesDoneHeld] = useState(false)
+  const holdIfHidden = () => { if (document.visibilityState === 'hidden') setThemesDoneHeld(true) }
   const [report, setReport] = useState<ReportResponse | null>(null)
   // True until we know whether a report exists (BUG-047: `GET /report` takes ~6 s on a big dataset). While
   // it is true the page shows one loading line, not the theme-editing view with "Build report".
@@ -432,7 +439,9 @@ export default function Themes() {
           try {
             const job = await getLatestJob(id, col, 'themes')
             if (job) {
+              setThemesResumed(job.status === 'running')
               stopThemesPoll = watch(job, setThemesJob, (done) => {
+                holdIfHidden()
                 void reloadAfterThemeRebuild(col)
                 followAutoLookInside(done, col)
               })
@@ -446,7 +455,9 @@ export default function Themes() {
           try {
             const job = await getLatestJob(id, col, 'themes')
             if (job && job.status === 'running') {
+              setThemesResumed(true)
               stopThemesPoll = watch(job, setThemesJob, (done) => {
+                holdIfHidden()
                 void reloadAfterThemeRebuild(col)
                 followAutoLookInside(done, col)
               })
@@ -528,10 +539,13 @@ export default function Themes() {
       setThemes(null)
       setLookInsideOtherJob(null) // the server dropped the old run's result with the old themes
       setAutoLookNote(null)
+      setThemesResumed(false)
+      setThemesDoneHeld(false)
       watch(
         { id: started.job_id, dataset_id: id, column: column as string, kind: 'themes', status: 'running', step: 'Starting', error: null, result: null },
         setThemesJob,
         (done) => {
+          holdIfHidden()
           void refreshThemes()
           followAutoLookInside(done, column as string)
         },
@@ -666,19 +680,13 @@ export default function Themes() {
 
       {error && <div className="err" role="alert">{error}</div>}
 
-      {themesRunning && themesJob && <JobProgress job={themesJob} />}
+      {themesJob && (themesRunning || themesFailed || (themesDoneHeld && themesJob.status === 'done')) && (
+        <ReportWaiting job={themesJob} resumed={themesResumed} onRetry={() => void build()}
+          onSeeThemes={() => setThemesDoneHeld(false)} />
+      )}
 
       {reportPending && !themesRunning && <p className="muted" role="status">Loading the report...</p>}
 
-      {themesFailed && themesJob && (
-        <div className="jp-failed">
-          <div className="big">Building themes didn't work</div>
-          <p className="err" role="alert">{themesJob.error}</p>
-          <button type="button" className="btn" onClick={() => void build()}>
-            Try again
-          </button>
-        </div>
-      )}
 
       {!themesJob && themes === null && !reportPending && (
         <div className="th-build">

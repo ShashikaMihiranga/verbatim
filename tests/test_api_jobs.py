@@ -102,3 +102,17 @@ def test_list_jobs_respects_the_limit_param(env):
     r = env.client.get("/api/jobs", params={"limit": 2})
     assert r.status_code == 200, r.text
     assert len(r.json()) == 2
+
+
+def test_jobs_lost_in_a_restart_are_failed_at_startup(env):
+    """Jobs run on threads in the server process: one still "running" when the server starts can never
+    finish, so the page must offer Try again instead of waiting forever (ReportWaiting_UIHandoff.md)."""
+    from app.jobs import RESTART_MESSAGE, fail_orphaned_jobs
+    did = upload_csv(env, _df())
+    running = _add_job(env, did, step="Naming each group")
+    done = _add_job(env, did, kind="report", status="done", step="Done")
+    assert fail_orphaned_jobs() == 1
+    with env.Session() as s:
+        lost, kept = s.get(Job, running), s.get(Job, done)
+        assert (lost.status, lost.error, lost.step) == ("failed", RESTART_MESSAGE, "Naming each group")
+        assert kept.status == "done"

@@ -41,6 +41,7 @@ from .api_themes import router as themes_router  # noqa: E402
 from .api_upload import router as upload_router  # noqa: E402
 from .charts import FRAMES, render  # noqa: E402
 from .config import get_settings  # noqa: E402
+from .jobs import fail_orphaned_jobs  # noqa: E402
 from .ratelimit import RateLimitMiddleware  # noqa: E402
 from .security import SecurityHeadersMiddleware  # noqa: E402
 
@@ -62,6 +63,19 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json" if _dev else None,
 )
+
+
+@app.on_event("startup")
+def _close_orphaned_jobs() -> None:
+    """Jobs run on threads in this process, so any job still "running" at start was lost with the old one."""
+    try:
+        closed = fail_orphaned_jobs()
+        if closed:
+            logging.getLogger("verbatim.jobs").warning("marked %d job(s) failed: lost in a restart", closed)
+    except Exception:  # noqa: BLE001 - a missing table on a fresh database must not stop the server starting
+        logging.getLogger("verbatim.jobs").exception("could not close orphaned jobs")
+
+
 app.add_middleware(RateLimitMiddleware)  # limits and size guards run before any route; 429 still gets security headers
 app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(api_router)

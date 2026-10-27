@@ -3576,3 +3576,29 @@ User's call: grouping should be more accurate and faster, built on a graph of th
   janitorial; disrepair + maintenance. Rejected: desk ergonomic design + standing desk availability (layout
   vs availability), cleanliness + security/disrepair.
 - **To switch on:** devapp and production still say `claude`; changing them to `graph` is the user's call.
+
+## 2026-10-28: the Reports page waiting card ("Live picture")
+
+Built from `design/handoffs/ReportWaiting_UIHandoff.md` (version B) in `frontend/src/ReportWaiting.tsx`,
+shown while a theme build runs, when it fails, and (with its "ready" overlay) when it finished while the tab
+was in the background. Live from the real job: the step the server reports, elapsed time from the job's
+`created_at`, and, the user's "live update" ask, real counts for step 1: the build now embeds in chunks of
+one round of Voyage's concurrent batches (`_ProgressEmbedder`, same throughput) and writes
+`{step, done, total}` to `Job.progress`, so the first segment fills from real numbers. Later steps are one
+call each, so their segment fills slowly toward 90% and jumps when the step ends, as the hand-off says.
+
+Answers to the hand-off's open questions, checked in the code:
+1. **Leave and come back is real.** Builds run on a server thread and are stored as job rows; the page
+   looks up the column's latest job on open. A restart did lose a running job and left it "running"
+   forever, so the server now marks every "running" job failed when it starts (`jobs.fail_orphaned_jobs`,
+   "The server restarted while this was running, so it stopped."); the card shows Try again. The existing
+   size-scaled watchdog is the maximum run time, and it also fails the job.
+2. **No skipped steps.** The build always reports all five steps in order, even with no sub-themes.
+3. **Failed offers Try again only** (it starts the build again; the cleaned file is untouched, and a failed
+   rebuild leaves the old themes in place, so "Nothing was lost" is true). The job's own error is shown
+   after the hand-off's sentence.
+4. "Go to my files" goes to Projects.
+
+Slow note at 2 minutes, "you do not have to wait" at 5 (both from the server start time). One fix to the
+design: at step 5 the tone chips sat on top of the sub-theme names, so they are drawn below them. The old
+"Please stay on this page" card (`JobProgress`) remains only for report, Look inside and split jobs.

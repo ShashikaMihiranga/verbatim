@@ -130,6 +130,22 @@ def set_progress(job_id: int, progress: dict) -> None:
         db.commit()
 
 
+RESTART_MESSAGE = "The server restarted while this was running, so it stopped."
+
+
+def fail_orphaned_jobs() -> int:
+    """At server start: every job still "running" belonged to a process that is gone (jobs run on threads
+    inside the server), so none of them will ever finish. Mark them failed so the page offers Try again
+    instead of waiting forever (ReportWaiting_UIHandoff.md). Returns how many were closed."""
+    with _db.SessionLocal() as db:
+        rows = db.scalars(select(Job).where(Job.status == "running")).all()
+        for job in rows:
+            job.status = "failed"
+            job.error = RESTART_MESSAGE
+        db.commit()
+        return len(rows)
+
+
 def _mark_done(job_id: int) -> None:
     with _db.SessionLocal() as db:
         job = db.get(Job, job_id)

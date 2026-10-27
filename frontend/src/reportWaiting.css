@@ -1,0 +1,90 @@
+/* Reports page waiting card, "Live picture" (design/handoffs/ReportWaiting_UIHandoff.md). */
+.rw-card {
+  position: relative;
+  background: var(--surface);
+  border: 1.5px solid var(--line);
+  border-radius: 24px;
+  padding: 36px 44px 30px;
+  margin: 8px 0 32px;
+}
+.rw-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.rw-cols { display: flex; gap: 40px; align-items: center; }
+.rw-pic {
+  width: 460px; max-width: 100%; flex: none; aspect-ratio: 460 / 300;
+  background: var(--bg); border-radius: 20px; display: flex; align-items: center; justify-content: center;
+}
+.rw-svg { width: 100%; height: 100%; overflow: visible; }
+.rw-status { flex: 1; min-width: 0; }
+.rw-stepn { font-size: 14px; font-weight: 600; color: var(--accent); letter-spacing: .06em; text-transform: uppercase; }
+.rw-name { font-size: 30px; font-weight: 300; line-height: 1.15; margin: 6px 0 0; min-height: 70px; }
+.rw-desc { font-size: 16px; line-height: 1.5; color: var(--muted); margin: 6px 0 0; min-height: 50px; }
+.rw-bar { display: flex; gap: 5px; margin-top: 18px; }
+.rw-seg { flex: 1; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; position: relative; }
+.rw-seg i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; transition: width .6s ease-out, background .3s; }
+.rw-list { list-style: none; margin: 14px 0 0; padding: 0; }
+.rw-row { display: flex; gap: 12px; align-items: center; padding: 7px 0; font-size: 15px; font-weight: 500; }
+.rw-row.is-todo { color: #8a979b; }
+.rw-ico { width: 24px; height: 24px; flex: none; }
+.rw-ico-n { font-size: 11px; font-weight: 600; fill: #8a979b; }
+.rw-count { margin-left: auto; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+@keyframes rw-spin { to { transform: rotate(360deg); } }
+.rw-spin { animation: rw-spin .9s linear infinite; transform-origin: center; }
+.rw-caption { font-size: 15px; color: var(--muted); margin: 18px 0 0; }
+.rw-caption b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.rw-tip {
+  display: flex; align-items: center; gap: 12px; margin-top: 26px; padding-top: 20px;
+  border-top: 1px solid var(--line); font-size: 15px; color: var(--muted);
+}
+.rw-tip svg { flex: none; }
+.rw-tip span { transition: opacity .3s; }
+.rw-tip span.is-fading { opacity: 0; }
+.rw-note { margin-top: 18px; padding: 12px 16px; border-radius: 14px; font-size: 15px; line-height: 1.45; }
+.rw-note.is-slow { background: #fbf1dc; border: 1.5px solid #e2b867; }
+.rw-note.is-info { background: #e8f1f5; border: 1.5px solid var(--accent); }
+.rw-note.is-failed { background: #fbe9e5; border: 1.5px solid #c0614a; }
+.rw-error { color: var(--muted); }
+.rw-note-btns { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.rw-pill {
+  height: 38px; padding: 0 18px; border-radius: 19px; border: 1.5px solid var(--accent);
+  background: var(--accent); color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+}
+.rw-pill.is-outline { background: transparent; color: var(--accent); }
+.rw-overlay {
+  position: absolute; inset: 0; z-index: 5; background: rgba(255, 255, 255, .96); border-radius: 24px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  text-align: center; padding: 0 40px; animation: rw-in .5s ease-out;
+}
+@keyframes rw-in { from { opacity: 0; } to { opacity: 1; } }
+.rw-badge {
+  width: 64px; height: 64px; border-radius: 32px; display: inline-flex; align-items: center; justify-content: center;
+}
+.rw-badge.is-done { color: #3f8a57; border: 2px solid #3f8a57; background: color-mix(in srgb, #3f8a57 14%, var(--surface)); }
+.rw-badge.is-info { color: var(--accent); border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.rw-ov-title { font-size: 26px; font-weight: 600; margin-top: 6px; }
+.rw-ov-text { font-size: 16px; line-height: 1.55; color: var(--muted); max-width: 560px; margin: 0; }
+.rw-ov-btns { display: flex; gap: 14px; align-items: center; margin-top: 14px; flex-wrap: wrap; justify-content: center; }
+.rw-btn {
+  height: 50px; padding: 0 28px; border-radius: 14px; border: 0; background: var(--accent); color: #fff;
+  font: inherit; font-size: 16px; font-weight: 600; display: inline-flex; align-items: center; text-decoration: none; cursor: pointer;
+}
+.rw-link {
+  background: none; border: 0; padding: 0; font: inherit; font-size: 15px; font-weight: 600; color: var(--accent);
+  border-bottom: 1.5px solid var(--accent); cursor: pointer;
+}
+/* The picture's labels, rings and tone chips fade in at their step. */
+.rw-fade { opacity: 0; transition: opacity .5s; }
+.rw-fade.is-on { opacity: 1; }
+.rw-glab { font-size: 15px; font-weight: 600; fill: var(--ink); }
+.rw-slab { font-size: 12px; fill: var(--muted); }
+.rw-tone { font-size: 12px; font-weight: 600; fill: var(--ink); }
+@media (max-width: 900px) {
+  .rw-card { padding: 24px 20px 22px; }
+  .rw-cols { flex-direction: column; align-items: stretch; gap: 24px; }
+  .rw-pic { width: 100%; }
+  .rw-name { font-size: 26px; min-height: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rw-spin { animation: none; }
+  .rw-fade, .rw-seg i, .rw-tip span { transition: none; }
+  .rw-overlay { animation: none; }
+}

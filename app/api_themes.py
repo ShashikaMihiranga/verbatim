@@ -244,6 +244,25 @@ def _aggregate_tone(rows: list[int], scores_by_row: dict[int, object]) -> tuple[
     return {"neg": ts.neg, "neu": ts.neu, "pos": ts.pos}, sentiment
 
 
+class _ProgressEmbedder:
+    """Wraps an embedding client so the theme build can report real progress while the answers are
+    embedded (the waiting card's bar, ReportWaiting_UIHandoff.md): the texts go through in chunks of one
+    full round of the client's concurrent batches, so throughput is unchanged, and `report(done, total)` is
+    called after each chunk."""
+
+    def __init__(self, inner: EmbeddingClient, report: Callable[[int, int], None]) -> None:
+        self.inner, self.report = inner, report
+        self.chunk = max(1, getattr(inner, "batch_size", 128) * getattr(inner, "concurrency", 4))
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        out: list[list[float]] = []
+        total = len(texts)
+        for start in range(0, total, self.chunk):
+            out.extend(self.inner.embed(texts[start:start + self.chunk]))
+            self.report(min(start + self.chunk, total), total)
+        return out
+
+
 def _cluster_centroid(cluster: Cluster, embedded: "EmbeddedAnswers | None") -> list[float] | None:
     """The real mean embedding vector of `cluster`'s own (post-merge) members - NOT `cluster.centroid`
     (`app.text_pipeline.schema.Cluster.centroid`), which HDBSCAN genuinely computes but
@@ -841,7 +860,9 @@ def build_themes(
 
     def _work(step: Callable[[str], None]) -> None:
         step("Turning answers into vectors")
-        result, embedded = embed_and_cluster_with_vectors(clean_df, plan, column, embedding_client)
+        live = _ProgressEmbedder(embedding_client, lambda done, total: set_progress(
+            job.id, {"step": "Turning answers into vectors", "done": done, "total": total}))
+        result, embedded = embed_and_cluster_with_vectors(clean_df, plan, column, live)
         step("Naming each group")
         labels = label_clusters_with_retry(result, question, claude_client, question_kind=question_kind)
         # Claude's reply already flags clusters it thinks are really the same theme (SYSTEM prompt, see

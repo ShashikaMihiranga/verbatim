@@ -2552,3 +2552,28 @@ def test_graph_grouping_without_an_embedding_key_says_why(env, monkeypatch):
     did, _ids, _fake, _spy = _graph_env(env, monkeypatch, _keep_all, centroids=False, embedder=None)
     job = _run_grouping(env, did)
     assert job["status"] == "failed" and "VOYAGE_API_KEY" in job["error"]
+
+
+def test_the_theme_build_reports_real_embedding_progress():
+    """The waiting card's first step fills from real counts: texts go through in chunks of one round of
+    the client's concurrent batches, in order, with a report after each chunk."""
+    from app.api_themes import _ProgressEmbedder
+
+    class Inner(FakeEmbeddingClient):
+        batch_size, concurrency = 2, 2
+
+    seen = []
+    texts = [f"answer number {i}" for i in range(9)]
+    out = _ProgressEmbedder(Inner(), lambda d, t: seen.append((d, t))).embed(texts)
+    assert out == Inner().embed(texts)
+    assert seen == [(4, 9), (8, 9), (9, 9)]
+
+
+def test_a_finished_theme_build_keeps_its_embedding_progress(env):
+    install_fakes()
+    did = upload_csv(env, theme_df())
+    clean_and_apply(env, did)
+    job = build_themes_job(env, did, timeout=30)
+    assert job["status"] == "done"
+    assert job["progress"]["step"] == "Turning answers into vectors"
+    assert job["progress"]["done"] == job["progress"]["total"] > 0
