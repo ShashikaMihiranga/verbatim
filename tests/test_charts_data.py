@@ -1000,3 +1000,9 @@ def test_real_report_phrases_have_no_stuck_hover_ring():
     body, _, _ = f_phrases(replace(EV, phrases=build_phrase_data(texts)))
     assert "border:2px solid var(--ink)" not in body
 
+
+
+def test_sentsun_table_rows_grow_with_a_long_theme_name():
+    """BUG-070: rows were a fixed 44px, so a wrapped theme name overlapped the next row."""
+    body = render("sentsun")
+    assert "height:44px;border-top" not in body and "min-height:44px" in body

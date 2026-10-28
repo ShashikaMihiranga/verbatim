@@ -46,6 +46,13 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-070 — Long theme names overlapped the next row in the tone table beside the sunburst**
+  - Found: 2026-10-28, user (screenshot), "Which themes sound negative or positive?" finding.
+  - Cause: `f_sentsun`'s table rows were a fixed 44px tall and the name column could shrink to a few
+    words, so "Building staff service quality" wrapped to four lines and ran over "All other answers".
+  - Fix: rows use `min-height` and grow with the name; the name column keeps at least 120px · Test:
+    `test_sentsun_table_rows_grow_with_a_long_theme_name`, golden `sentsun.html`; live check on dataset 13.
+
 - [x] **BUG-069 — "Which phrases recur?" showed a dark ring on the top phrase, and a dark box around the block**
   - Found: 2026-10-28, user (screenshot), report page.
   - Cause: two leftovers. `build_phrase_data` set `highlight` to the top phrase, which `f_phrases` draws with

@@ -1798,8 +1798,10 @@ def f_sentsun(data: ReportData):
         ng, nu, ps = tones[name]
         row_bg = "background:var(--surface);" if name == data.selected_theme else ""
         name_weight = 600 if name == data.selected_theme else 400
-        tbl += (f'<div style="display:flex;align-items:center;gap:10px;height:44px;border-top:1px solid var(--line);font-size:15px;{row_bg}">'
-                f'<span style="width:12px;height:12px;border-radius:3px;background:var(--{col})"></span><span style="flex:1;line-height:1.2;font-weight:{name_weight}">{esc(name)}</span>'
+        # min-height, not height: a long theme name wraps onto more lines and the row grows with it, instead
+        # of spilling over the rows above and below (BUG-070).
+        tbl += (f'<div style="display:flex;align-items:center;gap:10px;min-height:44px;padding:6px 0;box-sizing:border-box;border-top:1px solid var(--line);font-size:15px;{row_bg}">'
+                f'<span style="width:12px;height:12px;flex:none;border-radius:3px;background:var(--{col})"></span><span style="flex:1;min-width:120px;line-height:1.25;font-weight:{name_weight}">{esc(name)}</span>'
                 f'<span style="width:72px;text-align:right;font-weight:600">{ng}%</span><span style="width:72px;text-align:right">{nu}%</span><span style="width:72px;text-align:right">{ps}%</span></div>')
     def sw(c, t):
         return f'<span style="display:inline-flex;align-items:center;gap:8px;margin-right:20px;font-size:14px;color:var(--muted)"><span style="width:14px;height:14px;border-radius:3px;background:{c}"></span>{t}</span>'
