@@ -164,3 +164,7 @@ Railway builds with the `Dockerfile` (front end on Node 22, runtime on Python 3.
 - Runtime variables: see "Set up Clerk", plus `DATABASE_URL`, and `TRUST_PROXY=true`.
 - Migrations run before each deploy (`preDeployCommand` in `railway.json`).
 - Uploaded and cleaned file bytes live in Postgres (`uploaded_files`/`cleaned_files`), which already survives a redeploy exactly like every other table here - no Railway volume is needed for this. (An earlier version of this doc said to attach one; that turned out not to work anyway, since this app's non-root user could not write to it - see docs/DECISIONS.md.)
+
+## Licence
+
+The code is released under the MIT licence (see `LICENSE`). The survey answers in the sample report (`frontend/public/sample/`) are not covered by it: they come from a third-party dataset and keep that dataset's own terms.

@@ -3657,3 +3657,9 @@ per account, one export at a time, client timeouts) is merged into staging as is
 - The demo account `cdudemo@getverbatim.app` receives its codes through Cloudflare Email Routing, which
   forwards that one address to the owner's Gmail (set up the same day; Clerk's mail records unchanged).
 
+
+## 2026-10-29: MIT licence before making the repo public
+
+- Added `LICENSE` (MIT, copyright 2026 ShashikaMihiranga) and a Licence section in the README, so people who find the public repo may use the code.
+- MIT was picked as the usual choice for a student project: short, permissive, and it only asks that the notice is kept.
+- The sample report's survey answers (`frontend/public/sample/report.json`) are excluded from the licence in the README, because they come from the 10k survey dataset, not from this project. Its source and licence still need confirming before the repo goes public.
