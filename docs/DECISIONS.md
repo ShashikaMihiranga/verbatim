@@ -3670,3 +3670,8 @@ per account, one export at a time, client timeouts) is merged into staging as is
 - Removed stale sections: "Next steps" (both items shipped long ago) and the old Nixpacks deploy steps (Railway builds from the Dockerfile; `nixpacks.toml` and `Procfile` no longer exist).
 - The demo login is not written in the README, because the repo will be public; it goes in the submission form.
 - Left for the team to fill in: member names and contributions, the AI-use statement in their own words, the sample dataset's source and licence, and the YouTube link.
+
+## 2026-10-29: crediting the sample report's dataset
+
+- The home-page sample report uses the "FY19 Tenant Satisfaction Survey (TSS) Individual Responses with Comments" from data.gov (U.S. GSA, Office of Government-wide Policy). data.gov lists its licence as CC0 1.0, so it is credited in the README's Acknowledgements and Licence sections.
+- Note: the same data.gov record also carries a "non-public / Restricted" access flag from its point of contact, even though the CSV is openly downloadable there and the licence is CC0. Raised with the user; the credit stays as written unless they decide otherwise.

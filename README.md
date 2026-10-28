@@ -265,7 +265,10 @@ names themes and writes headline sentences from aggregated numbers. Claude never
 - Services: [Voyage AI](https://www.voyageai.com) (embeddings), [Anthropic Claude](https://www.anthropic.com)
   (theme names and headlines), [Clerk](https://clerk.com) (sign-in), [Railway](https://railway.com) (hosting),
   [Cloudflare](https://www.cloudflare.com) (DNS).
-- Sample data: _source and licence of the survey used for the home-page sample report, to be added._
+- Sample data: the home-page sample report is built from the
+  [FY19 Tenant Satisfaction Survey (TSS) Individual Responses with Comments](https://catalog.data.gov/dataset/fy19-tenant-satisfaction-survey-tss-individual-responses-with-comments),
+  published on data.gov by the U.S. General Services Administration (Office of Government-wide Policy) under
+  [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
 
 All of these keep their own licences.
 
@@ -282,4 +285,4 @@ All of these keep their own licences.
 
 ## Licence
 
-The code is released under the MIT licence (see `LICENSE`). The survey answers in the sample report (`frontend/public/sample/`) are not covered by it: they come from a third-party dataset and keep that dataset's own terms.
+The code is released under the MIT licence (see `LICENSE`). The survey answers in the sample report (`frontend/public/sample/`) are not covered by it: they come from the FY19 Tenant Satisfaction Survey on data.gov (U.S. GSA, CC0 1.0); see Acknowledgements.
