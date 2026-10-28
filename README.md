@@ -234,7 +234,7 @@ The live app runs on Railway. Create a project from this GitHub repo and add a P
 | Member | Student ID | Contributions |
 |---|---|---|
 | Shashika Mihiranga | S385832 | Product idea and requirements; design and chart rules; building the app with AI coding assistants (upload, column checks, cleaning, themes, report, theme editor, sharing, export); deployment on Railway and the getverbatim.app domain; testing in the live app; demo video |
-| Veli Oz | S392097 | Security review and fixes: personal-data masking, access control, XSS protection, authentication, request limits and export lockdown (commit `e423bc6`) |
+| Veli Oz | S392097 | Security review and fixes: personal-data masking, access control, XSS protection, authentication, request limits and export lockdown |
 
 ## How we used AI tools
 
