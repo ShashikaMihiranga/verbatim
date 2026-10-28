@@ -269,6 +269,9 @@ names themes and writes headline sentences from aggregated numbers. Claude never
   [FY19 Tenant Satisfaction Survey (TSS) Individual Responses with Comments](https://catalog.data.gov/dataset/fy19-tenant-satisfaction-survey-tss-individual-responses-with-comments),
   published on data.gov by the U.S. General Services Administration (Office of Government-wide Policy) under
   [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+- Demo account data: the reports in the judges' demo account use the
+  [Women's E-Commerce Clothing Reviews](https://www.openml.org/search?type=data&id=43673) dataset from OpenML
+  (anonymised customer reviews, CC0: Public Domain). It is uploaded through the app and is not stored in this repo.
 
 All of these keep their own licences.
 

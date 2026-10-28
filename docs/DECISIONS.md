@@ -3675,3 +3675,4 @@ per account, one export at a time, client timeouts) is merged into staging as is
 
 - The home-page sample report uses the "FY19 Tenant Satisfaction Survey (TSS) Individual Responses with Comments" from data.gov (U.S. GSA, Office of Government-wide Policy). data.gov lists its licence as CC0 1.0, so it is credited in the README's Acknowledgements and Licence sections.
 - Note: the same data.gov record also carries a "non-public / Restricted" access flag from its point of contact, even though the CSV is openly downloadable there and the licence is CC0. Raised with the user; the credit stays as written unless they decide otherwise.
+- The judges' demo account uses a second dataset, "Women's E-Commerce Clothing Reviews" from OpenML (id 43673, CC0: Public Domain, anonymised reviews). It lives only in the app's database, not in the repo, and is credited in the README's Acknowledgements.
