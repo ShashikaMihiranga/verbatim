@@ -3,7 +3,7 @@
 **Turn a spreadsheet of survey comments into a short, visual report in minutes.**
 
 - Live app: **https://getverbatim.app**
-- Demo video: _YouTube link to be added_
+- Demo video: **https://youtu.be/SegFl9umNAE**
 - Licence: MIT (see [Licence](#licence))
 
 ## Project summary
