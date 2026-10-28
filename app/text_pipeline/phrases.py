@@ -88,4 +88,6 @@ def build_phrase_data(answer_texts: list[str]) -> PhraseData | None:
     for text, texts in top:
         avg_sentiment = sum(score_text(t)[0] for t in texts) / len(texts)
         phrases.append(Phrase(text=text, count=len(texts), sentiment=round(avg_sentiment, 2)))
-    return PhraseData(phrases=phrases, highlight=phrases[0].text)
+    # No highlight: in the gallery mockup it draws one chip as hovered (a dark ring), which on a real report
+    # looks like a selection that means nothing and cannot be changed (BUG-069).
+    return PhraseData(phrases=phrases, highlight="")

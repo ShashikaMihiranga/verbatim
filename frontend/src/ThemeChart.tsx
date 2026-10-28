@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 // Matches app/charts.py's own DIM constant (opacity of an unselected/dimmed theme) - kept as one named
 // constant here rather than a bare literal, same reasoning as that module's own comment on it.
@@ -52,6 +52,9 @@ interface ThemeChartProps {
 export default function ThemeChart({ fragment, title, onThemeSelect, selectedTheme, highlightOtherRunning, finding = false }: ThemeChartProps) {
   const ref = useRef<HTMLDivElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  // The chart area takes keyboard focus only while it is wider than the page, so it can be scrolled with the
+  // arrow keys. A chart that fits got a focus ring around the whole block for nothing (BUG-069).
+  const [scrollable, setScrollable] = useState(false)
 
   useLayoutEffect(() => {
     const root = ref.current
@@ -168,9 +171,12 @@ export default function ThemeChart({ fragment, title, onThemeSelect, selectedThe
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    const observer = new ResizeObserver(() => {
+    const check = () => {
       el.scrollLeft = 0
-    })
+      setScrollable(el.scrollWidth > el.clientWidth + 1)
+    }
+    check()
+    const observer = new ResizeObserver(check)
     observer.observe(el)
     if (ref.current) observer.observe(ref.current)
     return () => observer.disconnect()
@@ -265,7 +271,8 @@ export default function ThemeChart({ fragment, title, onThemeSelect, selectedThe
   }, [fragment.chart_html, highlightOtherRunning])
 
   return (
-    <div className="rp-chart-scroll" ref={scrollRef} role="region" aria-label={title ? `${title}, chart area` : 'Chart area'} tabIndex={0}>
+    <div className="rp-chart-scroll" ref={scrollRef} role="region" aria-label={title ? `${title}, chart area` : 'Chart area'}
+      tabIndex={scrollable ? 0 : undefined}>
       <div
         ref={ref}
         className="rp-chart"

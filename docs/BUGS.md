@@ -46,6 +46,16 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-069 — "Which phrases recur?" showed a dark ring on the top phrase, and a dark box around the block**
+  - Found: 2026-10-28, user (screenshot), report page.
+  - Cause: two leftovers. `build_phrase_data` set `highlight` to the top phrase, which `f_phrases` draws with
+    the gallery mockup's hover ring; and every chart area had `tabIndex=0`, so after any key press a chart
+    that fits the page drew a focus ring around the whole block.
+  - Fix: real reports set no phrase highlight (the gallery sample keeps its own); the chart area takes
+    focus only while it is wider than the page and can be scrolled · Test:
+    `test_real_report_phrases_have_no_stuck_hover_ring`, `report-ui.test.tsx` focus tests; live check on
+    dataset 13 (only the four heatmaps wider than the page are focusable).
+
 - [x] **BUG-068 — Heatmap cells could not be picked: only the server's one outlined cell had a note**
   - Found: 2026-10-28, user (screenshot), "Who raises what?" heatmap in a finding.
   - Cause: `f_heatmap` drew one fixed highlighted cell with its note; the other cells had no note and the

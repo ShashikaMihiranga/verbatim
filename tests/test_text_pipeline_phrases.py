@@ -20,7 +20,7 @@ def test_finds_a_phrase_repeated_across_enough_distinct_answers():
     assert data is not None
     assert data.phrases[0].text == "home charger"
     assert data.phrases[0].count == 3
-    assert data.highlight == "home charger"
+    assert data.highlight == ""  # BUG-069: no chip is drawn with the mockup's hover ring
 
 
 def test_counts_a_phrase_once_per_answer_not_once_per_occurrence():

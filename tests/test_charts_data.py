@@ -988,3 +988,15 @@ def test_theme_scores_chart_tints_only_tested_gaps():
     assert 'title="Too few answers with a value">&ndash;' in html
     from dataclasses import replace
     assert "No score or number column" in f_theme_scores(replace(EV, theme_scores=None))[0]
+
+
+def test_real_report_phrases_have_no_stuck_hover_ring():
+    """BUG-069: the top phrase was drawn with a dark ring, the gallery mockup's hover, on every report."""
+    from dataclasses import replace
+    from app.charts import f_phrases
+    from app.fixtures.ev_sample import EV
+    from app.text_pipeline.phrases import build_phrase_data
+    texts = ["the home charger was slow", "home charger install cost", "our home charger works"] * 3
+    body, _, _ = f_phrases(replace(EV, phrases=build_phrase_data(texts)))
+    assert "border:2px solid var(--ink)" not in body
+

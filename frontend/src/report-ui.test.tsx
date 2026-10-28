@@ -67,7 +67,21 @@ it('provides a container query boundary for compact hierarchy and readable heatm
   expect(host.querySelector('.rp-responsive-chart > .rp-chart-compact')).toBeTruthy()
   expect(host.querySelector<HTMLElement>('.rp-heatmap-grid')?.style.getPropertyValue('--rp-group-count')).toBe('2')
   expect(host.querySelector<HTMLElement>('.rp-heatmap-grid')?.style.getPropertyValue('--rp-grid-min')).toBe('360px')
-  expect(host.querySelector('[role="region"]')?.getAttribute('tabindex')).toBe('0')
+  // Fits the page (jsdom measures 0 wide): nothing to scroll, so no focus stop and no focus ring (BUG-069).
+  expect(host.querySelector('[role="region"]')?.hasAttribute('tabindex')).toBe(false)
+})
+
+it('a chart wider than the page can be focused and scrolled with the keyboard', () => {
+  const wide = (name: string, value: number) => Object.defineProperty(HTMLElement.prototype, name, { configurable: true, get: () => value })
+  wide('scrollWidth', 1180)
+  wide('clientWidth', 600)
+  try {
+    act(() => root.render(<ThemeChart fragment={heatmap('Evidence')} title="Heatmap" />))
+    expect(host.querySelector('[role="region"]')?.getAttribute('tabindex')).toBe('0')
+  } finally {
+    delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
+    delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth
+  }
 })
 
 const findingBlock: ReportBlock = { ...heatmap('Actual selected evidence'), kind: 'finding', priority: 5,
