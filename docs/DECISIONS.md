@@ -3663,3 +3663,10 @@ per account, one export at a time, client timeouts) is merged into staging as is
 - Added `LICENSE` (MIT, copyright 2026 ShashikaMihiranga) and a Licence section in the README, so people who find the public repo may use the code.
 - MIT was picked as the usual choice for a student project: short, permissive, and it only asks that the notice is kept.
 - The sample report's survey answers (`frontend/public/sample/report.json`) are excluded from the licence in the README, because they come from the 10k survey dataset, not from this project. Its source and licence still need confirming before the repo goes public.
+
+## 2026-10-29: README rewritten for the CDU IT Code Fair submission
+
+- The competition guidelines ask the public repo for: summary, installation, dependencies, build and run steps, an architecture overview, licence, team contributions, acknowledgement of open-source code, an explanation of AI-assisted work, and limitations and future improvements. The README now has a section for each, plus a "Try it (for judges)" section with the live link and the example file `tests/fixtures/messy_survey.csv`.
+- Removed stale sections: "Next steps" (both items shipped long ago) and the old Nixpacks deploy steps (Railway builds from the Dockerfile; `nixpacks.toml` and `Procfile` no longer exist).
+- The demo login is not written in the README, because the repo will be public; it goes in the submission form.
+- Left for the team to fill in: member names and contributions, the AI-use statement in their own words, the sample dataset's source and licence, and the YouTube link.

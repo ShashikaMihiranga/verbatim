@@ -1,15 +1,71 @@
 # Verbatim
 
-An app that lets anyone, with no data-science background, turn a spreadsheet of survey answers into a
-short visual report. Upload a file; the app works out what each column means, cleans it, clusters the
-open-ended text into themes with sentiment, and writes a plain-English report with charts - no stats
-knowledge or manual analysis required.
+**Turn a spreadsheet of survey comments into a short, visual report in minutes.**
 
-Project goal and decisions: [docs/PROJECT_VISION.md](docs/PROJECT_VISION.md) (read this first). Product
-plan, data flow and chart rules: [SPEC.md](SPEC.md). Design/product rules and the task roadmap:
-[CLAUDE.md](CLAUDE.md). Permanent log of what shipped and why: [docs/DECISIONS.md](docs/DECISIONS.md).
+- Live app: **https://getverbatim.app**
+- Demo video: _YouTube link to be added_
+- Licence: MIT (see [Licence](#licence))
 
-## How it fits together
+## Project summary
+
+**The problem.** Surveys ask open questions ("Why did you give that score?"), and the answers are often
+the most useful part. But nobody reads 10,000 comments. Teams skim a few, guess, or leave them out, and
+proper coding by hand takes days and needs research skills.
+
+**The solution.** Verbatim lets anyone, with no data-science background, upload a `.csv` or `.xlsx`
+file and get a plain-English report. The app works out what each column means, cleans the data, groups
+the written answers into themes with their tone, and writes a short report of findings with charts.
+Every theme and every sentence links back to the real answers, word for word, so nothing is invented.
+That is where the name comes from: *verbatim* means "in exactly the same words".
+
+**Privacy by design.** Personal details (emails, phone numbers, names after cues like "my name is") are
+masked before any text leaves the server. AI models see masked samples and aggregated numbers only, never
+the whole file. Small demographic groups are hidden.
+
+## Main features
+
+- Upload `.csv`, `.xlsx` or `.xls` (up to 50 MB); the app guesses each column's type and you confirm it.
+- Adaptive cleaning: blanks, duplicates, spelling merges, junk answers, outliers and personal-data masking,
+  with a report of every change (nothing is removed silently).
+- Themes: embeddings (Voyage AI) + clustering (UMAP, HDBSCAN) find groups; Claude names them; each theme
+  gets sub-themes, a tone score and real example quotes.
+- Report: up to about five findings, each one sentence plus one chart, a Solid/Tentative confidence badge,
+  filters, and "See answers" for the real text behind it.
+- Theme editor: rename, merge, split, look inside "Other", undo.
+- Sharing: invite collaborators (editor/viewer roles) or create a read-only share link.
+- Export the report as PNG, PowerPoint or PDF.
+- Sign-in with email, Google or Microsoft (Clerk); every data route is owner-only.
+
+## Try it (for judges)
+
+1. Open https://getverbatim.app. "See a sample report" on the home page shows a finished report without
+   signing in.
+2. Sign up with email, Google or Microsoft, or use the demo login given in our submission form (it is
+   not published here).
+3. Upload a survey file. A small realistic example is included: [`tests/fixtures/messy_survey.csv`](tests/fixtures/messy_survey.csv)
+   (a made-up electric-vehicle survey with deliberately messy dates, scores and comments).
+4. Follow the steps: Check columns, Cleaning, Build themes, Build the report.
+
+Project goal and decisions: [docs/PROJECT_VISION.md](docs/PROJECT_VISION.md). Product plan, data flow and
+chart rules: [SPEC.md](SPEC.md). Design rules: [CLAUDE.md](CLAUDE.md). Every decision and why:
+[docs/DECISIONS.md](docs/DECISIONS.md). Every bug found and how it was fixed: [docs/BUGS.md](docs/BUGS.md).
+
+## Architecture overview
+
+```
+Browser (React + TypeScript, Vite)
+   |  HTTPS, Clerk session token
+   v
+FastAPI service (Python 3.12) --- auth check, roles, rate limits, request size limits
+   |-- upload + profiling ----> Postgres (files stored by content hash)
+   |-- cleaning + PII masking
+   |-- background jobs: embed (Voyage) -> UMAP -> HDBSCAN -> name themes (Claude) -> tone -> findings
+   |-- server-rendered SVG charts, PNG/PPTX/PDF export (headless Chromium)
+   v
+Postgres (Railway) - datasets, themes, findings, reports, jobs, sharing
+Only masked samples and numbers go to Voyage AI and Anthropic. Nothing leaves as a whole file.
+```
+
 
 One user journey, each stage owned by one backend module and one frontend screen:
 
@@ -33,6 +89,18 @@ Every stage above is "owner only" behind Clerk sign-in, and a model is only ever
 aggregated numbers - never a user's raw column of answers (`app/cleaning/payload.py`). See each module's
 own section below for routes, env vars and the trust rules enforced at that stage.
 
+## Requirements
+
+- Python 3.12 and Node.js 22 or newer
+- SQLite for local runs (default, nothing to install) or PostgreSQL (production)
+- Optional API keys, only needed for the AI steps: `VOYAGE_API_KEY` (embeddings) and `ANTHROPIC_API_KEY`
+  (theme names, headlines). Without them you can upload, check columns and clean; building themes shows a
+  clear "not configured" message.
+- Optional: a Clerk application for real sign-in (see "Set up Clerk"). Locally you can skip it with the dev user.
+- Python packages are pinned in [`requirements.txt`](requirements.txt) (`requirements-dev.txt` adds test
+  tools); frontend packages in [`frontend/package.json`](frontend/package.json). PDF/PNG export needs
+  Playwright's Chromium: `playwright install chromium`.
+
 ## Run locally
 
 Backend (Python 3.12):
@@ -40,20 +108,29 @@ Backend (Python 3.12):
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env            # optional; defaults to sqlite:///./dev.db
+playwright install chromium     # only needed for PNG/PDF/PowerPoint export
+cp .env.example .env            # defaults to sqlite:///./dev.db
 alembic upgrade head            # create/upgrade tables
-uvicorn app.main:app --reload   # http://localhost:8000
+ENV=dev ALLOW_DEV_USER=true uvicorn app.main:app --reload   # http://localhost:8000, no Clerk needed
 ```
+
+Add `VOYAGE_API_KEY=...` and `ANTHROPIC_API_KEY=...` to `.env` to build themes and reports. Never commit them.
 
 Frontend (Node 22+), in a second terminal. Vite proxies `/api` and `/frame` to port 8000:
 
 ```bash
-cd frontend && npm ci && npm run dev   # http://localhost:5173
+cd frontend && npm ci
+echo "VITE_ALLOW_DEV_USER=true" > .env.local   # local only: skip Clerk in the browser
+npm run dev                                     # http://localhost:5173
 ```
 
-If `frontend/dist` exists (`npm run build`), FastAPI serves it at `/` with SPA fallback; otherwise `/` shows the chart index. Each chart is at `/frame/<id>` (for example `/frame/sunburst`).
+Production build: `cd frontend && npm run build`; FastAPI then serves `frontend/dist` at `/`.
 
-Tests: `pytest`. New migration after editing `app/models.py`: `alembic revision --autogenerate -m "message"`.
+## Tests
+
+- Backend: `pytest` (uses fake embedding and Claude clients, so no keys and no network are needed).
+- Frontend: `cd frontend && npm test -- --run`, type check `npx tsc -b`, lint `npm run lint`.
+- New migration after editing `app/models.py`: `alembic revision --autogenerate -m "message"`.
 
 ## Upload and column profiling
 
@@ -141,29 +218,68 @@ To drive the real frontend UI locally against that dev user (not just the API di
 - `app/chart_data.py`: typed data classes (`ReportData`, `ThemeNode`, ...) that charts read. `app/fixtures/ev_sample.py`: the EV sample as a `ReportData`. `app/api_charts.py`: `GET /api/charts` and `GET /api/charts/{id}`.
 - `tests/golden/*.html`: byte-for-byte snapshots of the 20 frames on the EV sample (regression guard in `tests/test_charts_data.py`).
 - `app/main.py`: FastAPI routes and static serving. `app/api.py`: JSON API under `/api`. `app/config.py`, `app/db.py`, `app/models.py`: settings, SQLAlchemy, tables. `migrations/`: Alembic. `frontend/`: React + Vite + TypeScript.
-- `railway.json` (build, pre-deploy migration, start, health check `/health`), `nixpacks.toml` (adds Node), `Procfile` (fallback start command).
-
-## Next steps
-
-1. Add `POST /api/analyze` (upload, clean, embed, cluster, label).
-2. Add the chart-selection engine from SPEC.md section 4.
+- `railway.json` (Dockerfile build, pre-deploy migration, health check `/health`), `Dockerfile`, `entrypoint.sh`.
 
 ## Deploy to Railway
 
-1. Push this folder to a GitHub repo.
-2. In Railway: New Project, Deploy from GitHub repo, choose the repo.
-3. Railway reads `railway.json`, builds Python deps and the frontend with Nixpacks, runs `alembic upgrade head`, and starts uvicorn on `$PORT`. Add a Postgres service and set `DATABASE_URL` (reference variable).
-4. Settings, Networking, Generate Domain.
-5. When the analysis step arrives, add `ANTHROPIC_API_KEY` under Variables. Never commit it.
-
-## Deploy to Railway (Docker build)
-
-Railway builds with the `Dockerfile` (front end on Node 22, runtime on Python 3.12). Nixpacks is no longer used, because its Node was too old for Vite 8 and skipped the native build engine.
+The live app runs on Railway. Create a project from this GitHub repo and add a Postgres service. Railway builds with the `Dockerfile` (front end on Node 22, runtime on Python 3.12). Nixpacks is no longer used, because its Node was too old for Vite 8 and skipped the native build engine.
 
 - Build variable: `VITE_CLERK_PUBLISHABLE_KEY` (Railway passes service variables to the Dockerfile `ARG`).
 - Runtime variables: see "Set up Clerk", plus `DATABASE_URL`, and `TRUST_PROXY=true`.
 - Migrations run before each deploy (`preDeployCommand` in `railway.json`).
 - Uploaded and cleaned file bytes live in Postgres (`uploaded_files`/`cleaned_files`), which already survives a redeploy exactly like every other table here - no Railway volume is needed for this. (An earlier version of this doc said to attach one; that turned out not to work anyway, since this app's non-root user could not write to it - see docs/DECISIONS.md.)
+
+## Team and contributions
+
+_To be completed by the team: each member's name and what they built or decided._
+
+| Member | Contributions |
+|---|---|
+| _Name_ | _e.g. product idea, requirements, design decisions, testing, video_ |
+
+## How we used AI tools
+
+AI-assisted development was used, as the competition allows. AI coding assistants (Claude Code and OpenAI
+Codex) wrote much of the code under our direction. Our own work was:
+
+- _To be confirmed by the team:_ defining the problem and the product, choosing the approach (embeddings
+  and clustering do the bulk, an LLM only names themes and writes sentences), the privacy rules (masking,
+  samples only, hidden small groups), the design and chart rules, reviewing and testing every feature in
+  the live app, and deciding what shipped.
+- Every design decision, with its reason, is logged in [docs/DECISIONS.md](docs/DECISIONS.md), and every
+  bug found and fixed is in [docs/BUGS.md](docs/BUGS.md).
+
+Inside the app, AI is used in a limited, visible way: Voyage AI turns answers into vectors, and Claude
+names themes and writes headline sentences from aggregated numbers. Claude never sees a whole file.
+
+## Acknowledgements
+
+- Backend: [FastAPI](https://fastapi.tiangolo.com), [SQLAlchemy](https://www.sqlalchemy.org),
+  [Alembic](https://alembic.sqlalchemy.org), [pandas](https://pandas.pydata.org),
+  [scikit-learn](https://scikit-learn.org) (HDBSCAN), [UMAP](https://umap-learn.readthedocs.io),
+  [NumPy](https://numpy.org), [SciPy](https://scipy.org), [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz),
+  [Playwright](https://playwright.dev), [python-pptx](https://python-pptx.readthedocs.io),
+  [ReportLab](https://www.reportlab.com), [PyJWT](https://pyjwt.readthedocs.io).
+- Frontend: [React](https://react.dev), [Vite](https://vite.dev), [TypeScript](https://www.typescriptlang.org),
+  [React Router](https://reactrouter.com), [anime.js](https://animejs.com), [Lucide](https://lucide.dev)
+  icons, [Vitest](https://vitest.dev), [Jost](https://fonts.google.com/specimen/Jost) font.
+- Services: [Voyage AI](https://www.voyageai.com) (embeddings), [Anthropic Claude](https://www.anthropic.com)
+  (theme names and headlines), [Clerk](https://clerk.com) (sign-in), [Railway](https://railway.com) (hosting),
+  [Cloudflare](https://www.cloudflare.com) (DNS).
+- Sample data: _source and licence of the survey used for the home-page sample report, to be added._
+
+All of these keep their own licences.
+
+## Limitations and future improvements
+
+- The built-in tone scorer is a word list tuned for English; other languages get weaker tone scores.
+- Personal-data masking is a heuristic: a name with no cue or an unusual address format can be missed.
+- Theme names come from an AI model, so wording can vary between builds; "Find matches" grouping is
+  being reworked to compare themes by meaning first and only ask Claude to name groups.
+- Building themes needs paid API keys (Voyage, Anthropic). Large files take a minute or two.
+- Rate-limit counters live in one server's memory; scaling to several servers needs a shared store (Redis).
+- Next: better multilingual support, comparing two surveys or two time periods side by side, and
+  scheduled re-runs when new answers arrive.
 
 ## Licence
 
