@@ -2,7 +2,8 @@ import { useSignIn } from '@clerk/clerk-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { NOT_RIGHT, SOMETHING_WRONG, signInMessage } from './messages'
+import { NOT_RIGHT, SOMETHING_WRONG, codeMessage, signInMessage } from './messages'
+import { UNSUPPORTED_STEP, nextSignInStep } from './signInSteps'
 import { Divider, Field, FormError, OAuthButtons, PasswordField } from './ui'
 import { validEmail } from './passwordRules'
 import { safeDestination } from './redirect'
@@ -18,6 +19,9 @@ export default function SignInForm() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // Set when Clerk wants the emailed code (new device); the form then asks for it instead of the password.
+  const [codeStep, setCodeStep] = useState<{ sentTo?: string } | null>(null)
+  const [code, setCode] = useState('')
   const errorRef = useRef<HTMLDivElement>(null)
   const emailRef = useRef<HTMLInputElement>(null)
 
@@ -39,14 +43,47 @@ export default function SignInForm() {
     setError('')
     try {
       const res = await signIn.create({ identifier: email.trim(), password })
-      if (res.status === 'complete' && res.createdSessionId) {
-        await setActive({ session: res.createdSessionId })
+      const step = nextSignInStep(res)
+      if (step.kind === 'done') {
+        await setActive({ session: step.sessionId })
+        navigate(dest, { replace: true })
+        return
+      }
+      if (step.kind === 'email_code') {
+        await signIn.prepareSecondFactor({ strategy: 'email_code', emailAddressId: step.emailAddressId })
+        setCode('')
+        setCodeStep({ sentTo: step.sentTo })
+        return
+      }
+      console.warn('[auth] sign-in stopped at', step.status)
+      setError(UNSUPPORTED_STEP)
+    } catch (err) {
+      setError(signInMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitCode(e: FormEvent) {
+    e.preventDefault()
+    if (!isLoaded || busy) return
+    if (!/^\d{6}$/.test(code.trim())) {
+      setError('Enter the 6 digit code from your email.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const res = await signIn.attemptSecondFactor({ strategy: 'email_code', code: code.trim() })
+      const step = nextSignInStep(res)
+      if (step.kind === 'done') {
+        await setActive({ session: step.sessionId })
         navigate(dest, { replace: true })
         return
       }
       setError(SOMETHING_WRONG)
     } catch (err) {
-      setError(signInMessage(err))
+      setError(codeMessage(err))
     } finally {
       setBusy(false)
     }
@@ -63,6 +100,36 @@ export default function SignInForm() {
     } catch {
       setError(SOMETHING_WRONG)
     }
+  }
+
+  if (codeStep) {
+    return (
+      <form onSubmit={submitCode} noValidate className="auth-form" aria-labelledby="signin-code-title">
+        <h1 id="signin-code-title">Check your email</h1>
+        <p className="lead">
+          This is a new device, so we sent a 6 digit code to {codeStep.sentTo ?? 'your email address'}. It works for a few minutes.
+        </p>
+        <FormError message={error} ref={errorRef} />
+        <Field
+          label="Verification code"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="123456"
+          value={code}
+          onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+          maxLength={6}
+          required
+        />
+        <button type="submit" className="auth-btn primary" disabled={busy || !isLoaded}>
+          {busy ? 'Checking...' : 'Verify and sign in'}
+        </button>
+        <p className="auth-foot">
+          <button type="button" className="auth-link" onClick={() => { setCodeStep(null); setError('') }}>
+            Back to sign in
+          </button>
+        </p>
+      </form>
+    )
   }
 
   return (

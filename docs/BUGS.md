@@ -46,6 +46,15 @@ If it needs the user's decision or a paid call, say so on the Found line and lea
 
 ## Fixed
 
+- [x] **BUG-071 — A new account's first sign-in said "Something went wrong"**
+  - Found: 2026-10-28, user (screenshot), signing in as the new demo account on getverbatim.app.
+  - Cause: Clerk's Client Trust asks for an emailed code when an account signs in with a password on a
+    new device (`needs_second_factor` with an `email_code` factor). `SignInForm` only handled `complete`
+    and showed the generic error for anything else, so the right password still failed.
+  - Fix: `auth/signInSteps.ts` (`nextSignInStep`) reads Clerk's answer; the form sends the code and asks
+    for it ("Check your email"), and names any other unsupported step instead of the generic error ·
+    Test: `auth.test.tsx` "sign-in steps".
+
 - [x] **BUG-070 — Long theme names overlapped the next row in the tone table beside the sunburst**
   - Found: 2026-10-28, user (screenshot), "Which themes sound negative or positive?" finding.
   - Cause: `f_sentsun`'s table rows were a fixed 44px tall and the name column could shrink to a few

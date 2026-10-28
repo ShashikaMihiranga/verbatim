@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { splitName } from './messages'
 import { checkPassword, isCommonPassword, passwordOk, validEmail } from './passwordRules'
 import { safeDestination } from './redirect'
+import { nextSignInStep } from './signInSteps'
 import SidePanel from './SidePanel'
 import { VARIANTS, parseVariant } from './variants'
 
@@ -62,5 +63,24 @@ describe('redirects and names', () => {
   it('splits a full name', () => {
     expect(splitName('Sam')).toEqual({ firstName: 'Sam' })
     expect(splitName('  Sam  Lee Wong ')).toEqual({ firstName: 'Sam', lastName: 'Lee Wong' })
+  })
+})
+
+describe('sign-in steps', () => {
+  it('a finished sign-in opens the session', () => {
+    expect(nextSignInStep({ status: 'complete', createdSessionId: 'sess_1' })).toEqual({ kind: 'done', sessionId: 'sess_1' })
+  })
+  it('a new device asks for the emailed code instead of failing', () => {
+    const factors = [{ strategy: 'email_code', emailAddressId: 'idn_1', safeIdentifier: 'c***@getverbatim.app' }]
+    for (const status of ['needs_second_factor', 'needs_client_trust']) {
+      expect(nextSignInStep({ status, supportedSecondFactors: factors })).toEqual({
+        kind: 'email_code', emailAddressId: 'idn_1', sentTo: 'c***@getverbatim.app',
+      })
+    }
+  })
+  it('a step the form cannot do says so', () => {
+    expect(nextSignInStep({ status: 'needs_second_factor', supportedSecondFactors: [{ strategy: 'totp' }] }).kind).toBe('unsupported')
+    expect(nextSignInStep({ status: 'needs_new_password' })).toEqual({ kind: 'unsupported', status: 'needs_new_password' })
+    expect(nextSignInStep({ status: 'complete', createdSessionId: null }).kind).toBe('unsupported')
   })
 })

@@ -3646,3 +3646,14 @@ per account, one export at a time, client timeouts) is merged into staging as is
 - Left for later: the share-link phrases block still comes from unmasked answers (short phrases, but a
   name can appear); worst-case theme-naming wait is about 15 minutes (300 s x 3 tries).
 
+## 2026-10-28: sign-in handles Clerk's new-device email code
+
+- A password sign-in can come back from Clerk as `needs_second_factor` (Client Trust: first sign-in on a
+  new device) with an emailed code. The custom sign-in form now sends that code and asks for it on the
+  same page, instead of showing "Something went wrong" (BUG-071). Clerk's hosted pages are not used, so
+  the form has to cover each status itself.
+- Any other status (TOTP, a forced new password) shows a plain message pointing to Forgot password or
+  Google/Microsoft, and logs the status to the console; those flows are not built.
+- The demo account `cdudemo@getverbatim.app` receives its codes through Cloudflare Email Routing, which
+  forwards that one address to the owner's Gmail (set up the same day; Clerk's mail records unchanged).
+
